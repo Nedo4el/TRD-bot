@@ -1,0 +1,6 @@
+# Официальный API-коннектор Bybit (v5)
+pybit>=5.0.0
+# Загрузка переменных окружения из .env
+python-dotenv>=1.0.0
+# HTTP-клиент для Telegram-уведомлений (async)
+aiohttp>=3.9.0

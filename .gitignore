@@ -1,0 +1,57 @@
+# Секреты (НИКОГДА не коммитить!)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+ENV/
+Scripts/
+
+# Логи
+*.log
+logs/
+
+# Кэши и отчёты тестов
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Состояние бота (позиции, ордера) — пересоздаётся автоматически
+data/state.json
+data/metrics.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

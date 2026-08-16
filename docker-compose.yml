@@ -1,0 +1,14 @@
+# Запуск бота 24/7 одной командой: docker compose up -d --build
+services:
+  trading-bot:
+    build: .
+    container_name: trd-bot
+    # Перезапуск при падении и при перезагрузке машины
+    restart: unless-stopped
+    # Секреты берём из .env (не коммитится в Git)
+    env_file:
+      - .env
+    # Логи и состояние бота храним на хосте — переживают пересоздание контейнера
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
