@@ -133,8 +133,7 @@ class Config:
             )
         if not self.symbol:
             raise ValueError(
-                "SYMBOL не задан. Укажите инструмент в .env, "
-                "например: SYMBOL=ETHUSDT",
+                "SYMBOL не задан. Укажите инструмент в .env, например: SYMBOL=ETHUSDT",
             )
         if self.category not in ("spot", "linear"):
             raise ValueError("CATEGORY должен быть 'spot' или 'linear'.")

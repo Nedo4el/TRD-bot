@@ -77,6 +77,8 @@ class StateStore:
     async def save(self) -> None:
         """Сохранить текущее состояние на диск (атомарная запись)."""
         async with self._lock:
+            # Убеждаемся, что папка состояния существует (создаём при первом запуске)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
             # Пишем во временный файл, затем переименовываем —
             # если процесс упадёт посреди записи, основной файл останется цел
             tmp = self.path.with_suffix(".json.tmp")

@@ -220,6 +220,37 @@ class TradingBot:
 
     # ========================= Главный цикл =========================
 
+    async def _sync_state_with_exchange(self) -> None:
+        """Восстановить локальное состояние из реальной позиции на бирже.
+
+        Нужно, если бот упал/перезапустился, а state-файл не сохранился:
+        без этого бот может открыть дублирующую позицию поверх уже открытой.
+        """
+        if self.state.get_position(self.config.symbol) is not None:
+            return
+
+        position = await self.client.get_position(self.config.symbol)
+        if position is None:
+            return
+
+        await self.state.set_position(
+            StoredPosition(
+                symbol=position.symbol,
+                side=position.side,
+                qty=position.size,
+                entry_price=position.avg_price,
+                stop_loss=position.stop_loss or 0.0,
+                take_profit=position.take_profit or 0.0,
+            ),
+        )
+        logger.info(
+            "Восстановлена позиция с биржи: %s %s qty=%.8g @ %.8g",
+            position.side,
+            position.symbol,
+            position.size,
+            position.avg_price,
+        )
+
     async def run(self) -> None:
         """Запустить основной цикл торговли (работает до остановки)."""
         logger.info(
@@ -234,6 +265,13 @@ class TradingBot:
 
         if self.config.ws_enabled:
             self.client.start_ws()
+
+        # Восстанавливаем позицию с биржи, если state потерян (упал процесс).
+        # Делаем до цикла, чтобы не открыть дубль поверх существующей сделки.
+        try:
+            await self._sync_state_with_exchange()
+        except Exception:
+            logger.exception("Не удалось синхронизировать состояние с биржей")
 
         iteration = 0
         while True:
