@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import deque
@@ -82,6 +83,9 @@ class BybitClient:
         self._ws_stop = threading.Event()  # сигнал остановки WS-потока
         self.last_ws_price: dict[str, float] = {}  # последние цены из WS
         self._ws_lock = threading.Lock()
+
+        # Кэш шагов объёма по символам (для округления размеров ордеров)
+        self._qty_steps: dict[str, float] = {}
 
     # ========================== Rate limiting ==========================
 
@@ -225,12 +229,38 @@ class BybitClient:
             "symbol": symbol,
             "side": side,
             "orderType": order_type,
-            "qty": str(qty),
+            "qty": str(self._round_qty(qty, await self._get_qty_step(symbol))),
             "timeInForce": "IOC" if order_type == "Market" else "GTC",
         }
         if price is not None:
             params["price"] = str(price)
         return cast(dict[str, Any], await self._call("place_order", **params))
+
+    async def _get_qty_step(self, symbol: str) -> float:
+        """Получить шаг объёма инструмента (с кэшем).
+
+        Args:
+            symbol: торговая пара.
+
+        Returns:
+            Минимальный шаг объёма (lotSizeFilter.qtyStep).
+        """
+        if symbol not in self._qty_steps:
+            resp = await self._call(
+                "get_instruments_info",
+                category=self.config.category,
+                symbol=symbol,
+            )
+            rows = resp["result"]["list"]
+            if not rows:
+                raise ValueError(f"Инструмент {symbol} не найден")
+            self._qty_steps[symbol] = float(rows[0]["lotSizeFilter"]["qtyStep"])
+        return self._qty_steps[symbol]
+
+    @staticmethod
+    def _round_qty(qty: float, step: float) -> float:
+        """Округлить объём вниз до кратного шагу биржи."""
+        return math.floor(qty / step) * step
 
     async def set_stop_loss_take_profit(
         self,

@@ -62,8 +62,8 @@ class Config:
     )
 
     # --- Торговые параметры ---
-    category: str = field(default_factory=lambda: os.getenv("CATEGORY", "spot"))
-    symbol: str = field(default_factory=lambda: os.getenv("SYMBOL", "BTCUSDT"))
+    category: str = field(default_factory=lambda: os.getenv("CATEGORY", "linear"))
+    symbol: str = field(default_factory=lambda: os.getenv("SYMBOL", ""))
     timeframe: str = field(default_factory=lambda: os.getenv("TIMEFRAME", "15"))
     fast_ma_period: int = field(
         default_factory=lambda: _get_int("FAST_MA_PERIOD", 7),
@@ -131,6 +131,13 @@ class Config:
                 "BYBIT_API_KEY и BYBIT_API_SECRET обязательны. "
                 "Скопируйте .env.example в .env и заполните ключи.",
             )
+        if not self.symbol:
+            raise ValueError(
+                "SYMBOL не задан. Укажите инструмент в .env, "
+                "например: SYMBOL=ETHUSDT",
+            )
+        if self.category not in ("spot", "linear"):
+            raise ValueError("CATEGORY должен быть 'spot' или 'linear'.")
         if self.fast_ma_period >= self.slow_ma_period:
             raise ValueError(
                 "FAST_MA_PERIOD должен быть меньше SLOW_MA_PERIOD "
