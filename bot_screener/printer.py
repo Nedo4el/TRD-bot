@@ -38,6 +38,7 @@ def print_results(
     total_symbols: int,
     filtered_symbols: int,
     scan_time: float,
+    min_score: int = 70,
 ) -> None:
     """Вывести таблицу результатов в консоль.
 
@@ -46,7 +47,9 @@ def print_results(
         total_symbols: общее количество символов на бирже.
         filtered_symbols: количество символов после фильтрации по обороту.
         scan_time: время сканирования в секундах.
+        min_score: минимальный скор для отображения.
     """
+    results = [r for r in results if r.score >= min_score]
     clear_console()
 
     now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
