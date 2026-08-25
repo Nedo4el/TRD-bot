@@ -29,6 +29,12 @@ def setup_logging(log_file: str | Path = "logs/bot.log", level: str = "INFO") ->
     if _configured:
         return
 
+    # Консоль в Windows по умолчанию в cp1251: перевод в UTF-8,
+    # иначе спецсимволы (например, стрелка "→" в тексте ошибок pybit)
+    # роняют логирование с UnicodeEncodeError.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
+
     # Создаём папку для логов, если её нет
     path = Path(log_file)
     path.parent.mkdir(parents=True, exist_ok=True)
