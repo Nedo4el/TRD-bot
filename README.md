@@ -1,65 +1,107 @@
-# TRD bot — торговый бот для Bybit (Python)
+# TRD Bot — набор торговых ботов для Bybit v5
 
-Автоматический торговый бот для криптовалютной биржи **Bybit (API v5)**
-на официальной библиотеке [pybit](https://github.com/bybit-exchange/pybit).
-
-## Возможности
-
-- Получение цен и исторических свечей (REST + WebSocket в реальном времени)
-- Простая стратегия на пересечении скользящих средних (SMA)
-- Риск-менеджмент: размер позиции от баланса, стоп-лосс, тейк-профит
-- Режимы: **симуляция** (paper trading), **testnet**, **mainnet**
-- Автопереподключение WebSocket с экспоненциальной задержкой (backoff)
-- Rate limiting — защита от блокировки по лимитам API
-- Сохранение состояния в JSON — восстановление после рестарта без дублей ордеров
-- Telegram-уведомления о сделках и ошибках (опционально)
-- Метрики производительности (сделки, PnL, время ответа API)
-- Backtesting стратегии на исторических данных
-- Docker / docker-compose для запуска 24/7
-
-## Структура проекта
+Четыре независимых бота на общем движке. Общая логика (биржа, ордера,
+стопы, Telegram, восстановление после рестарта) живёт в `core/`,
+у каждого бота — только своя стратегия и свой `.env`.
 
 ```
-├── main.py          # точка входа, главный цикл, переподключения
-├── config.py        # конфигурация из .env
-├── bybit_client.py  # обёртка над pybit (REST + WebSocket + rate limit)
-├── strategy.py      # торговая стратегия (пересечение SMA)
-├── risk_manager.py  # размер позиции, стоп-лосс, тейк-профит
-├── notifier.py      # Telegram-уведомления
-├── state.py         # сохранение/восстановление состояния
-├── metrics.py       # сбор метрик производительности
-├── logger.py        # настройка логирования
-├── utils.py         # вспомогательные функции
-├── backtest.py      # проверка стратегии на истории
-├── requirements.txt
-├── Dockerfile
-└── docker-compose.yml
+TRD bot/
+├── core/                  # Общий движок (менять не нужно)
+│   ├── engine.py          # Главный цикл: свечи -> сигнал -> сделка
+│   ├── strategies.py      # BaseStrategy — интерфейс стратегии
+│   ├── indicators.py      # SMA, EMA, RSI, Bollinger, ATR (вручную)
+│   ├── config.py          # Чтение .env
+│   ├── bybit_client.py    # REST + WebSocket Bybit
+│   ├── risk_manager.py    # Размер позиции, SL/TP
+│   ├── state.py           # Сохранение позиций в JSON
+│   ├── notifier.py        # Telegram-уведомления
+│   ├── metrics.py         # Счётчики сделок и ошибок
+│   ├── logger.py          # Логи: консоль + файл с ротацией
+│   └── utils.py           # Retry, backoff
+├── bot_sma/               # SMA crossover (базовый, шаблон для новых)
+├── bot_combo/             # Комбинированный фильтр: EMA+RSI+BB, M1
+├── bot_adaptive/          # Адаптивный: SMA200 + EMA5/13, стопы от ATR
+├── bot_swings/            # Свинг-уровни: пробой + ретест
+├── backtest.py            # Бэктест любой стратегии
+├── launcher.py            # Фоновый запуск/остановка бота
+└── tests/                 # pytest-тесты стратегий и индикаторов
 ```
 
-## Установка и запуск
+## Быстрый старт
 
-```bash
-# 1. Скопировать конфиг и вписать API-ключи
-cp .env.example .env
+```powershell
+# 1. Зависимости
+uv pip install -r requirements.txt
 
-# 2. Установить зависимости
-pip install -r requirements.txt
+# 2. Настройки бота: скопировать пример и вписать ключи Bybit
+Copy-Item bot_combo\.env.example bot_combo\.env
+#    отредактировать BYBIT_API_KEY / BYBIT_API_SECRET
 
-# 3. Прогнать бэктест (рекомендуется перед запуском)
-python backtest.py
-
-# 4. Запустить бота (сначала: SIMULATION_MODE=true в .env!)
-python main.py
+# 3. Запуск (безопасно: SIMULATION_MODE=true — без реальных ордеров)
+python bot_combo/main.py
 ```
 
-## Дорожная карта запуска в продакшн
+Каждый бот читает настройки ИЗ СВОЕЙ ПАПКИ (`bot_xxx/.env`).
 
-1. `SIMULATION_MODE=true` — наблюдаем за сигналами без реальных сделок
-2. `TESTNET=true` — реальные ордера на тестовой сети
-3. `TESTNET=false` + проверка лимитов — только после успешных шагов 1–2
+## Боты и их параметры
 
-## Docker
+Все «крутилки» вынесены в `.env` бота — код трогать не нужно.
 
-```bash
-docker compose up -d --build
+| Бот | Идея | Вход | Выход |
+|---|---|---|---|
+| `bot_sma` | Пересечение SMA | золотое/мёртвое пересечение | SL/TP из .env |
+| `bot_combo` | Тренд + выход RSI из зоны + фильтр BB | 3 условия одновременно | TP 0.5% / SL 0.3% |
+| `bot_adaptive` | Направление по SMA200, вход по EMA5/13 | пересечение по тренду | SL=1.5×ATR, TP=2.5×ATR |
+| `bot_swings` | Уровни по свингам (5 слева/справа) | пробой + ретест + свечной фильтр | TP 0.4% / SL 0.2% |
+
+Сигналы считаются только по ЗАКРЫТЫМ свечам; позиция всегда одна.
+
+## Как добавить свою стратегию
+
+1. Скопируйте папку любого бота, например `bot_sma` → `bot_mya`.
+2. В `bot_mya/strategy.py` напишите класс на базе `BaseStrategy`:
+   метод `check_signal(candles) -> Signal` — единственное,
+   что обязательно. Индикаторы берите из `core/indicators.py`.
+3. В `bot_mya/.env` задайте свои числа.
+4. Готово: движок сам сделает всё остальное.
+
+## Управление
+
+```powershell
+python launcher.py                 # запустить bot_sma в фоне
+python launcher.py bot_combo       # конкретного бота
+python launcher.py bot_combo       # повторный вызов ОСТАНОВИТ его
 ```
+
+## Бэктест
+
+```powershell
+python backtest.py --strategy sma --limit 500
+python backtest.py --strategy combo --timeframe 1 --sl 0.3 --tp 0.5
+python backtest.py --strategy adaptive --limit 1000
+python backtest.py --strategy swings --symbol XRPUSDT --timeframe 5
+```
+
+## Docker (24/7)
+
+```powershell
+docker compose up -d --build bot-combo   # один бот
+docker compose up -d --build             # все четыре
+docker compose logs -f bot-adaptive
+```
+
+## Тесты и проверки кода
+
+```powershell
+uv pip install -r requirements-dev.txt
+.venv\Scripts\python.exe -m pytest tests -q
+.venv\Scripts\ruff.exe check .
+.venv\Scripts\ruff.exe format .
+.venv\Scripts\mypy.exe .
+```
+
+## Безопасность
+
+- Начинайте всегда с `SIMULATION_MODE=true`.
+- `TESTNET=false` — реальные деньги: проверьте стратегию бэктестом.
+- Ключи лежат только в `.env` (в git не попадает).

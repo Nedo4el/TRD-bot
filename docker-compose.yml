@@ -1,14 +1,57 @@
-# Запуск бота 24/7 одной командой: docker compose up -d --build
+# Запуск любого бота 24/7:
+#   docker compose up -d --build bot-sma      # только SMA
+#   docker compose up -d --build              # все сразу
+# Логи: docker compose logs -f bot-combo
 services:
-  trading-bot:
-    build: .
-    container_name: trd-bot
-    # Перезапуск при падении и при перезагрузке машины
+  bot-sma:
+    build:
+      context: .
+      args:
+        BOT_NAME: bot_sma
+    container_name: trd-bot-sma
     restart: unless-stopped
-    # Секреты берём из .env (не коммитится в Git)
+    # Секреты берём из .env конкретного бота (в git не коммитится)
     env_file:
-      - .env
-    # Логи и состояние бота храним на хосте — переживают пересоздание контейнера
+      - bot_sma/.env
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+
+  bot-combo:
+    build:
+      context: .
+      args:
+        BOT_NAME: bot_combo
+    container_name: trd-bot-combo
+    restart: unless-stopped
+    env_file:
+      - bot_combo/.env
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+
+  bot-adaptive:
+    build:
+      context: .
+      args:
+        BOT_NAME: bot_adaptive
+    container_name: trd-bot-adaptive
+    restart: unless-stopped
+    env_file:
+      - bot_adaptive/.env
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+
+  bot-swings:
+    build:
+      context: .
+      args:
+        BOT_NAME: bot_swings
+    container_name: trd-bot-swings
+    restart: unless-stopped
+    env_file:
+      - bot_swings/.env
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data

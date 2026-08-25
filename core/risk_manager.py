@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from config import Config
+from core.config import Config
 
 
 @dataclass
@@ -32,7 +32,8 @@ class RiskManager:
     def calculate_position_size(self, balance: float, price: float) -> float:
         """Рассчитать размер позиции в базовом активе.
 
-        Формула: (баланс * % на позицию) / цена инструмента.
+        Если FIXED_QTY > 0 в .env — размер фиксированный (например, 0.01).
+        Иначе формула: (баланс * % на позицию) / цена инструмента.
         Пример: баланс 1000 USDT, POSITION_PCT=10% -> 100 USDT на сделку;
         при цене BTC 60 000 -> qty = 100 / 60000 = 0.00167 BTC.
 
@@ -45,6 +46,8 @@ class RiskManager:
         """
         if balance <= 0 or price <= 0:
             raise ValueError("Баланс и цена должны быть положительными")
+        if self.config.fixed_qty > 0:
+            return self.config.fixed_qty
         amount_usdt = balance * (self.config.position_pct / 100.0)
         return amount_usdt / price
 

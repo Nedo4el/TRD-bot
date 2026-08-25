@@ -16,9 +16,9 @@ from typing import Any, cast
 from pybit.exceptions import FailedRequestError, InvalidRequestError
 from pybit.unified_trading import HTTP, WebSocket
 
-from config import Config
-from logger import get_logger
-from utils import exponential_backoff, retry, run_in_thread
+from core.config import Config
+from core.logger import get_logger
+from core.utils import exponential_backoff, retry, run_in_thread
 
 logger = get_logger(__name__)
 

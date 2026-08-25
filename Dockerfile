@@ -20,5 +20,9 @@ COPY . .
 # Папки для логов и данных (монтируются из docker-compose)
 RUN mkdir -p /app/logs /app/data
 
-# Запуск торгового бота
-CMD ["python", "main.py"]
+# Какого бота запускать, задаётся в docker-compose.yml через build args
+ARG BOT_NAME=bot_sma
+ENV BOT_NAME=${BOT_NAME}
+
+# Запуск выбранного бота
+CMD ["sh", "-c", "python ${BOT_NAME}/main.py"]

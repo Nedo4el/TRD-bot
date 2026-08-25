@@ -1,33 +1,28 @@
-"""Точка входа торгового бота.
+"""Общий торговый движок: цикл, ордера, стопы, восстановление.
 
-Главный цикл:
-1. Подключаемся к Bybit (REST + опционально WebSocket).
-2. Каждые POLL_INTERVAL секунд получаем свечи и считаем сигнал стратегии.
-3. Нет позиции  -> сигнал buy/sell -> открываем сделку через риск-менеджер.
-4. Есть позиция -> для спота следим за SL/TP на клиенте,
-   для фьючерсов SL/TP выставлены на бирже (позиция закроется сама).
-5. При сбоях — повторные попытки, а при длинной серии ошибок
-   пересоздаём HTTP-сессию (переподключение).
+Движок ничего не знает о конкретной стратегии: он получает объект
+наследника BaseStrategy и раз в POLL_INTERVAL секунд:
+1. Загружает свечи + текущую цену.
+2. Спрашивает у стратегии сигнал по ЗАКРЫТЫМ свечам.
+3. Нет позиции  -> buy/sell -> открывает сделку через риск-менеджер.
+4. Есть позиция -> следит за SL/TP (фьючерсы — на бирже, спот — локально).
 
-Режимы:
-- SIMULATION_MODE=true  — ордера не отправляются, только логируются;
-- TESTNET=true          — реальные ордера, но на тестовой сети;
-- TESTNET=false         — реальные ордера на mainnet.
+Чтобы написать нового бота, движок менять не нужно — только strategy.py.
 """
 
 from __future__ import annotations
 
 import asyncio
 
-from bybit_client import BybitClient
-from config import Config
-from logger import get_logger, setup_logging
-from metrics import Metrics
-from notifier import Notifier
-from risk_manager import RiskManager
-from state import StateStore, StoredPosition
-from strategy import generate_signal
-from utils import exponential_backoff
+from core.bybit_client import BybitClient
+from core.config import Config
+from core.logger import get_logger, setup_logging
+from core.metrics import Metrics
+from core.notifier import Notifier
+from core.risk_manager import RiskManager
+from core.state import StateStore, StoredPosition
+from core.strategies import BaseStrategy, Signal
+from core.utils import exponential_backoff
 
 logger = get_logger(__name__)
 
@@ -38,10 +33,11 @@ METRICS_REPORT_EVERY = 60
 
 
 class TradingBot:
-    """Торговый бот: оркестрация клиента, стратегии и риск-менеджмента."""
+    """Оркестрация клиента, стратегии и риск-менеджмента."""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, strategy: BaseStrategy) -> None:
         self.config = config
+        self.strategy = strategy
         self.client = BybitClient(config)
         self.risk = RiskManager(config)
         self.notifier = Notifier(config)
@@ -69,20 +65,31 @@ class TradingBot:
             price = await self.client.get_price(self.config.symbol)
         return candles, price
 
-    async def _open_position(self, side: str, price: float) -> None:
+    async def _open_position(
+        self,
+        side: str,
+        price: float,
+        signal: Signal | None = None,
+    ) -> None:
         """Открыть позицию: размер из риск-менеджера, ордер, SL/TP.
 
         Args:
             side: "Buy" (long) или "Sell" (short).
             price: текущая цена для расчёта размеров.
+            signal: исходный сигнал; если стратегия посчитала SL/TP сама
+                (например, от ATR) — они приоритетнее процентов из .env.
         """
         balance = await self.client.get_balance()
         plan = self.risk.build_plan(balance, price, side)
+        if signal is not None and signal.stop_loss:
+            plan.stop_loss = signal.stop_loss
+        if signal is not None and signal.take_profit:
+            plan.take_profit = signal.take_profit
 
         if self.config.simulation_mode:
             # --- Режим симуляции: ничего не отправляем на биржу ---
             logger.info(
-                "[SIMULATION] Открыли бы %s %s: qty=%.8g @ %.8g, SL=%.8g, TP=%.8g",
+                "[SIMULATION] Сигнал на вход %s %s: qty=%.8g @ %.8g, SL=%.8g, TP=%.8g",
                 side,
                 self.config.symbol,
                 plan.qty,
@@ -205,17 +212,17 @@ class TradingBot:
         # --- Спот: клиентский мониторинг стоп-уровней ---
         if stored.side == "Buy":
             if price <= stored.stop_loss:
-                await self._close_position(stored, price, "стоп-лосс (клиент)")
+                await self._close_position(stored, price, "стоп-лосс активирован")
                 return
             if price >= stored.take_profit:
-                await self._close_position(stored, price, "тейк-профит (клиент)")
+                await self._close_position(stored, price, "тейк-профит активирован")
                 return
         else:
             if price >= stored.stop_loss:
-                await self._close_position(stored, price, "стоп-лосс (клиент)")
+                await self._close_position(stored, price, "стоп-лосс активирован")
                 return
             if price <= stored.take_profit:
-                await self._close_position(stored, price, "тейк-профит (клиент)")
+                await self._close_position(stored, price, "тейк-профит активирован")
                 return
 
     # ========================= Главный цикл =========================
@@ -254,7 +261,8 @@ class TradingBot:
     async def run(self) -> None:
         """Запустить основной цикл торговли (работает до остановки)."""
         logger.info(
-            "Бот стартует: %s @ %s, %s, интервал %dс, testnet=%s, simulation=%s",
+            "Бот [%s] стартует: %s @ %s, %s, интервал %dс, testnet=%s, simulation=%s",
+            self.strategy.name,
             self.config.symbol,
             self.config.timeframe,
             self.config.category,
@@ -279,30 +287,25 @@ class TradingBot:
                 candles, price = await self._get_market_context()
                 self._consecutive_errors = 0
 
-                # --- Расчёт сигнала стратегии по последним свечам ---
-                signal = generate_signal(
-                    candles,
-                    self.config.fast_ma_period,
-                    self.config.slow_ma_period,
-                )
-                logger.debug(
-                    "Сигнал: %s (%s), цена %.8g",
-                    signal.action,
-                    signal.reason,
-                    price,
-                )
+                # Стратегию оцениваем только по ЗАКРЫТЫМ свечам:
+                # последняя свеча от Bybit ещё формируется и «мигает».
+                closed_candles = candles[:-1]
+
+                # --- Расчёт сигнала стратегии ---
+                signal = self.strategy.check_signal(closed_candles)
+                logger.debug("Сигнал: %s (%s)", signal.action, signal.reason)
 
                 stored = self.state.get_position(self.config.symbol)
 
                 if stored is None:
                     # --- Нет позиции: ждём сигнал на вход ---
                     if signal.action == "buy":
-                        await self._open_position("Buy", price)
+                        await self._open_position("Buy", price, signal)
                     elif signal.action == "sell" and self.config.category != "spot":
                         # Короткая позиция возможна только на фьючерсах
-                        await self._open_position("Sell", price)
+                        await self._open_position("Sell", price, signal)
                     else:
-                        logger.debug("Сигнал hold — ждём дальше")
+                        logger.debug("Ожидание: %s, цена %.8g", signal.reason, price)
                 else:
                     # --- Позиция открыта: управляем выходом ---
                     await self._check_open_position(stored, price)
@@ -331,13 +334,13 @@ class TradingBot:
             await asyncio.sleep(self.config.poll_interval)
 
 
-async def main() -> None:
-    """Запуск бота: конфиг -> лог -> валидация -> цикл."""
-    config = Config()
-    setup_logging(config.log_file, config.log_level)
-    config.validate()
+async def run_bot(config: Config, strategy: BaseStrategy) -> None:
+    """Полный запуск: конфиг -> лог -> валидация -> цикл -> остановка.
 
-    bot = TradingBot(config)
+    Используется в main.py каждого бота — там 5 строк вместо копии.
+    """
+    setup_logging_and_validate(config)
+    bot = TradingBot(config, strategy)
     try:
         await bot.run()
     except KeyboardInterrupt:
@@ -349,5 +352,7 @@ async def main() -> None:
         logger.info("Бот остановлен. Метрики:\n%s", bot.metrics.report())
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+def setup_logging_and_validate(config: Config) -> None:
+    """Настроить логирование и проверить конфиг до старта."""
+    setup_logging(config.log_file, config.log_level)
+    config.validate()

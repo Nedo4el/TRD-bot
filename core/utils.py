@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 
-from logger import get_logger
+from core.logger import get_logger
 
 logger = get_logger(__name__)
 
