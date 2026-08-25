@@ -27,11 +27,15 @@ logger = get_logger(__name__)
 def _load_config() -> dict:
     """Загрузить конфигурацию из .env."""
     load_bot_env(_BOT_DIR)
+
+    raw_timeframes = os.getenv("TIMEFRAMES", "1,5")
+    timeframes = [t.strip() for t in raw_timeframes.split(",") if t.strip()]
+
     return {
         "api_key": os.getenv("BYBIT_API_KEY", ""),
         "api_secret": os.getenv("BYBIT_API_SECRET", ""),
         "testnet": get_env_bool("TESTNET", True),
-        "timeframe": str(get_env_int("TIMEFRAME", 1)),
+        "timeframes": timeframes,
         "scan_interval": get_env_int("SCAN_INTERVAL", 60),
         "min_turnover_24h": get_env_float("MIN_TURNOVER_24H", 5_000_000),
         "breakout_period": get_env_int("BREAKOUT_PERIOD", 20),
@@ -53,11 +57,70 @@ def _load_config() -> dict:
     }
 
 
+async def _scan_symbol(
+    fetcher: object,
+    symbol: str,
+    turnover: float,
+    timeframe: str,
+    cfg: dict,
+    seen: dict[str, object],
+) -> object | None:
+    """Просканировать один символ на одном таймфрейме."""
+    from bot_screener.scanner import scan_symbol
+
+    cache_key = f"{symbol}_{timeframe}"
+    if cache_key in seen:
+        return None
+
+    candles = await fetcher.get_klines(  # type: ignore[union-attr]
+        symbol=symbol,
+        interval=timeframe,
+        limit=cfg["kline_limit"],
+    )
+
+    if not candles:
+        return None
+
+    result = scan_symbol(
+        symbol=symbol,
+        timeframe=f"{timeframe}m",
+        candles=candles,
+        turnover_24h=turnover,
+        breakout_period=cfg["breakout_period"],
+        atr_buffer=cfg["atr_buffer"],
+        volume_spike=cfg["volume_spike"],
+        volume_drop_before=cfg["volume_drop_before"],
+        bbw_threshold=cfg["bbw_threshold"],
+        adx_threshold=cfg["adx_threshold"],
+        rsi_long=cfg["rsi_long"],
+        rsi_short=cfg["rsi_short"],
+        ema_period=cfg["ema_period"],
+        rsi_period=cfg["rsi_period"],
+        adx_period=cfg["adx_period"],
+        atr_period=cfg["atr_period"],
+        bb_period=cfg["bb_period"],
+        volume_ma_period=cfg["volume_ma_period"],
+    )
+
+    if result.signal:
+        logger.info(
+            "СИГНАЛ: %s %s [%s] score=%d price=%.4f vol=%.1fx",
+            result.signal,
+            result.symbol,
+            result.timeframe,
+            result.score,
+            result.price,
+            result.volume_ratio,
+        )
+
+    return result
+
+
 async def scan_once(cfg: dict) -> None:
-    """Один прогон сканирования."""
+    """Один прогон сканирования по всем таймфреймам."""
     from bot_screener.fetcher import Fetcher
     from bot_screener.printer import print_results
-    from bot_screener.scanner import ScanResult, scan_symbol
+    from bot_screener.scanner import ScanResult
 
     fetcher = Fetcher(
         api_key=cfg["api_key"],
@@ -78,50 +141,22 @@ async def scan_once(cfg: dict) -> None:
         total_symbols,
     )
 
-    # 2. Загружаем свечи и сканируем каждый символ
+    # 2. Сканируем каждый символ на каждом таймфрейме
     results: list[ScanResult] = []
+    seen: dict[str, ScanResult] = {}  # symbol -> лучший результат
 
-    for i, (symbol, turnover) in enumerate(filtered):
-        candles = await fetcher.get_klines(
-            symbol=symbol,
-            interval=cfg["timeframe"],
-            limit=cfg["kline_limit"],
-        )
+    for timeframe in cfg["timeframes"]:
+        logger.info("Сканирую таймфрейм %sm...", timeframe)
 
-        if not candles:
-            continue
+        for symbol, turnover in filtered:
+            result = await _scan_symbol(fetcher, symbol, turnover, timeframe, cfg, seen)
 
-        result = scan_symbol(
-            symbol=symbol,
-            timeframe=f"{cfg['timeframe']}m",
-            candles=candles,
-            turnover_24h=turnover,
-            breakout_period=cfg["breakout_period"],
-            atr_buffer=cfg["atr_buffer"],
-            volume_spike=cfg["volume_spike"],
-            volume_drop_before=cfg["volume_drop_before"],
-            bbw_threshold=cfg["bbw_threshold"],
-            adx_threshold=cfg["adx_threshold"],
-            rsi_long=cfg["rsi_long"],
-            rsi_short=cfg["rsi_short"],
-            ema_period=cfg["ema_period"],
-            rsi_period=cfg["rsi_period"],
-            adx_period=cfg["adx_period"],
-            atr_period=cfg["atr_period"],
-            bb_period=cfg["bb_period"],
-            volume_ma_period=cfg["volume_ma_period"],
-        )
+            if result and result.signal:
+                prev = seen.get(result.symbol)
+                if prev is None or result.score > prev.score:
+                    seen[result.symbol] = result
 
-        if result.signal:
-            results.append(result)
-            logger.info(
-                "СИГНАЛ: %s %s score=%d price=%.4f vol=%.1fx",
-                result.signal,
-                result.symbol,
-                result.score,
-                result.price,
-                result.volume_ratio,
-            )
+    results = sorted(seen.values(), key=lambda r: r.score, reverse=True)
 
     elapsed = time.monotonic() - start
 
@@ -140,8 +175,8 @@ async def main() -> None:
     cfg = _load_config()
 
     logger.info(
-        "Скринер запущен: timeframe=%sm, interval=%ss, min_turnover=$%sM",
-        cfg["timeframe"],
+        "Скринер запущен: timeframes=%s, interval=%ss, min_turnover=$%sM",
+        ",".join(cfg["timeframes"]),
         cfg["scan_interval"],
         cfg["min_turnover_24h"] / 1_000_000,
     )
@@ -149,7 +184,7 @@ async def main() -> None:
     while True:
         try:
             await scan_once(cfg)
-        except Exception:
+        except (OSError, ValueError):
             logger.exception("Ошибка сканирования")
 
         logger.info("Следующее сканирование через %d сек...", cfg["scan_interval"])

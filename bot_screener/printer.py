@@ -68,6 +68,7 @@ def print_results(
     # Таблица
     headers = [
         "Монета",
+        "Таймфрейм",
         "Цена",
         "Сигнал",
         "Объём",
@@ -83,6 +84,7 @@ def print_results(
         rows.append(
             [
                 r.symbol,
+                r.timeframe,
                 f"{r.price:.4f}",
                 format_signal(r.signal, r.score),
                 f"{r.volume_ratio:.1f}x",
