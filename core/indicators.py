@@ -181,6 +181,87 @@ def atr(
     return result
 
 
+def adx(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    period: int = 14,
+) -> list[float]:
+    """Average Directional Index — сила тренда (0..100).
+
+    ADX = 100 × сглажённый DX, где DX = |+DI - -DI| / (+DI + -DI).
+    +DI / -DI считаются через Directional Movement (DM+ / DM-).
+
+    Args:
+        highs: максимумы свечей.
+        lows: минимумы свечей.
+        closes: цены закрытия.
+        period: период (классика — 14).
+
+    Returns:
+        Значения ADX; длина = len(closes) - 2 * period.
+    """
+    n = len(closes)
+    if period <= 0 or n < 2 * period + 1:
+        return []
+
+    # True Range + Directional Movement для каждой свечи
+    trs: list[float] = []
+    dm_plus: list[float] = []
+    dm_minus: list[float] = []
+
+    trs.append(highs[0] - lows[0])
+    dm_plus.append(0.0)
+    dm_minus.append(0.0)
+
+    for i in range(1, n):
+        tr = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+        trs.append(tr)
+
+        up = highs[i] - highs[i - 1]
+        down = lows[i - 1] - lows[i]
+        if up > down and up > 0:
+            dm_plus.append(up)
+        else:
+            dm_plus.append(0.0)
+        if down > up and down > 0:
+            dm_minus.append(down)
+        else:
+            dm_minus.append(0.0)
+
+    # Первые ATR, DM+, DM- (средние за period)
+    atr_val = sum(trs[1 : period + 1]) / period
+    dm_p = sum(dm_plus[1 : period + 1]) / period
+    dm_m = sum(dm_minus[1 : period + 1]) / period
+
+    def _di(p: float, m: float) -> tuple[float, float]:
+        if atr_val == 0:
+            return 0.0, 0.0
+        return (p / atr_val) * 100, (m / atr_val) * 100
+
+    dip, dim = _di(dm_p, dm_m)
+    dx = abs(dip - dim) / (dip + dim) * 100 if (dip + dim) > 0 else 0.0
+    result: list[float] = [dx]
+
+    # Сглаживание Уайлдера для ATR, DM+, DM- и ADX
+    for i in range(period + 1, n):
+        atr_val = (atr_val * (period - 1) + trs[i]) / period
+        dm_p = (dm_p * (period - 1) + dm_plus[i]) / period
+        dm_m = (dm_m * (period - 1) + dm_minus[i]) / period
+
+        dip, dim = _di(dm_p, dm_m)
+        dx = abs(dip - dim) / (dip + dim) * 100 if (dip + dim) > 0 else 0.0
+
+        # ADX = сглажённый DX
+        result.append((result[-1] * (period - 1) + dx) / period)
+
+    return result
+
+
 def crossed_up(prev_a: float, prev_b: float, now_a: float, now_b: float) -> bool:
     """Пересекла ли линия A линию B снизу вверх на последней свече."""
     return prev_a <= prev_b and now_a > now_b

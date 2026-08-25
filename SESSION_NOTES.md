@@ -1,6 +1,6 @@
 # SESSION_NOTES.md
 
-## Статус: инфраструктура готова, стратегии пустые (заглушки)
+## Статус: инфраструктура готова, скринер создан, стратегии пустые
 
 ### ВАЖНО — договорённость с пользователем
 - Все 5 ботов в SIMULATION_MODE=false, TESTNET=true.
@@ -84,8 +84,19 @@ TRD bot/
 - `rsi(prices, period)` -> list[float]
 - `bollinger(prices, period, deviation)` -> tuple[upper, middle, lower]
 - `atr(highs, lows, closes, period)` -> list[float]
+- `adx(highs, lows, closes, period)` -> list[float]
 - `crossed_up(fast, slow)` -> bool
 - `crossed_down(fast, slow)` -> bool
+
+### Скринер (bot_screener/)
+- `fetcher.py` — async получение тикеров + свечей через pybit
+- `scanner.py` — логика прорыва + скоринг 0-100
+- `printer.py` — таблица в консоль (tabulate)
+- `main.py` — asyncio loop (60 сек)
+- Конфиг: `.env` (API ключи + пороги прорыва)
+- Запуск: `python bot_screener/main.py`
+- Критерии: прорыв ATR×0.15, объём >1.8x, падение объёма перед, BBW <3%, ADX >25, RSI подтверждение
+- Тест: работает на тестнете (4 пары прошли фильтр, сигналов нет — малоликвидный тестнет)
 
 ### Следующие шаги
 - Написать стратегии для каждого бота (strategy.py)
@@ -93,3 +104,4 @@ TRD bot/
 - Прогнать backtest каждой стратегии на истории XRPUSDT
 - Добавить тесты для стратегий
 - Прогнать ботов на тестнете (по команде пользователя)
+- Протестировать скринер на мейнете (больше пар, больше сигналов)

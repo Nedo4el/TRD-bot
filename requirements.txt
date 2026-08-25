@@ -4,3 +4,5 @@ pybit>=5.0.0
 python-dotenv>=1.0.0
 # HTTP-клиент для Telegram-уведомлений (async)
 aiohttp>=3.9.0
+# Красивые таблицы в консоли (скринер)
+tabulate>=0.9.0
