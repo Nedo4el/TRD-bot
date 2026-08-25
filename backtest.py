@@ -1,10 +1,10 @@
 """Бэктест любой из стратегий проекта на исторических данных.
 
 Запуск (из корня проекта):
-    python backtest.py --strategy sma
-    python backtest.py --strategy combo   --limit 1000
-    python backtest.py --strategy adaptive --timeframe 5
-    python backtest.py --strategy swings  --sl 0.2 --tp 0.4
+    python backtest.py --strategy flat
+    python backtest.py --strategy yrovni --limit 1000
+    python backtest.py --strategy trend --timeframe 5
+    python backtest.py --strategy impulse --sl 0.2 --tp 0.4
 
 Как работает:
 1. Загружает N свечей с Bybit.
@@ -23,59 +23,33 @@ import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from bot_adaptive.strategy import AdaptiveAtrStrategy
-from bot_combo.strategy import ComboFilterStrategy
-from bot_sma.strategy import SmaCrossStrategy
-from bot_swings.strategy import SwingLevelsStrategy
 from core.bybit_client import BybitClient, Candle
-from core.config import Config, get_env_float, get_env_int, load_bot_env
+from core.config import Config, load_bot_env
 from core.logger import setup_logging
 from core.strategies import BaseStrategy, Signal
+
+# Импорты стратегий — добавляйте по мере написания
+# from bot_flat.strategy import FlatStrategy
+# from bot_yrovni.strategy import YrovniStrategy
+# from bot_trend.strategy import TrendStrategy
+# from bot_impulse.strategy import ImpulseStrategy
+# from bot_0.strategy import ZeroStrategy
 
 
 def make_strategy(name: str) -> BaseStrategy:
     """Создать стратегию по имени (параметры — из .env корня, если есть).
 
     Args:
-        name: sma | combo | adaptive | swings.
+        name: flat | yrovni | trend | impulse | zero.
 
     Returns:
         Готовый объект стратегии с настройками по умолчанию/.env.
     """
-    if name == "sma":
-        return SmaCrossStrategy(
-            fast_period=get_env_int("FAST_MA_PERIOD", 7),
-            slow_period=get_env_int("SLOW_MA_PERIOD", 25),
-        )
-    if name == "combo":
-        return ComboFilterStrategy(
-            ema_fast=get_env_int("EMA_FAST_PERIOD", 21),
-            ema_slow=get_env_int("EMA_SLOW_PERIOD", 50),
-            rsi_period=get_env_int("RSI_PERIOD", 14),
-            rsi_oversold=get_env_float("RSI_OVERSOLD", 30.0),
-            rsi_overbought=get_env_float("RSI_OVERBOUGHT", 70.0),
-            bb_period=get_env_int("BB_PERIOD", 20),
-            bb_deviation=get_env_float("BB_DEVIATION", 2.0),
-        )
-    if name == "adaptive":
-        return AdaptiveAtrStrategy(
-            trend_period=get_env_int("SMA_TREND_PERIOD", 200),
-            ema_fast=get_env_int("EMA_FAST_PERIOD", 5),
-            ema_slow=get_env_int("EMA_SLOW_PERIOD", 13),
-            atr_period=get_env_int("ATR_PERIOD", 14),
-            atr_sl_mult=get_env_float("ATR_SL_MULT", 1.5),
-            atr_tp_mult=get_env_float("ATR_TP_MULT", 2.5),
-            atr_avg_lookback=get_env_int("ATR_AVG_LOOKBACK", 1440),
-            min_atr_pct=get_env_float("MIN_ATR_PCT", 0.1),
-        )
-    if name == "swings":
-        return SwingLevelsStrategy(
-            lookback=get_env_int("LOOKBACK_CANDLES", 50),
-            wing_size=get_env_int("WING_SIZE", 5),
-            max_levels=get_env_int("MAX_LEVELS", 5),
-            retest_max_bars=get_env_int("RETEST_MAX_BARS", 20),
-        )
-    raise ValueError(f"Неизвестная стратегия: {name}")
+    # TODO: раскомментировать импорты и добавить логику после написания стратегий
+    raise ValueError(
+        f"Стратегия '{name}' ещё не реализована. "
+        f"Доступны: flat, yrovni, trend, impulse, zero"
+    )
 
 
 @dataclass
@@ -143,11 +117,9 @@ class BacktestResult:
         peak = self.equity_curve[0]
         max_dd = 0.0
         for val in self.equity_curve:
-            if val > peak:
-                peak = val
+            peak = max(peak, val)
             dd = (peak - val) / peak * 100 if peak > 0 else 0.0
-            if dd > max_dd:
-                max_dd = dd
+            max_dd = max(max_dd, dd)
         return max_dd
 
     @property
@@ -312,7 +284,9 @@ async def fetch_candles(config: Config, limit: int) -> list[Candle]:
         client.close()
 
 
-def print_stats(result: BacktestResult, strategy_name: str, symbol: str, timeframe: str) -> None:
+def print_stats(
+    result: BacktestResult, strategy_name: str, symbol: str, timeframe: str
+) -> None:
     """Расширенная статистика бэктеста."""
     print("=" * 55)
     print(f"  Стратегия: {strategy_name} | {symbol} | {timeframe}")
@@ -330,13 +304,18 @@ def print_stats(result: BacktestResult, strategy_name: str, symbol: str, timefra
     print("=" * 55)
 
 
-def plot_equity(result: BacktestResult, strategy_name: str, symbol: str, timeframe: str) -> None:
+def plot_equity(
+    result: BacktestResult, strategy_name: str, symbol: str, timeframe: str
+) -> None:
     """График equity curve."""
-    import matplotlib.pyplot as plt
-    import matplotlib.dates as mdates
     from datetime import datetime, timezone
 
-    times = [datetime.fromtimestamp(t / 1000, tz=timezone.utc) for t in result.equity_times]
+    import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
+
+    times = [
+        datetime.fromtimestamp(t / 1000, tz=timezone.utc) for t in result.equity_times
+    ]
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), height_ratios=[3, 1])
     fig.suptitle(f"Backtest: {strategy_name} | {symbol} | {timeframe}", fontsize=14)
@@ -354,8 +333,7 @@ def plot_equity(result: BacktestResult, strategy_name: str, symbol: str, timefra
     peak = 100.0
     dd_series = []
     for val in result.equity_curve:
-        if val > peak:
-            peak = val
+        peak = max(peak, val)
         dd_series.append(-(peak - val) / peak * 100 if peak > 0 else 0.0)
     ax2.fill_between(times, dd_series, 0, color="#F44336", alpha=0.4)
     ax2.set_ylabel("Drawdown %")
@@ -370,18 +348,23 @@ def plot_equity(result: BacktestResult, strategy_name: str, symbol: str, timefra
     print("\nГрафик сохранён: backtest_result.png")
 
 
-def plot_trades(result: BacktestResult, strategy_name: str, symbol: str, timeframe: str) -> None:
+def plot_trades(
+    result: BacktestResult, strategy_name: str, symbol: str, timeframe: str
+) -> None:
     """График цен со сделками: свечи + маркеры входов/выходов."""
-    import matplotlib.pyplot as plt
+    from datetime import datetime, timezone
+
     import matplotlib.dates as mdates
     import matplotlib.patches as mpatches
-    from datetime import datetime, timezone
+    import matplotlib.pyplot as plt
 
     candles = result.candles_used
     if not candles:
         return
 
-    times = [datetime.fromtimestamp(c.open_time / 1000, tz=timezone.utc) for c in candles]
+    times = [
+        datetime.fromtimestamp(c.open_time / 1000, tz=timezone.utc) for c in candles
+    ]
     opens = [c.open for c in candles]
     highs = [c.high for c in candles]
     lows = [c.low for c in candles]
@@ -390,15 +373,21 @@ def plot_trades(result: BacktestResult, strategy_name: str, symbol: str, timefra
     fig, ax = plt.subplots(figsize=(16, 8))
     fig.suptitle(f"Сделки: {strategy_name} | {symbol} | {timeframe}", fontsize=14)
 
-    # Свечи ( Naked-style: зелёные бычьи, красные медвежьи)
+    # Свечи
     width = (times[1] - times[0]) * 0.6 if len(times) > 1 else 0
     for i in range(len(times)):
         color = "#4CAF50" if closes[i] >= opens[i] else "#F44336"
-        # Тело свечи
         body_bottom = min(opens[i], closes[i])
         body_height = abs(closes[i] - opens[i])
-        ax.bar(times[i], body_height, bottom=body_bottom, width=width, color=color, edgecolor=color, linewidth=0.5)
-        # Тени
+        ax.bar(
+            times[i],
+            body_height,
+            bottom=body_bottom,
+            width=width,
+            color=color,
+            edgecolor=color,
+            linewidth=0.5,
+        )
         ax.vlines(times[i], lows[i], highs[i], color=color, linewidth=0.8)
 
     # Маркеры сделок
@@ -407,22 +396,65 @@ def plot_trades(result: BacktestResult, strategy_name: str, symbol: str, timefra
         exit_dt = datetime.fromtimestamp(trade.exit_time / 1000, tz=timezone.utc)
 
         if trade.side == "Buy":
-            # Вход: зелёный треугольник вверх
-            ax.scatter(entry_dt, trade.entry_price, marker="^", color="#2196F3", s=120, zorder=5, edgecolors="black", linewidths=0.5)
-            # Выход: маркер по результату
+            ax.scatter(
+                entry_dt,
+                trade.entry_price,
+                marker="^",
+                color="#2196F3",
+                s=120,
+                zorder=5,
+                edgecolors="black",
+                linewidths=0.5,
+            )
             exit_color = "#4CAF50" if trade.pnl_pct > 0 else "#F44336"
-            ax.scatter(exit_dt, trade.exit_price, marker="v", color=exit_color, s=120, zorder=5, edgecolors="black", linewidths=0.5)
-            # Линия сделки
-            ax.plot([entry_dt, exit_dt], [trade.entry_price, trade.exit_price],
-                    color=exit_color, linewidth=1, alpha=0.6, linestyle="--")
+            ax.scatter(
+                exit_dt,
+                trade.exit_price,
+                marker="v",
+                color=exit_color,
+                s=120,
+                zorder=5,
+                edgecolors="black",
+                linewidths=0.5,
+            )
+            ax.plot(
+                [entry_dt, exit_dt],
+                [trade.entry_price, trade.exit_price],
+                color=exit_color,
+                linewidth=1,
+                alpha=0.6,
+                linestyle="--",
+            )
         else:
-            # Вход: красный треугольник вниз
-            ax.scatter(entry_dt, trade.entry_price, marker="v", color="#FF9800", s=120, zorder=5, edgecolors="black", linewidths=0.5)
-            # Выход
+            ax.scatter(
+                entry_dt,
+                trade.entry_price,
+                marker="v",
+                color="#FF9800",
+                s=120,
+                zorder=5,
+                edgecolors="black",
+                linewidths=0.5,
+            )
             exit_color = "#4CAF50" if trade.pnl_pct > 0 else "#F44336"
-            ax.scatter(exit_dt, trade.exit_price, marker="^", color=exit_color, s=120, zorder=5, edgecolors="black", linewidths=0.5)
-            ax.plot([entry_dt, exit_dt], [trade.entry_price, trade.exit_price],
-                    color=exit_color, linewidth=1, alpha=0.6, linestyle="--")
+            ax.scatter(
+                exit_dt,
+                trade.exit_price,
+                marker="^",
+                color=exit_color,
+                s=120,
+                zorder=5,
+                edgecolors="black",
+                linewidths=0.5,
+            )
+            ax.plot(
+                [entry_dt, exit_dt],
+                [trade.entry_price, trade.exit_price],
+                color=exit_color,
+                linewidth=1,
+                alpha=0.6,
+                linestyle="--",
+            )
 
     ax.set_ylabel("Цена")
     ax.set_xlabel("Время")
@@ -430,14 +462,45 @@ def plot_trades(result: BacktestResult, strategy_name: str, symbol: str, timefra
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%d %b"))
     ax.tick_params(axis="x", rotation=30)
 
-    # Легенда
     legend_elements = [
         mpatches.Patch(facecolor="#4CAF50", label="Бычья свеча"),
         mpatches.Patch(facecolor="#F44336", label="Медвежья свеча"),
-        plt.Line2D([0], [0], marker="^", color="w", markerfacecolor="#2196F3", markersize=10, label="Вход Buy"),
-        plt.Line2D([0], [0], marker="v", color="w", markerfacecolor="#FF9800", markersize=10, label="Вход Sell"),
-        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="#4CAF50", markersize=10, label="Выход profit"),
-        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor="#F44336", markersize=10, label="Выход loss"),
+        plt.Line2D(
+            [0],
+            [0],
+            marker="^",
+            color="w",
+            markerfacecolor="#2196F3",
+            markersize=10,
+            label="Вход Buy",
+        ),
+        plt.Line2D(
+            [0],
+            [0],
+            marker="v",
+            color="w",
+            markerfacecolor="#FF9800",
+            markersize=10,
+            label="Вход Sell",
+        ),
+        plt.Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor="#4CAF50",
+            markersize=10,
+            label="Выход profit",
+        ),
+        plt.Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor="#F44336",
+            markersize=10,
+            label="Выход loss",
+        ),
     ]
     ax.legend(handles=legend_elements, loc="upper left", fontsize=9)
 
@@ -453,10 +516,12 @@ def main() -> None:
     parser.add_argument(
         "--strategy",
         required=True,
-        choices=["sma", "combo", "adaptive", "swings"],
+        choices=["flat", "yrovni", "trend", "impulse", "zero"],
         help="какую стратегию тестировать",
     )
-    parser.add_argument("--limit", type=int, default=500, help="сколько свечей брать (пагинация >1000)")
+    parser.add_argument(
+        "--limit", type=int, default=500, help="сколько свечей брать (пагинация >1000)"
+    )
     parser.add_argument("--symbol", default=None, help="пара (по умолчанию из .env)")
     parser.add_argument("--timeframe", default=None, help="таймфрейм")
     parser.add_argument("--sl", type=float, default=None, help="SL %% (fallback)")

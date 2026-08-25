@@ -66,7 +66,7 @@ def start(bot_name: str, pidfile: Path) -> None:
 
 def main() -> None:
     """Точка входа: имя бота — первый аргумент."""
-    bot_name = sys.argv[1] if len(sys.argv) > 1 else "bot_sma"
+    bot_name = sys.argv[1] if len(sys.argv) > 1 else "bot_flat"
     if not (PROJECT_ROOT / bot_name / "main.py").exists():
         available = sorted(p.name for p in PROJECT_ROOT.glob("bot_*"))
         print(f"Бот '{bot_name}' не найден. Доступны: {', '.join(available)}")

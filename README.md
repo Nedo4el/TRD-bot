@@ -1,6 +1,6 @@
 # TRD Bot — набор торговых ботов для Bybit v5
 
-Четыре независимых бота на общем движке. Общая логика (биржа, ордера,
+Пять независимых ботов на общем движке. Общая логика (биржа, ордера,
 стопы, Telegram, восстановление после рестарта) живёт в `core/`,
 у каждого бота — только своя стратегия и свой `.env`.
 
@@ -18,10 +18,11 @@ TRD bot/
 │   ├── metrics.py         # Счётчики сделок и ошибок
 │   ├── logger.py          # Логи: консоль + файл с ротацией
 │   └── utils.py           # Retry, backoff
-├── bot_sma/               # SMA crossover (базовый, шаблон для новых)
-├── bot_combo/             # Комбинированный фильтр: EMA+RSI+BB, M1
-├── bot_adaptive/          # Адаптивный: SMA200 + EMA5/13, стопы от ATR
-├── bot_swings/            # Свинг-уровни: пробой + ретест
+├── bot_flat/              # Боковик (рип-сайдинг, консолидации)
+├── bot_yrovni/            # Уровни (пробой + ретест)
+├── bot_trend/             # Тренд (следование за трендом)
+├── bot_impulse/           # Импульс (моментум, быстрые входы)
+├── bot_0/                 # Нулевой (минимальная стратегия)
 ├── backtest.py            # Бэктест любой стратегии
 ├── launcher.py            # Фоновый запуск/остановка бота
 └── tests/                 # pytest-тесты стратегий и индикаторов
@@ -34,11 +35,11 @@ TRD bot/
 uv pip install -r requirements.txt
 
 # 2. Настройки бота: скопировать пример и вписать ключи Bybit
-Copy-Item bot_combo\.env.example bot_combo\.env
+Copy-Item bot_flat\.env.example bot_flat\.env
 #    отредактировать BYBIT_API_KEY / BYBIT_API_SECRET
 
 # 3. Запуск (безопасно: SIMULATION_MODE=true — без реальных ордеров)
-python bot_combo/main.py
+python bot_flat/main.py
 ```
 
 Каждый бот читает настройки ИЗ СВОЕЙ ПАПКИ (`bot_xxx/.env`).
@@ -47,18 +48,19 @@ python bot_combo/main.py
 
 Все «крутилки» вынесены в `.env` бота — код трогать не нужно.
 
-| Бот | Идея | Вход | Выход |
-|---|---|---|---|
-| `bot_sma` | Пересечение SMA | золотое/мёртвое пересечение | SL/TP из .env |
-| `bot_combo` | Тренд + выход RSI из зоны + фильтр BB | 3 условия одновременно | TP 0.5% / SL 0.3% |
-| `bot_adaptive` | Направление по SMA200, вход по EMA5/13 | пересечение по тренду | SL=1.5×ATR, TP=2.5×ATR |
-| `bot_swings` | Уровни по свингам (5 слева/справа) | пробой + ретест + свечной фильтр | TP 0.4% / SL 0.2% |
+| Бот | Идея |
+|---|---|
+| `bot_flat` | Боковик (рип-сайдинг, консолидации) |
+| `bot_yrovni` | Уровни (пробой + ретест) |
+| `bot_trend` | Тренд (следование за трендом) |
+| `bot_impulse` | Импульс (моментум, быстрые входы) |
+| `bot_0` | Нулевой (минимальная стратегия) |
 
 Сигналы считаются только по ЗАКРЫТЫМ свечам; позиция всегда одна.
 
 ## Как добавить свою стратегию
 
-1. Скопируйте папку любого бота, например `bot_sma` → `bot_mya`.
+1. Скопируйте папку любого бота, например `bot_flat` → `bot_mya`.
 2. В `bot_mya/strategy.py` напишите класс на базе `BaseStrategy`:
    метод `check_signal(candles) -> Signal` — единственное,
    что обязательно. Индикаторы берите из `core/indicators.py`.
@@ -68,26 +70,26 @@ python bot_combo/main.py
 ## Управление
 
 ```powershell
-python launcher.py                 # запустить bot_sma в фоне
-python launcher.py bot_combo       # конкретного бота
-python launcher.py bot_combo       # повторный вызов ОСТАНОВИТ его
+python launcher.py                 # запустить bot_flat в фоне
+python launcher.py bot_yrovni      # конкретного бота
+python launcher.py bot_yrovni      # повторный вызов ОСТАНОВИТ его
 ```
 
 ## Бэктест
 
 ```powershell
-python backtest.py --strategy sma --limit 500
-python backtest.py --strategy combo --timeframe 1 --sl 0.3 --tp 0.5
-python backtest.py --strategy adaptive --limit 1000
-python backtest.py --strategy swings --symbol XRPUSDT --timeframe 5
+python backtest.py --strategy flat --limit 500
+python backtest.py --strategy yrovni --timeframe 5 --sl 0.2 --tp 0.4
+python backtest.py --strategy trend --limit 1000
+python backtest.py --strategy impulse --symbol XRPUSDT --timeframe 1
 ```
 
 ## Docker (24/7)
 
 ```powershell
-docker compose up -d --build bot-combo   # один бот
-docker compose up -d --build             # все четыре
-docker compose logs -f bot-adaptive
+docker compose up -d --build bot-flat    # один бот
+docker compose up -d --build             # все пять
+docker compose logs -f bot-trend
 ```
 
 ## Тесты и проверки кода

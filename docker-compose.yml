@@ -1,57 +1,69 @@
 # Запуск любого бота 24/7:
-#   docker compose up -d --build bot-sma      # только SMA
+#   docker compose up -d --build bot-flat
 #   docker compose up -d --build              # все сразу
-# Логи: docker compose logs -f bot-combo
+# Логи: docker compose logs -f bot-yrovni
 services:
-  bot-sma:
+  bot-flat:
     build:
       context: .
       args:
-        BOT_NAME: bot_sma
-    container_name: trd-bot-sma
+        BOT_NAME: bot_flat
+    container_name: trd-bot-flat
     restart: unless-stopped
-    # Секреты берём из .env конкретного бота (в git не коммитится)
     env_file:
-      - bot_sma/.env
+      - bot_flat/.env
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
 
-  bot-combo:
+  bot-yrovni:
     build:
       context: .
       args:
-        BOT_NAME: bot_combo
-    container_name: trd-bot-combo
+        BOT_NAME: bot_yrovni
+    container_name: trd-bot-yrovni
     restart: unless-stopped
     env_file:
-      - bot_combo/.env
+      - bot_yrovni/.env
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
 
-  bot-adaptive:
+  bot-trend:
     build:
       context: .
       args:
-        BOT_NAME: bot_adaptive
-    container_name: trd-bot-adaptive
+        BOT_NAME: bot_trend
+    container_name: trd-bot-trend
     restart: unless-stopped
     env_file:
-      - bot_adaptive/.env
+      - bot_trend/.env
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
 
-  bot-swings:
+  bot-impulse:
     build:
       context: .
       args:
-        BOT_NAME: bot_swings
-    container_name: trd-bot-swings
+        BOT_NAME: bot_impulse
+    container_name: trd-bot-impulse
     restart: unless-stopped
     env_file:
-      - bot_swings/.env
+      - bot_impulse/.env
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+
+  bot-0:
+    build:
+      context: .
+      args:
+        BOT_NAME: bot_0
+    container_name: trd-bot-0
+    restart: unless-stopped
+    env_file:
+      - bot_0/.env
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
