@@ -158,24 +158,32 @@ class BybitClient:
         symbol: str,
         interval: str | None = None,
         limit: int | None = None,
+        start: int | None = None,
+        end: int | None = None,
     ) -> list[Candle]:
         """Получить исторические свечи.
 
         Args:
             symbol: торговая пара (например, BTCUSDT).
             interval: таймфрейм ("1", "5", "15", "60", "240", "D").
-            limit: сколько свечей запросить.
+            limit: сколько свечей запросить (макс. 1000).
+            start: начальный timestamp в миллисекундах (включительно).
+            end: конечный timestamp в миллисекундах (включительно).
 
         Returns:
             Список свечей от старых к новым.
         """
-        resp = await self._call(
-            "get_kline",
-            category=self.config.category,
-            symbol=symbol,
-            interval=interval or self.config.timeframe,
-            limit=limit or self.config.kline_limit,
-        )
+        params: dict[str, Any] = {
+            "category": self.config.category,
+            "symbol": symbol,
+            "interval": interval or self.config.timeframe,
+            "limit": limit or self.config.kline_limit,
+        }
+        if start is not None:
+            params["start"] = start
+        if end is not None:
+            params["end"] = end
+        resp = await self._call("get_kline", **params)
         # Каждая строка: [start, open, high, low, close, volume, turnover]
         rows = resp["result"]["list"]
         candles: list[Candle] = []
