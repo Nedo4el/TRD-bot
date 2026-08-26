@@ -54,6 +54,18 @@ def _load_config() -> dict:
         "volume_ma_period": get_env_int("VOLUME_MA_PERIOD", 20),
         "api_delay_ms": get_env_int("API_DELAY_MS", 50),
         "kline_limit": get_env_int("KLINE_LIMIT", 100),
+        "exclude_symbols": [
+            "BTCUSDT",
+            "ETHUSDT",
+            "BNBUSDT",
+            "SOLUSDT",
+            "XRPUSDT",
+            "DOGEUSDT",
+            "ADAUSDT",
+            "AVAXUSDT",
+            "DOTUSDT",
+            "LINKUSDT",
+        ],
     }
 
 
@@ -134,11 +146,16 @@ async def scan_once(cfg: dict) -> None:
     logger.info("Получаю список символов...")
     filtered = await fetcher.get_filtered_symbols(cfg["min_turnover_24h"])
     total_symbols = len(await fetcher.get_all_linear_symbols())
+
+    exclude = set(cfg["exclude_symbols"])
+    filtered = [(s, t) for s, t in filtered if s not in exclude]
+
     logger.info(
-        "Найдено %d символов с оборотом > $%sM (всего: %d)",
+        "Найдено %d символов с оборотом > $%sM (всего: %d, исключено: %d)",
         len(filtered),
         cfg["min_turnover_24h"] / 1_000_000,
         total_symbols,
+        len(exclude),
     )
 
     # 2. Сканируем каждый символ на каждом таймфрейме
