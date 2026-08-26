@@ -109,7 +109,7 @@ TRD bot/
 - Конфиг: `.env` (API ключи + параметры VP)
 - Запуск: `python bot_screener_vp/main.py`
 - Параметры: LOOKBACK_BARS=500, NUM_LEVELS=10, NUM_BINS=100, PROXIMITY_PCT=2.0
-- Исключения: BTCUSDT, ETHUSDT (top 10 вручную)
+- Исключения: BTC, ETH, BNB, SOL, XRP, DOGE, ADA, AVAX, DOT, LINK
 - Мейнет: 25 пар >$50M, 10 сек на прогон, ~200 сигналов (proximity 5%), ~50-80 при proximity 2%
 - Логика: разбивает range на бины, считает объём в каждом, топ-N уровней = support/resistance
 - Сигналы: ЖДИ ПРОБОЙ ВВЕРХ (resistance), ЖДИ ПРОБОЙ ВНИЗ (support)
