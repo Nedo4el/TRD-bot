@@ -43,8 +43,6 @@ def scan_symbol(
     candles: list[dict],
     turnover_24h: float = 0.0,
     *,
-    consolidation_period: int = 10,
-    consolidation_range_pct: float = 0.015,
     volume_spike: float = 1.3,
     volume_drop_before: float = 0.8,
     bbw_threshold: float = 0.05,
@@ -57,9 +55,6 @@ def scan_symbol(
     atr_period: int = 14,
     bb_period: int = 20,
     volume_ma_period: int = 20,
-    # legacy params — ignored but kept for compat
-    breakout_period: int = 20,
-    atr_buffer: float = 0.15,
 ) -> ScanResult:
     """Просканировать один символ.
 
@@ -88,6 +83,9 @@ def scan_symbol(
         rsi_value=0.0,
         turnover_24h=turnover_24h,
     )
+
+    consolidation_period = 10
+    consolidation_range_pct = 0.008
 
     min_candles = (
         max(consolidation_period, bb_period, adx_period * 2, volume_ma_period) + 5
