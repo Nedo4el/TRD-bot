@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from core.indicators import adx, atr, bollinger, rsi
 from core.logger import get_logger
@@ -33,6 +34,7 @@ class ScanResult:
     adx_value: float
     rsi_value: float
     turnover_24h: float  # оборот за 24ч в USD
+    signal_time: str = ""  # время сигнала (HH:MM UTC)
 
 
 def scan_symbol(
@@ -210,6 +212,15 @@ def scan_symbol(
     if signal == "LONG" and current_rsi > 55 or signal == "SHORT" and current_rsi < 45:
         score += 5
 
+    # Время сигнала из последней свечи
+    last_candle = candles[-1]
+    signal_ts = last_candle.get("open_time", 0)
+    if signal_ts:
+        dt = datetime.fromtimestamp(signal_ts / 1000, tz=timezone.utc)
+        signal_time = dt.strftime("%H:%M")
+    else:
+        signal_time = ""
+
     return ScanResult(
         symbol=symbol,
         timeframe=timeframe,
@@ -222,4 +233,5 @@ def scan_symbol(
         adx_value=current_adx,
         rsi_value=current_rsi,
         turnover_24h=turnover_24h,
+        signal_time=signal_time,
     )
