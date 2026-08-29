@@ -1,131 +1,72 @@
 # SESSION_NOTES.md
 
-## Статус: инфраструктура готова, 3 скринера созданы, стратегии пустые
+## Статус: скринеры на мейннете, детекция клинов через регрессию
 
 ### ВАЖНО — договорённость с пользователем
-- Все 5 ботов в SIMULATION_MODE=false, TESTNET=true.
-- Тестовые ключи Bybit: qKsYtQhn8JLKmfdOkI (testnet)
+- Скринеры переведены на мейннет (TESTNET=false).
+- Мейннет ключи: kOFDh0YrjjbkiC8VSp (пользователь вписал).
+- Пороги скринеров адаптированы под мейннет.
 - Ботов НЕ запускать — пользователь скажет когда.
 - Стратегии переписываем с нуля — пользователь сам решает что в каждом боте.
 
 ### Что сделано (текущая сессия)
-- Проверили техническое состояние:
-  - core модули: 11/11 OK
-  - стратегии: 4/4 OK (заглушки)
-  - main.py: 4/4 OK (asyncio loop стартует)
-  - конфиги: 4/4 OK (ключ загружен)
-  - Bybit testnet: OK (баланс=0, свечи XRPUSDT, позиция=None)
-  - RiskManager: OK (FIXED_QTY + процентный)
-  - State: OK (save/load/clear/dedup)
-  - Индикаторы: OK (SMA, EMA, RSI, BB, ATR)
-  - pytest: 60/60 → потом 26/26 (после удаления старых тестов)
-  - ruff: чисто
-- Удалены старые боты: bot_sma, bot_combo, bot_adaptive, bot_swings
-- Удалены старые тесты: test_strategies.py, test_swings_extended.py
-- Созданы новые боты (шаблоны с заглушками):
-  - bot_flat — боковик (рип-сайдинг, консолидации), M5, SL 0.3% / TP 0.5%
-  - bot_yrovni — уровни (пробой + ретест), M5, SL 0.2% / TP 0.4%
-  - bot_trend — тренд (следование за трендом), M5, SL 2% / TP 4%
-  - bot_impulse — импульс (моментум), M1, SL 0.3% / TP 0.5%
-  - bot_0 — нулевой (минимальная), M5, SL 2% / TP 4%
-- Каждый бот: main.py + strategy.py (заглушка hold) + .env + .env.example
-- Обновлены: launcher.py (default=bot_flat), docker-compose.yml (5 сервисов)
-- backtest.py: choices=[flat, yrovni, trend, impulse, zero], make_strategy() пока ValueError
-- Запушено: b52be9a на main
-- Refactor скринеров (01ab480):
-  - bot_screener удалён (заменён на pump + uzkiy)
-  - bot_screener_pump — скринер на прорыв/импульс (новый)
-  - bot_screener_uzkiy — скринер на узкий диапазон (новый)
-  - bot_screener_vp — обновлён (метрики, printer)
-  - core/metrics.py — добавлены расширенные метрики
-  - .gitignore — исправлен для **/.env (секреты в поддиректориях)
+- Исправлен баг: `passes_noise_filters` не вызывался в pump скринере → XAUTUSDT за $5000 проходил при MAX_PRICE=1.0
+- Подключён фильтр шума в `bot_screener_pump/main.py` (passes_noise_filters + оборот/сделки из тикеров)
+- Расслаблены пороги pump скринера для мейннета (RANGE_MAX=0.50, VOLUME_SPIKE=1.5, BB_COMPRESSION=0.85)
+- Все 3 скринера переведены на мейннет (TESTNET=false)
+- Исправлен баг: Bybit API для linear принимает `interval='5'`, а не `'5m'` — исправлено в fetcher
+- Исправлен баг: `lookback_bars=50` < `triangle_lookback(50)+10=60` → сканер не доходил до детекции → увеличен до 80
+- **Переписана детекция клинов** (`bot_screener_uzkiy/scanner.py`):
+  - Старый подход: 3-частный диапазон (R1>R2>R3) — не работал, ловил мусор
+  - Новый подход: **регрессия по экстремумам**
+    - Находит локальные максимумы и минимумы (extrema_window=5)
+    - Регрессия по максимумам → наклон < 0 = highs убывают
+    - Регрессия по минимумам → наклон > 0 = lows возрастают
+    - Сжатие канала > 15%
+    - Точка апекса (пересечение линий) 3-30 баров впереди
+    - Фильтр тренда: < 80% баров в одном направлении
+  - **Был критический баг**: `_linear_regression` получал `[0,1]` вместо реальных цен → slope=1.0 всегда
+  - Исправлено: передаём `max_vals`/`min_vals` напрямую
+- Добавлен MAX_PRICE=10 в uzkiy скринер (фильтр дорогих монет)
+- Добавлен MIN_RANGE_PCT=0 (отключён, сужение определяется через регрессию)
+- Результат на мейннете: DEXEUSDT (Клин, score=45), 4USDT (Треугольник, score=40), XPLUSDT (Клин, score=35)
 
 ### Текущая структура проекта
 ```
 TRD bot/
 ├── core/                  # Общий движок (11 модулей, не трогаем)
-│   ├── engine.py          # TradingBot + run_bot()
-│   ├── strategies.py      # BaseStrategy ABC + Signal
-│   ├── indicators.py      # SMA, EMA, RSI, Bollinger, ATR
-│   ├── config.py          # Config dataclass + load_bot_env
-│   ├── bybit_client.py    # REST + WS (pybit)
-│   ├── risk_manager.py    # Position sizing
-│   ├── state.py           # StateStore (JSON)
-│   ├── notifier.py        # Telegram
-│   ├── metrics.py         # Счётчики
-│   ├── logger.py          # Логи
-│   └── utils.py           # Retry, backoff
 ├── bot_flat/              # Боковик
 ├── bot_yrovni/            # Уровни
 ├── bot_trend/             # Тренд
 ├── bot_impulse/           # Импульс
 ├── bot_0/                 # Нулевой
-├── bot_screener_pump/     # Скринер (прорыв/импульс)
-├── bot_screener_uzkiy/    # Скринер (узкий диапазон)
-├── bot_screener_vp/       # Скринер (Volume Profile)
+├── bot_screener_pump/     # Скринер накопления (мейннет)
+├── bot_screener_uzkiy/    # Скринер клинов (мейннет)
+├── bot_screener_vp/       # Скринер Volume Profile (мейннет)
 ├── backtest.py            # Бэктест (ждёт стратегий)
 ├── launcher.py            # Фоновый запуск
-├── sync_github.ps1        # Автосинхронизация (30 мин)
-├── tests/                 # 26 тестов (core + индикаторы + риск)
-├── .env                   # Общий (fallback для backtest)
+├── tests/                 # 26 тестов
 └── docker-compose.yml     # 5 сервисов
 ```
 
-### Файлы бота (на примере bot_flat)
-- `bot_flat/__init__.py` — пустой
-- `bot_flat/main.py` — точка входа, создаёт стратегию и вызывает run_bot()
-- `bot_flat/strategy.py` — FlatStrategy(BaseStrategy), заглушка hold
-- `bot_flat/.env` — API ключи, тестнет, настройки (ключ уже вписан)
-- `bot_flat/.env.example` — шаблон без ключей
+### Настройки скринеров (мейннет)
+| Параметр | uzkiy | pump | vp |
+|---|---|---|---|
+| TESTNET | false | false | false |
+| MIN_TURNOVER | $10M | $5M | $5M |
+| SCAN_INTERVAL | 300с | 3600с | 300с |
+| LOOKBACK_BARS | 80 | 100 | 500 |
+| MAX_PRICE | $10 | $1 | — |
+| EXCLUDE | 15 топ | 10 топ | 10 топ |
 
-### API сигнатуры (для справки при написании стратегий)
-- `Config()` — dataclass, читает из os.environ (после load_bot_env)
-- `BybitClient(config)` — .get_klines(symbol, interval, limit), .get_price(symbol), .get_balance(), .get_position(symbol) — все async
-- `RiskManager(config)` — .calculate_position_size(balance, price) -> float
-- `RiskManager(config).build_plan(side, balance, price) -> PositionPlan`
-- `StateStore(path)` — async: .set_position(pos), .clear_position(symbol)
-- `Signal(action, reason, stop_loss=None, take_profit=None)` — action: "buy"|"sell"|"hold"
-- `BaseStrategy.check_signal(candles: list[Candle]) -> Signal`
-- `Candle(open_time, open, high, low, close, volume)`
-
-### Индикаторы (core/indicators.py)
-- `sma(prices, period)` -> list[float]
-- `ema(prices, period)` -> list[float]
-- `rsi(prices, period)` -> list[float]
-- `bollinger(prices, period, deviation)` -> tuple[upper, middle, lower]
-- `atr(highs, lows, closes, period)` -> list[float]
-- `adx(highs, lows, closes, period)` -> list[float]
-- `crossed_up(fast, slow)` -> bool
-- `crossed_down(fast, slow)` -> bool
-
-### Скринер прорыва (bot_screener_pump/)
-- `fetcher.py` — async получение тикеров + свечей через pybit
-- `scanner.py` — логика прорыва + скоринг 0-100
-- `printer.py` — таблица в консоль (tabulate)
-- `main.py` — asyncio loop (60 сек), multi-timeframe (M1+M5)
-- `app.py` — утилиты приложения
-- Конфиг: `.env` (API ключи + пороги прорыва)
-- Запуск: `python bot_screener_pump/main.py`
-
-### Скринер узкого диапазона (bot_screener_uzkiy/)
-- `fetcher.py` — async получение тикеров + свечей через pybit
-- `scanner.py` — логика узкого диапазона + скоринг
-- `printer.py` — таблица в консоль
-- `main.py` — asyncio loop
-- Конфиг: `.env` (API ключи + параметры)
-- Запуск: `python bot_screener_uzkiy/main.py`
-
-### Volume Profile скринер (bot_screener_vp/)
-- `scanner.py` — построение Volume Profile (pure Python), поиск уровней, определение support/resistance
-- `printer.py` — таблица в консоль, форматирование объёмов и действий
-- `main.py` — asyncio loop (300 сек), сканирование с порогом оборота
-- Конфиг: `.env` (API ключи + параметры VP)
-- Запуск: `python bot_screener_vp/main.py`
-- Параметры: LOOKBACK_BARS=500, NUM_LEVELS=10, NUM_BINS=100, PROXIMITY_PCT=2.0
-- Исключения: BTC, ETH, BNB, SOL, XRP, DOGE, ADA, AVAX, DOT, LINK
-- Мейнет: 25 пар >$50M, 10 сек на прогон, ~200 сигналов (proximity 5%), ~50-80 при proximity 2%
-- Логика: разбивает range на бины, считает объём в каждом, топ-N уровней = support/resistance
-- Сигналы: ЖДИ ПРОБОЙ ВВЕРХ (resistance), ЖДИ ПРОБОЙ ВНИЗ (support)
+### Параметры детекции клинов (uzkiy)
+- `extrema_window=5` — полуха для поиска локальных экстремумов
+- `triangle_lookback=50` — окно анализа (50 свечей)
+- `min_range_pct=0` — отключён (сужение через регрессию)
+- `adx_false_threshold=18` — ADX < 18 = ложное
+- `compression_coef > 0.15` — сжатие канала > 15%
+- `apex_x: 3-30` — апекс впереди 3-30 баров
+- Типы: PENNANT (горизонтальный), TRIANGLE (сходятся), WEDGE (одна линия)
 
 ### Следующие шаги
 - Написать стратегии для каждого бота (strategy.py)

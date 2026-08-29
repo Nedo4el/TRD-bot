@@ -43,6 +43,7 @@ class PatternConfig:
     # --- Сжатие ---
     compression_ratio: float = 0.75  # текущая ширина / ширина 10 свечей назад
     triangle_lookback: int = 30  # сколько свечей анализировать
+    min_range_pct: float = 10.0  # минимальный начальный диапазон в %
 
     # --- BB squeeze ---
     bb_lookback: int = 20  # окно для минимума BB
@@ -174,12 +175,17 @@ def _find_local_extrema(
 def _detect_triangle(
     highs: list[float],
     lows: list[float],
+    closes: list[float],
     current_price: float,
     cfg: PatternConfig,
 ) -> tuple[float, float, float, SqueezeType | None]:
-    """Детектировать паттерн сужения через линии регрессии.
+    """Детектировать клин/треугольник через регрессию по экстремумам.
 
-    Наклоны нормированы на цену — пороги универсальны.
+    Настоящий клин:
+      - Максимумы убывают (нисходящая линия сопротивления).
+      - Минимумы возрастают (восходящая линия поддержки).
+      - Линии сходятся к апексу.
+      - Не в тренде — боковое движение.
 
     Returns:
         (norm_upper_slope, norm_lower_slope, compression_coef, squeeze_type).
@@ -190,50 +196,96 @@ def _detect_triangle(
 
     h = highs[-lookback:]
     l = lows[-lookback:]
+    c = closes[-lookback:] if len(closes) >= lookback else closes
 
+    # --- Фильтр тренда: не ловить сильное направленное движение ---
+    if len(c) >= 10:
+        up_count = sum(1 for i in range(1, len(c)) if c[i] > c[i - 1])
+        down_count = sum(1 for i in range(1, len(c)) if c[i] < c[i - 1])
+        total = len(c) - 1
+        trend_ratio = max(up_count, down_count) / total if total > 0 else 0
+        if trend_ratio > 0.80:
+            return 0.0, 0.0, 0.0, None
+
+    # --- Найти локальные экстремумы ---
     maxs_idx, mins_idx = _find_local_extrema(h, cfg.extrema_window)
 
+    # Нужно минимум 2 максимума и 2 минимума для регрессии
     if len(maxs_idx) < 2 or len(mins_idx) < 2:
         return 0.0, 0.0, 0.0, None
 
-    max_vals = [h[i] for i in maxs_idx[-2:]]
-    min_vals = [l[i] for i in mins_idx[-2:]]
+    # --- Регрессия по максимумам (верхняя линия) ---
+    max_vals = [h[i] for i in maxs_idx]
+    max_slope, max_intercept = _linear_regression(max_vals)
+    max_positions = list(range(len(max_vals)))
+    max_vals_fit = [max_slope * x + max_intercept for x in max_positions]
 
-    raw_upper, _ = _linear_regression(max_vals)
-    raw_lower, _ = _linear_regression(min_vals)
+    # Нормализация наклона на среднюю цену
+    avg_price = sum(max_vals) / len(max_vals) if max_vals else current_price
+    norm_upper = (max_slope / avg_price * 100) if avg_price > 0 else 0.0
 
-    # Нормализация: % от цены за свечу
-    norm_upper = _normalize_slope(raw_upper, current_price)
-    norm_lower = _normalize_slope(raw_lower, current_price)
+    # --- Регрессия по минимумам (нижняя линия) ---
+    min_vals = [l[i] for i in mins_idx]
+    min_slope, min_intercept = _linear_regression(min_vals)
+    min_positions = list(range(len(min_vals)))
+    min_vals_fit = [min_slope * x + min_intercept for x in min_positions]
 
-    # Разница наклонов: > 0 = линии сходятся
-    slope_diff = norm_upper - norm_lower
+    avg_price_l = sum(min_vals) / len(min_vals) if min_vals else current_price
+    norm_lower = (min_slope / avg_price_l * 100) if avg_price_l > 0 else 0.0
 
-    # Сжатие: текущая высота vs 5 свечей назад
-    lookback_h = min(5, len(h) - 1)
-    current_height = h[-1] - l[-1]
-    prev_height = (
-        h[-lookback_h] - l[-lookback_h] if lookback_h < len(h) else current_height
-    )
+    # --- Проверка: максимумы убывают, минимумы возрастают ---
+    highs_decreasing = max_slope < 0
+    lows_increasing = min_slope > 0
 
-    if prev_height <= 0:
-        return norm_upper, norm_lower, 0.0, None
+    if not highs_decreasing and not lows_increasing:
+        return 0.0, 0.0, 0.0, None
 
-    compression_coef = 1.0 - (current_height / prev_height)
+    # --- Расчёт сходимости: насколько линии сжимаются ---
+    # Начальная и конечная ширина канала
+    first_upper = max_vals_fit[0]
+    first_lower = min_vals_fit[0]
+    last_upper = max_vals_fit[-1]
+    last_lower = min_vals_fit[-1]
 
-    # Определяем тип паттерна
+    first_width = first_upper - first_lower
+    last_width = last_upper - last_lower
+
+    if first_width <= 0:
+        return 0.0, 0.0, 0.0, None
+
+    compression_coef = 1.0 - (last_width / first_width) if first_width > 0 else 0.0
+
+    # Сжатие должно быть значимым (> 15%)
+    if compression_coef < 0.15:
+        return 0.0, 0.0, 0.0, None
+
+    # --- Точка апекса: где линии пересекутся ---
+    # upper_line(x) = max_slope * x + max_intercept
+    # lower_line(x) = min_slope * x + min_intercept
+    # Пересечение: max_slope * x + max_intercept = min_slope * x + min_intercept
+    # x = (min_intercept - max_intercept) / (max_slope - min_slope)
+    slope_diff = max_slope - min_slope
+    if abs(slope_diff) < 1e-12:
+        return 0.0, 0.0, 0.0, None
+
+    apex_x = (min_intercept - max_intercept) / slope_diff
+
+    # Апекс должен быть впереди (от 3 до 30 баров)
+    if apex_x < 3 or apex_x > 30:
+        return 0.0, 0.0, 0.0, None
+
+    # --- Тип паттерна ---
     squeeze_type: SqueezeType | None = None
-
-    # Линии сходятся + есть сжатие
-    if slope_diff > 0 and compression_coef > (1.0 - cfg.compression_ratio):
+    if highs_decreasing and lows_increasing:
         avg_abs = (abs(norm_upper) + abs(norm_lower)) / 2
-
         if avg_abs < cfg.slope_flat:
-            squeeze_type = SqueezeType.PENNANT  # горизонтальный
-        elif abs(norm_upper) > cfg.slope_up and abs(norm_lower) > cfg.slope_down:
-            squeeze_type = SqueezeType.WEDGE  # обе крутые
+            squeeze_type = SqueezeType.PENNANT
         else:
-            squeeze_type = SqueezeType.TRIANGLE  # стандартный
+            squeeze_type = SqueezeType.TRIANGLE
+    elif highs_decreasing:
+        squeeze_type = SqueezeType.WEDGE
+    elif lows_increasing:
+        squeeze_type = SqueezeType.WEDGE
 
     return norm_upper, norm_lower, compression_coef, squeeze_type
 
@@ -370,6 +422,7 @@ def scan_symbol(
     norm_upper, norm_lower, compression_coef, triangle_type = _detect_triangle(
         highs,
         lows,
+        closes,
         current_price,
         cfg,
     )

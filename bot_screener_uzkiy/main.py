@@ -43,6 +43,7 @@ def _load_config() -> tuple[dict, PatternConfig]:
         slope_flat=get_env_float("SLOPE_FLAT", 0.1),
         compression_ratio=get_env_float("COMPRESSION_RATIO", 0.75),
         triangle_lookback=get_env_int("TRIANGLE_LOOKBACK", 30),
+        min_range_pct=get_env_float("MIN_RANGE_PCT", 10.0),
         bb_lookback=get_env_int("BB_LOOKBACK", 20),
         atr_lookback=get_env_int("ATR_LOOKBACK", 10),
         atr_drop_threshold=get_env_float("ATR_DROP_THRESHOLD", 0.3),
@@ -64,6 +65,7 @@ def _load_config() -> tuple[dict, PatternConfig]:
         "lookback_bars": get_env_int("LOOKBACK_BARS", 50),
         "spread_max_pct": get_env_float("SPREAD_MAX_PCT", 0.05),
         "min_score": get_env_int("MIN_SCORE", 40),
+        "max_price": get_env_float("MAX_PRICE", 0),
         "exclude_symbols": exclude,
     }
 
@@ -89,6 +91,10 @@ async def _scan_symbol(
     )
 
     if not candles:
+        return None
+
+    max_price = env_cfg.get("max_price", 0)
+    if max_price > 0 and candles[-1]["close"] > max_price:
         return None
 
     spread = spread_cache.get(symbol, 0.0)

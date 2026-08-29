@@ -30,6 +30,16 @@ from core.metrics import ScreenerMetrics
 logger = get_logger(__name__)
 
 
+def _get_trades_24h(tickers_map: dict[str, dict], symbol: str) -> int:
+    """Получить количество сделок за 24ч из тикера (volume24h как прокси)."""
+    t = tickers_map.get(symbol, {})
+    vol = t.get("volume24h", "0")
+    try:
+        return int(float(vol))
+    except (ValueError, TypeError):
+        return 0
+
+
 def _load_config() -> tuple[dict, AccumulationConfig]:
     """Загрузить конфигурацию из .env."""
     load_bot_env(_BOT_DIR)
@@ -89,8 +99,11 @@ async def _scan_one(
     lookback: int,
     acc_cfg: AccumulationConfig,
     spread_cache: dict[str, float],
+    turnover_24h: float = 0.0,
+    trades_24h: int = 0,
 ) -> AccumulationSignal | None:
     """Просканировать один символ."""
+    from bot_screener_pump.scanner import passes_noise_filters
     from bot_screener_uzkiy.fetcher import Fetcher
 
     assert isinstance(fetcher, Fetcher)
@@ -109,12 +122,31 @@ async def _scan_one(
         spread = await fetcher.get_spread(symbol)
         spread_cache[symbol] = spread
 
+    avg_vol_usd = (
+        sum(c["volume"] for c in candles[-20:]) / min(20, len(candles))
+        if candles
+        else 0.0
+    )
+
+    ok, reason = passes_noise_filters(
+        candles=candles,
+        avg_volume_usd=avg_vol_usd,
+        spread_pct=spread,
+        trades_24h=trades_24h,
+        cfg=acc_cfg,
+    )
+    if not ok:
+        logger.debug("ФИЛЬТР %s: %s", symbol, reason)
+        return None
+
     result = analyze_symbol(
         symbol=symbol,
         timeframe=timeframe,
         candles=candles,
         cfg=acc_cfg,
         spread_pct=spread,
+        trades_24h=trades_24h,
+        turnover_24h=turnover_24h,
     )
 
     if result.pump_probability > 0:
@@ -164,7 +196,11 @@ async def scan_once(
     results: list[AccumulationSignal] = []
     spread_cache: dict[str, float] = {}
 
-    # Батчевая обработка
+    tickers_map: dict[str, dict] = {}
+    tickers = await fetcher.get_linear_tickers()
+    for t in tickers:
+        tickers_map[t.get("symbol", "")] = t
+
     batch_size = 10
     for i in range(0, len(filtered), batch_size):
         batch = filtered[i : i + batch_size]
@@ -176,8 +212,10 @@ async def scan_once(
                 env_cfg["lookback_bars"],
                 acc_cfg,
                 spread_cache,
+                turnover_24h=turnover,
+                trades_24h=_get_trades_24h(tickers_map, sym),
             )
-            for sym, _ in batch
+            for sym, turnover in batch
         ]
         batch_results = await asyncio.gather(*tasks)
 
