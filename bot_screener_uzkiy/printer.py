@@ -1,4 +1,4 @@
-"""Красивый вывод результатов скринера в консоль."""
+"""Красивый вывод результатов скринера сужения в консоль."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ from datetime import datetime, timezone
 
 from tabulate import tabulate
 
-from bot_screener.scanner import ScanResult
+from bot_screener_uzkiy.scanner import ScanResult
 
 
 def clear_console() -> None:
-    """Очистить консоль (кроссплатформенно)."""
+    """Очистить консоль."""
     os.system("cls" if os.name == "nt" else "clear")
 
 
@@ -26,78 +26,81 @@ def format_turnover(value: float) -> str:
     return f"${value:.0f}"
 
 
-def format_signal(signal: str, score: int) -> str:
-    """Форматировать сигнал с оценкой."""
-    if not signal:
-        return ""
-    return f"{signal} ({score}/100)"
-
-
 def print_results(
     results: list[ScanResult],
     total_symbols: int,
     filtered_symbols: int,
     scan_time: float,
-    min_score: int = 70,
+    min_score: int = 50,
 ) -> None:
-    """Вывести таблицу результатов в консоль.
+    """Вывести таблицу результатов.
 
     Args:
-        results: результаты сканирования (только с сигналами).
-        total_symbols: общее количество символов на бирже.
-        filtered_symbols: количество символов после фильтрации по обороту.
+        results: результаты сканирования.
+        total_symbols: общее количество символов.
+        filtered_symbols: символов после фильтра.
         scan_time: время сканирования в секундах.
         min_score: минимальный скор для отображения.
     """
-    results = [r for r in results if r.score >= min_score]
+    filtered = [r for r in results if r.score >= min_score]
     clear_console()
 
     now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
 
-    print("=" * 90)
-    print("  КРИПТОСКРИНЕР — Точки прорыва")
-    print(f"  Bybit USDT-M | Последнее обновление: {now}")
-    print("=" * 90)
+    print("=" * 120)
+    print("  СКРИНЕР СУЖЕНИЯ ДИАПАЗОНА — Скальпинг")
+    print(f"  Bybit USDT-M | {now} | {scan_time:.1f} сек")
+    print("=" * 120)
     print()
 
-    if not results:
+    if not filtered:
         print("  Сигналов не найдено.")
         print()
         print(f"  Пар под фильтром: {filtered_symbols}/{total_symbols}")
-        print(f"  Время сканирования: {scan_time:.1f} сек")
-        print("=" * 90)
+        print("=" * 120)
         return
 
-    # Таблица
     headers = [
         "Монета",
-        "Таймфрейм",
+        "TF",
         "Цена",
-        "Сигнал",
-        "Время",
-        "Объём",
-        "BBW",
+        "Тип сужения",
         "ATR",
+        "ATR%",
+        "BB%",
         "ADX",
-        "RSI",
+        "Направление",
+        "SL",
+        "TP",
+        "Спред",
         "Оборот",
+        "Score",
     ]
 
     rows = []
-    for r in results:
+    for r in filtered:
+        squeeze_name = r.squeeze_type.value if r.squeeze_type else "-"
+        direction = r.direction if r.direction else "-"
+        atr_sl = f"{r.stop_loss:.4f}" if r.stop_loss > 0 else "-"
+        tp = f"{r.take_profit:.4f}" if r.take_profit > 0 else "-"
+        spread = f"{r.spread_pct:.3f}%" if r.spread_pct > 0 else "-"
+
         rows.append(
             [
                 r.symbol,
                 r.timeframe,
                 f"{r.price:.4f}",
-                format_signal(r.signal, r.score),
-                r.signal_time,
-                f"{r.volume_ratio:.1f}x",
-                f"{r.bbw * 100:.2f}%",
-                f"{r.atr_value:.4f}",
+                squeeze_name,
+                f"{r.atr_current:.4f}",
+                f"{r.atr_percent:.2f}%",
+                f"{r.bb_width:.2f}%",
                 f"{r.adx_value:.1f}",
-                f"{r.rsi_value:.1f}",
+                direction,
+                atr_sl,
+                tp,
+                spread,
                 format_turnover(r.turnover_24h),
+                r.score,
             ]
         )
 
@@ -105,8 +108,8 @@ def print_results(
 
     print()
     print(
-        f"  Сигналов: {len(results)} | "
+        f"  Сигналов: {len(filtered)} | "
         f"Пар под фильтром: {filtered_symbols}/{total_symbols} | "
         f"Время: {scan_time:.1f} сек"
     )
-    print("=" * 90)
+    print("=" * 120)

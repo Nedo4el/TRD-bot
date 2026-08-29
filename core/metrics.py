@@ -93,3 +93,89 @@ class MetricsTimer:
         assert self._started is not None
         duration = time.monotonic() - self._started
         self.metrics.record_api_call(duration)
+
+
+@dataclass
+class ScreenerMetrics:
+    """Метрики скринера: время сканирования, сигналы, latency API."""
+
+    scan_count: int = 0
+    total_signals: int = 0
+    total_symbols_scanned: int = 0
+    last_scan_duration: float = 0.0
+    last_signals_count: int = 0
+    last_symbols_count: int = 0
+    api_calls: int = 0
+    api_errors: int = 0
+    api_latencies: list[float] = field(default_factory=list)
+    _scan_durations: list[float] = field(default_factory=list)
+
+    def record_api_call(self, duration: float) -> None:
+        self.api_calls += 1
+        if len(self.api_latencies) >= 200:
+            self.api_latencies.pop(0)
+        self.api_latencies.append(duration)
+
+    def record_api_error(self) -> None:
+        self.api_errors += 1
+
+    def record_scan(self, duration: float, signals: int, symbols: int) -> None:
+        self.scan_count += 1
+        self.last_scan_duration = duration
+        self.last_signals_count = signals
+        self.last_symbols_count = symbols
+        self.total_signals += signals
+        self.total_symbols_scanned += symbols
+        if len(self._scan_durations) >= 50:
+            self._scan_durations.pop(0)
+        self._scan_durations.append(duration)
+
+    def avg_api_latency_ms(self) -> float:
+        if not self.api_latencies:
+            return 0.0
+        return (sum(self.api_latencies) / len(self.api_latencies)) * 1000
+
+    def p95_api_latency_ms(self) -> float:
+        if not self.api_latencies:
+            return 0.0
+        sorted_lat = sorted(self.api_latencies)
+        idx = int(len(sorted_lat) * 0.95)
+        return sorted_lat[min(idx, len(sorted_lat) - 1)] * 1000
+
+    def avg_scan_duration(self) -> float:
+        if not self._scan_durations:
+            return 0.0
+        return sum(self._scan_durations) / len(self._scan_durations)
+
+    def report(self) -> str:
+        avg_scan = self.avg_scan_duration()
+        avg_lat = self.avg_api_latency_ms()
+        p95_lat = self.p95_api_latency_ms()
+        avg_signals = self.total_signals / self.scan_count if self.scan_count else 0
+        return (
+            f"Сканов: {self.scan_count} | "
+            f"Сигналов: {self.total_signals} (ср. {avg_signals:.1f}/скан) | "
+            f"Пар просканировано: {self.total_symbols_scanned}\n"
+            f"Последний скан: {self.last_scan_duration:.1f} сек, "
+            f"{self.last_symbols_count} пар, {self.last_signals_count} сигналов\n"
+            f"Среднее время скана: {avg_scan:.1f} сек | "
+            f"API: {self.api_calls} вызовов, {self.api_errors} ошибок\n"
+            f"API latency: среднее {avg_lat:.0f} мс, p95 {p95_lat:.0f} мс"
+        )
+
+
+class ScreenerMetricsTimer:
+    """Контекстный менеджер для замера API-вызова в скринере."""
+
+    def __init__(self, metrics: ScreenerMetrics) -> None:
+        self.metrics = metrics
+        self._started: float | None = None
+
+    def __enter__(self) -> Self:
+        self._started = time.monotonic()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        assert self._started is not None
+        duration = time.monotonic() - self._started
+        self.metrics.record_api_call(duration)

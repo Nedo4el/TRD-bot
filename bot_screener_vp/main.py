@@ -19,6 +19,7 @@ sys.path.insert(0, str(_BOT_DIR))
 
 from core.config import get_env_bool, get_env_float, get_env_int, load_bot_env
 from core.logger import get_logger, setup_logging
+from core.metrics import ScreenerMetrics
 
 logger = get_logger(__name__)
 
@@ -48,9 +49,9 @@ def _load_config() -> dict:
     }
 
 
-async def scan_once(cfg: dict) -> None:
+async def scan_once(cfg: dict, metrics: ScreenerMetrics) -> None:
     """Один прогон сканирования."""
-    from bot_screener.fetcher import Fetcher
+    from bot_screener_uzkiy.fetcher import Fetcher
     from bot_screener_vp.printer import print_results
     from bot_screener_vp.scanner import scan_symbol
 
@@ -58,6 +59,7 @@ async def scan_once(cfg: dict) -> None:
         api_key=cfg["api_key"],
         api_secret=cfg["api_secret"],
         testnet=cfg["testnet"],
+        metrics=metrics,
     )
 
     start = time.monotonic()
@@ -111,6 +113,8 @@ async def scan_once(cfg: dict) -> None:
 
     elapsed = time.monotonic() - start
 
+    metrics.record_scan(elapsed, len(results), len(filtered))
+
     print_results(
         results=results,
         total_symbols=total_symbols,
@@ -123,6 +127,7 @@ async def main() -> None:
     """Главный цикл скринера."""
     setup_logging("logs/screener_vp.log", "INFO")
     cfg = _load_config()
+    metrics = ScreenerMetrics()
 
     logger.info(
         "VP-скринер запущен: timeframes=%s, interval=%ss, proximity=%.1f%%, levels=%d",
@@ -134,9 +139,12 @@ async def main() -> None:
 
     while True:
         try:
-            await scan_once(cfg)
+            await scan_once(cfg, metrics)
         except (OSError, ValueError):
             logger.exception("Ошибка сканирования")
+
+        if metrics.scan_count % 5 == 0 and metrics.scan_count > 0:
+            logger.info("МЕТРИКИ:\n%s", metrics.report())
 
         logger.info("Следующее сканирование через %d сек...", cfg["scan_interval"])
         await asyncio.sleep(cfg["scan_interval"])

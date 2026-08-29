@@ -78,6 +78,7 @@ def print_results(
     all_rows = []
     for result in results:
         for level in result.levels:
+            abs_diff = abs(result.current_price - level.price)
             all_rows.append(
                 [
                     result.symbol,
@@ -87,6 +88,7 @@ def print_results(
                     f"{level.price:.4f}",
                     level.level_type,
                     f"{level.distance_pct}%",
+                    f"{abs_diff:.4f}",
                     format_volume(level.total_volume),
                     format_action(level.level_type, level.position),
                 ]
@@ -110,7 +112,8 @@ def print_results(
         "Ранг",
         "Уровень",
         "Тип",
-        "Расст.",
+        "Расст.%",
+        "Разница",
         "Объем",
         "Действие",
     ]
