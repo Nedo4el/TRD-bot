@@ -1,6 +1,6 @@
 # SESSION_NOTES.md
 
-## Статус: инфраструктура готова, 2 скринера созданы, стратегии пустые
+## Статус: инфраструктура готова, 3 скринера созданы, стратегии пустые
 
 ### ВАЖНО — договорённость с пользователем
 - Все 5 ботов в SIMULATION_MODE=false, TESTNET=true.
@@ -32,6 +32,13 @@
 - Обновлены: launcher.py (default=bot_flat), docker-compose.yml (5 сервисов)
 - backtest.py: choices=[flat, yrovni, trend, impulse, zero], make_strategy() пока ValueError
 - Запушено: b52be9a на main
+- Refactor скринеров (01ab480):
+  - bot_screener удалён (заменён на pump + uzkiy)
+  - bot_screener_pump — скринер на прорыв/импульс (новый)
+  - bot_screener_uzkiy — скринер на узкий диапазон (новый)
+  - bot_screener_vp — обновлён (метрики, printer)
+  - core/metrics.py — добавлены расширенные метрики
+  - .gitignore — исправлен для **/.env (секреты в поддиректориях)
 
 ### Текущая структура проекта
 ```
@@ -53,7 +60,8 @@ TRD bot/
 ├── bot_trend/             # Тренд
 ├── bot_impulse/           # Импульс
 ├── bot_0/                 # Нулевой
-├── bot_screener/          # Скринер (прорыв/консолидация)
+├── bot_screener_pump/     # Скринер (прорыв/импульс)
+├── bot_screener_uzkiy/    # Скринер (узкий диапазон)
 ├── bot_screener_vp/       # Скринер (Volume Profile)
 ├── backtest.py            # Бэктест (ждёт стратегий)
 ├── launcher.py            # Фоновый запуск
@@ -90,17 +98,22 @@ TRD bot/
 - `crossed_up(fast, slow)` -> bool
 - `crossed_down(fast, slow)` -> bool
 
-### Скринер (bot_screener/)
+### Скринер прорыва (bot_screener_pump/)
 - `fetcher.py` — async получение тикеров + свечей через pybit
 - `scanner.py` — логика прорыва + скоринг 0-100
 - `printer.py` — таблица в консоль (tabulate)
 - `main.py` — asyncio loop (60 сек), multi-timeframe (M1+M5)
+- `app.py` — утилиты приложения
 - Конфиг: `.env` (API ключи + пороги прорыва)
-- Запуск: `python bot_screener/main.py`
-- Критерии: прорыв ATR×0.15, объём >1.8x, падение объёма перед, BBW <3%, ADX >25, RSI подтверждение
-- Multi-timeframe: сканирует M1+M5, показывает лучший результат по каждому символу
-- Мейнет: 116 пар >$5M оборота, 73 сек на прогон, 0 сигналов (критерии жёсткие)
-- Тестнет: 4 пары прошли фильтр, сигналов нет (малоликвидный)
+- Запуск: `python bot_screener_pump/main.py`
+
+### Скринер узкого диапазона (bot_screener_uzkiy/)
+- `fetcher.py` — async получение тикеров + свечей через pybit
+- `scanner.py` — логика узкого диапазона + скоринг
+- `printer.py` — таблица в консоль
+- `main.py` — asyncio loop
+- Конфиг: `.env` (API ключи + параметры)
+- Запуск: `python bot_screener_uzkiy/main.py`
 
 ### Volume Profile скринер (bot_screener_vp/)
 - `scanner.py` — построение Volume Profile (pure Python), поиск уровней, определение support/resistance
