@@ -24,18 +24,18 @@ def print_results(
 
     now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
 
-    print("=" * 90)
-    print("  UZKIY SCREENER — Узкий диапазон ( quiet zone )")
+    print("=" * 85)
+    print("  UZKIY SCREENER — Quiet Zone")
     print(f"  Bybit USDT-M | {now}")
-    print("=" * 90)
+    print("=" * 85)
     print()
 
     if not results:
-        print("  Сигналов не найдено.")
+        print("  No signals found.")
         print()
-        print(f"  Пар под фильтром: {filtered_symbols}/{total_symbols}")
-        print(f"  Время сканирования: {scan_time:.1f} сек")
-        print("=" * 90)
+        print(f"  Pairs filtered: {filtered_symbols}/{total_symbols}")
+        print(f"  Scan time: {scan_time:.1f}s")
+        print("=" * 85)
         return
 
     rows = []
@@ -46,22 +46,23 @@ def print_results(
             r.timeframe,
             f"{r.price:.6f}" if r.price < 0.01 else f"{r.price:.4f}",
             f"{r.avg_width_pct:.3f}%",
-            f"{r.max_vol_ratio:.1f}x",
-            f"{r.avg_vol_ratio:.1f}x",
-            f"{r.max_delta_ratio:.1f}x",
+            f"{r.max_width_pct:.3f}%",
+            f"{r.avg_delta:.0f}",
+            f"{r.max_delta:.0f}",
+            f"{r.quiet_candles}/{r.total_candles}",
             f"${r.turnover_24h / 1_000_000:.0f}M",
             r.status,
             r.signal_time,
         ])
 
-    headers = ["#", "Монета", "TF", "Цена", "Avg W%", "Max V/S", "Avg V/S", "Max D/S", "Оборот", "Статус", "Время"]
+    headers = ["#", "Coin", "TF", "Price", "Avg W%", "Max W%", "Avg D", "Max D", "Quiet", "Turnover", "Status", "Time"]
 
     print(tabulate(rows, headers=headers, tablefmt="simple", stralign="right"))
 
     print()
     print(
-        f"  Сигналов: {len(results)} | "
-        f"Пар под фильтром: {filtered_symbols}/{total_symbols} | "
-        f"Время: {scan_time:.1f} сек"
+        f"  Signals: {len(results)} | "
+        f"Pairs: {filtered_symbols}/{total_symbols} | "
+        f"Time: {scan_time:.1f}s"
     )
-    print("=" * 90)
+    print("=" * 85)
