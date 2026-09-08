@@ -90,3 +90,13 @@ TRD bot/
 - **Идея:** скрипт подключается к Bybit API, тянет свечи по заданному символу/timeframe, считает реальные `volume_ratio`, `candle_width`, `delta_ratio` для импульсных свечей
 - **Результат:**提议ит оптимальные пороги для `volume_spike_multiplier`, `candle_width_min/max`, `delta_spike_multiplier`
 - **Статус:** ожидает — пользователь должен скинуть пример графика или символ/timeframe для анализа
+
+### Переписан UZKIY скринер (2026-09-08)
+- **Было:** поиск узких свечей по min/max candle_pct + outliers
+- **Стало:** поиск quiet zones через SMA-based фильтры
+- **Параметры (из анализа AKEUSDT 08.09.26 + 07.09.26):**
+  - `volume_max_ratio=2.2` — нет всплесков объёма
+  - `candle_width_max=0.59` — все свечи узкие
+  - `delta_max_ratio=3.4` — нет дельтовых шоков
+- **Логика:** если ВСЕ свечи в окне узкие + нет шоков → сигнал quiet zone → ждём взрыв
+- **Файлы:** `scanner.py`, `printer.py` обновлены
