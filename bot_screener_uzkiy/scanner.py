@@ -18,7 +18,6 @@ class ScanConfig:
     lookback: int = 20
     candle_width_max: float = 0.59
     candle_width_min: float = 0.05
-    delta_max: float = 3.4
     min_turnover_24h: float = 30_000_000
 
 
@@ -32,8 +31,6 @@ class ScanResult:
     price: float
     avg_width_pct: float = 0.0
     max_width_pct: float = 0.0
-    avg_delta: float = 0.0
-    max_delta: float = 0.0
     quiet_candles: int = 0
     total_candles: int = 0
     turnover_24h: float = 0.0
@@ -62,38 +59,20 @@ def analyze_symbol(
     if current_price <= 0:
         return empty
 
-    # Берём последние N свечей
     tail = candles[-cfg.lookback:]
 
     widths = []
-    deltas = []
     for c in tail:
-        op = float(c["open"])
-        cl = float(c["close"])
         hi = float(c["high"])
         lo = float(c["low"])
-        vol = float(c["volume"])
-
+        cl = float(c["close"])
         w = (hi - lo) / cl * 100 if cl > 0 else 0
         widths.append(w)
 
-        rng = hi - lo
-        if rng <= 0:
-            deltas.append(0.0)
-        else:
-            deltas.append(abs(vol * ((cl - op) / rng)))
-
     avg_width = sum(widths) / len(widths)
     max_width = max(widths)
-    avg_delta = sum(deltas) / len(deltas)
-    max_delta = max(deltas)
 
-    # Считаем тихие свечи: width < max AND delta < max
-    quiet = 0
-    for i in range(len(widths)):
-        if widths[i] < cfg.candle_width_max and deltas[i] < cfg.delta_max:
-            quiet += 1
-
+    quiet = sum(1 for w in widths if w < cfg.candle_width_max)
     quiet_pct = quiet / len(widths)
 
     if quiet_pct < 0.50:
@@ -112,8 +91,6 @@ def analyze_symbol(
         price=current_price,
         avg_width_pct=round(avg_width, 3),
         max_width_pct=round(max_width, 3),
-        avg_delta=round(avg_delta, 0),
-        max_delta=round(max_delta, 0),
         quiet_candles=quiet,
         total_candles=len(widths),
         turnover_24h=turnover_24h,
