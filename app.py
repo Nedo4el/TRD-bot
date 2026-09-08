@@ -639,7 +639,7 @@ async def _fetch_one_candles(
     candles = await fetcher.get_klines(
         symbol=symbol, interval=timeframe, limit=lookback,
     )
-    if not candles or len(candles) < 25:
+    if not candles or len(candles) < lookback:
         return None
     price = candles[-1]["close"]
     return {
