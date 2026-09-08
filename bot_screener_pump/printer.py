@@ -99,6 +99,7 @@ def print_results(
                 f"{_factor_icon(r.f_smart_money, 0.3)} {r.f_smart_money:.2f}",
                 f"{r.pump_probability:.1%}",
                 f"{_status_icon(r.status)} {r.status}",
+                r.signal_time,
             ]
         )
 
@@ -117,6 +118,7 @@ def print_results(
         "Smart $",
         "Вероятн.",
         "Статус",
+        "Время",
     ]
 
     print(tabulate(rows, headers=headers, tablefmt="simple", stralign="right"))

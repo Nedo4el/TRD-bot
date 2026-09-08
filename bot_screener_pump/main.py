@@ -55,38 +55,39 @@ def _load_config() -> tuple[dict, AccumulationConfig]:
         "scan_interval": get_env_int("SCAN_INTERVAL", 3600),
         "min_turnover_24h": get_env_float("MIN_TURNOVER_24H", 1_000_000),
         "lookback_bars": get_env_int("LOOKBACK_BARS", 100),
-        "min_probability": get_env_float("MIN_PROBABILITY", 0.45),
+        "min_probability": get_env_float("MIN_PROBABILITY", 0.0),
         "exclude_symbols": exclude,
     }
 
     acc_cfg = AccumulationConfig(
-        analysis_period=get_env_int("ANALYSIS_PERIOD", 60),
+        analysis_period=get_env_int("ANALYSIS_PERIOD", 100),
         volume_lookback=get_env_int("VOLUME_LOOKBACK", 20),
         obv_divergence_lookback=get_env_int("OBV_LOOKBACK", 30),
         bb_period=get_env_int("BB_PERIOD", 20),
         bb_dev=get_env_float("BB_DEV", 2.0),
         rsi_period=get_env_int("RSI_PERIOD", 14),
         smart_money_lookback=get_env_int("SMART_MONEY_LOOKBACK", 7),
-        range_max=get_env_float("RANGE_MAX", 0.25),
-        range_min=get_env_float("RANGE_MIN", 0.05),
-        volume_spike=get_env_float("VOLUME_SPIKE", 2.0),
-        bb_compression=get_env_float("BB_COMPRESSION", 0.7),
-        min_volume_usd=get_env_float("MIN_VOLUME_USD", 1_000_000),
-        min_trades=get_env_int("MIN_TRADES", 10_000),
-        max_spread=get_env_float("MAX_SPREAD", 0.003),
-        min_days_listed=get_env_int("MIN_DAYS_LISTED", 90),
-        max_price=get_env_float("MAX_PRICE", 1.0),
-        max_volatility_3d=get_env_float("MAX_VOLATILITY_3D", 0.10),
-        max_drop_7d=get_env_float("MAX_DROP_7D", 0.30),
-        min_pump_probability=get_env_float("MIN_PUMP_PROBABILITY", 0.45),
-        weight_range=get_env_float("WEIGHT_RANGE", 0.15),
-        weight_volume=get_env_float("WEIGHT_VOLUME", 0.20),
-        weight_obv=get_env_float("WEIGHT_OBV", 0.15),
-        weight_bb=get_env_float("WEIGHT_BB", 0.10),
-        weight_smart_money=get_env_float("WEIGHT_SMART_MONEY", 0.15),
-        weight_outflow=get_env_float("WEIGHT_OUTFLOW", 0.10),
-        weight_rsi=get_env_float("WEIGHT_RSI", 0.05),
-        weight_liquidity=get_env_float("WEIGHT_LIQUIDITY", 0.10),
+        max_price=get_env_float("MAX_PRICE", 0.03),
+        min_total_volume_usd=get_env_float("MIN_TOTAL_VOLUME_USD", 50_000_000),
+        range_max=get_env_float("RANGE_MAX", 999.0),
+        range_min=get_env_float("RANGE_MIN", 0.0),
+        volume_spike=get_env_float("VOLUME_SPIKE", 0.0),
+        bb_compression=get_env_float("BB_COMPRESSION", 999.0),
+        min_volume_usd=get_env_float("MIN_VOLUME_USD", 0.0),
+        min_trades=get_env_int("MIN_TRADES", 0),
+        max_spread=get_env_float("MAX_SPREAD", 999.0),
+        min_days_listed=get_env_int("MIN_DAYS_LISTED", 0),
+        max_volatility_3d=get_env_float("MAX_VOLATILITY_3D", 999.0),
+        max_drop_7d=get_env_float("MAX_DROP_7D", 999.0),
+        min_pump_probability=get_env_float("MIN_PUMP_PROBABILITY", 0.0),
+        weight_range=get_env_float("WEIGHT_RANGE", 0.0),
+        weight_volume=get_env_float("WEIGHT_VOLUME", 0.0),
+        weight_obv=get_env_float("WEIGHT_OBV", 0.0),
+        weight_bb=get_env_float("WEIGHT_BB", 0.0),
+        weight_smart_money=get_env_float("WEIGHT_SMART_MONEY", 0.0),
+        weight_outflow=get_env_float("WEIGHT_OUTFLOW", 0.0),
+        weight_rsi=get_env_float("WEIGHT_RSI", 0.0),
+        weight_liquidity=get_env_float("WEIGHT_LIQUIDITY", 0.0),
     )
 
     return env_cfg, acc_cfg
@@ -103,8 +104,8 @@ async def _scan_one(
     trades_24h: int = 0,
 ) -> AccumulationSignal | None:
     """Просканировать один символ."""
-    from bot_screener_pump.scanner import passes_noise_filters
-    from bot_screener_uzkiy.fetcher import Fetcher
+    from bot_screener_klin.fetcher import Fetcher
+    from bot_screener_pump.scanner import passes_basic_filters
 
     assert isinstance(fetcher, Fetcher)
 
@@ -122,17 +123,8 @@ async def _scan_one(
         spread = await fetcher.get_spread(symbol)
         spread_cache[symbol] = spread
 
-    avg_vol_usd = (
-        sum(c["volume"] for c in candles[-20:]) / min(20, len(candles))
-        if candles
-        else 0.0
-    )
-
-    ok, reason = passes_noise_filters(
+    ok, reason = passes_basic_filters(
         candles=candles,
-        avg_volume_usd=avg_vol_usd,
-        spread_pct=spread,
-        trades_24h=trades_24h,
         cfg=acc_cfg,
     )
     if not ok:
@@ -167,7 +159,7 @@ async def scan_once(
     metrics: ScreenerMetrics,
 ) -> None:
     """Один прогон сканирования."""
-    from bot_screener_uzkiy.fetcher import Fetcher
+    from bot_screener_klin.fetcher import Fetcher
 
     fetcher = Fetcher(
         api_key=env_cfg["api_key"],
@@ -245,11 +237,11 @@ async def main() -> None:
 
     logger.info(
         "Accumulation-скринер запущен: timeframe=%s, interval=%ss, "
-        "min_turnover=$%sM, min_probability=%.0f%%",
+        "min_turnover=$%sM, analysis_period=%d",
         env_cfg["timeframe"],
         env_cfg["scan_interval"],
         env_cfg["min_turnover_24h"] / 1_000_000,
-        acc_cfg.min_pump_probability * 100,
+        acc_cfg.analysis_period,
     )
 
     while True:

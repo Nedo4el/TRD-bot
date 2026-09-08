@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from core.indicators import bollinger, rsi
 from core.logger import get_logger
@@ -35,7 +36,7 @@ class AccumulationConfig:
     """Все настраиваемые параметры скринера."""
 
     # --- Периоды ---
-    analysis_period: int = 60
+    analysis_period: int = 100
     volume_lookback: int = 20
     obv_divergence_lookback: int = 30
     bb_period: int = 20
@@ -44,32 +45,35 @@ class AccumulationConfig:
     smart_money_lookback: int = 7
     large_trade_lookback: int = 7
 
-    # --- Пороги ---
-    range_max: float = 0.25
-    range_min: float = 0.05
-    volume_spike: float = 2.0
-    bb_compression: float = 0.7
-    min_volume_usd: float = 1_000_000
-    min_trades: int = 10_000
-    max_spread: float = 0.003
-    min_days_listed: int = 90
-    max_price: float = 1.0
-    large_trade_threshold: float = 0.6
+    # --- Базовые фильтры ---
+    max_price: float = 0.03
+    min_total_volume_usd: float = 50_000_000
 
-    # --- Фильтры шума ---
-    max_volatility_3d: float = 0.10
-    max_drop_7d: float = 0.30
-    min_pump_probability: float = 0.45
+    # --- Пороги (отключены — задаются заново) ---
+    range_max: float = 999.0
+    range_min: float = 0.0
+    volume_spike: float = 0.0
+    bb_compression: float = 999.0
+    min_volume_usd: float = 0.0
+    min_trades: int = 0
+    max_spread: float = 999.0
+    min_days_listed: int = 0
+    large_trade_threshold: float = 0.0
 
-    # --- Веса факторов (сумма = 1.0) ---
-    weight_range: float = 0.15
-    weight_volume: float = 0.20
-    weight_obv: float = 0.15
-    weight_bb: float = 0.10
-    weight_smart_money: float = 0.15
-    weight_outflow: float = 0.10
-    weight_rsi: float = 0.05
-    weight_liquidity: float = 0.10
+    # --- Фильтры шума (отключены) ---
+    max_volatility_3d: float = 999.0
+    max_drop_7d: float = 999.0
+    min_pump_probability: float = 0.0
+
+    # --- Веса факторов (обнулены — задаются заново) ---
+    weight_range: float = 0.0
+    weight_volume: float = 0.0
+    weight_obv: float = 0.0
+    weight_bb: float = 0.0
+    weight_smart_money: float = 0.0
+    weight_outflow: float = 0.0
+    weight_rsi: float = 0.0
+    weight_liquidity: float = 0.0
 
 
 DEFAULT_CONFIG = AccumulationConfig()
@@ -106,6 +110,7 @@ class AccumulationSignal:
     spread_pct: float = 0.0
     trades_24h: int = 0
     turnover_24h: float = 0.0
+    signal_time: str = ""
 
 
 # ============================================================
@@ -179,11 +184,12 @@ def _factor_range(
         return 0.0, range_pct, 0.5
 
     current = closes[-1]
-    range_position = (current - period_low) / (period_high - period_low)
+    range_position = (current - period_low) / (period_high - period_low) if period_high != period_low else 0.5
 
     # Ширина: чем уже, тем лучше (макс. балл при range_pct ~ 5%)
+    range_span = cfg.range_max - cfg.range_min
     width_score = _clamp(
-        1.0 - (range_pct - cfg.range_min) / (cfg.range_max - cfg.range_min)
+        1.0 - (range_pct - cfg.range_min) / range_span if range_span > 0 else 0.5
     )
 
     # Позиция: чем ниже в диапазоне, тем лучше для накопления
@@ -254,6 +260,8 @@ def _factor_volume(
         return 0.0, avg_recent
 
     # Нормализация: volume_spike = 0.0, volume_spike*3 = 1.0
+    if cfg.volume_spike <= 0:
+        return 0.0, avg_recent
     score = _clamp((volume_ratio - cfg.volume_spike) / (cfg.volume_spike * 2))
     if price_stable:
         score = min(1.0, score * 1.3)
@@ -344,7 +352,7 @@ def _factor_bb(closes: list[float], cfg: AccumulationConfig) -> float:
     if ratio >= cfg.bb_compression:
         return 0.0
 
-    return _clamp(1.0 - ratio / cfg.bb_compression)
+    return _clamp(1.0 - ratio / cfg.bb_compression) if cfg.bb_compression > 0 else 0.0
 
 
 # ============================================================
@@ -463,6 +471,8 @@ def _factor_outflow(
     if volume_ratio < cfg.volume_spike or price_change > 0.05:
         return 0.0
 
+    if cfg.volume_spike <= 0:
+        return 0.0
     score = _clamp((volume_ratio - cfg.volume_spike) / (cfg.volume_spike * 2))
     return score
 
@@ -526,8 +536,8 @@ def _factor_liquidity(
     if trades_24h < cfg.min_trades:
         return 0.0
 
-    spread_score = _clamp(1.0 - spread_pct / cfg.max_spread)
-    trade_score = _clamp(min(1.0, trades_24h / (cfg.min_trades * 3)))
+    spread_score = _clamp(1.0 - spread_pct / cfg.max_spread) if cfg.max_spread > 0 else 0.5
+    trade_score = _clamp(min(1.0, trades_24h / (cfg.min_trades * 3))) if cfg.min_trades > 0 else 0.5
 
     return spread_score * 0.5 + trade_score * 0.5
 
@@ -586,7 +596,43 @@ def passes_noise_filters(
 
 
 # ============================================================
-# Основная функция анализа
+# Базовые фильтры (3 условия)
+# ============================================================
+
+
+def passes_basic_filters(
+    candles: list[dict],
+    cfg: AccumulationConfig,
+) -> tuple[bool, str]:
+    """3 простых условия: цена + отриц. дельта + оборот.
+
+    1. Цена в диапазоне 0 .. max_price
+    2. Кумулятивная дельта отрицательная (close[-1] < close[0])
+    3. Суммарный оборот за период >= min_total_volume_usd
+
+    Returns:
+        (passes, reason) — reason пустая, если всё ОК.
+    """
+    if len(candles) < 10:
+        return False, "мало свечей"
+
+    closes = [c["close"] for c in candles]
+
+    # 1. Цена в диапазоне
+    current_price = closes[-1]
+    if current_price > cfg.max_price:
+        return False, f"цена={current_price:.6f} > {cfg.max_price:.6f}"
+
+    # 2. Кумулятивная отрицательная дельта
+    if closes[-1] >= closes[0]:
+        return False, "дельта >= 0"
+
+    # 3. Суммарный оборот >= $50M
+    total_volume_usd = sum(c["close"] * c["volume"] for c in candles)
+    if total_volume_usd < cfg.min_total_volume_usd:
+        return False, f"оборот=${total_volume_usd:,.0f} < ${cfg.min_total_volume_usd:,.0f}"
+
+    return True, ""
 # ============================================================
 
 
@@ -722,6 +768,7 @@ def analyze_symbol(
         spread_pct=spread_pct,
         trades_24h=trades_24h,
         turnover_24h=turnover_24h,
+        signal_time=datetime.now(timezone.utc).strftime("%H:%M:%S"),
     )
 
 
