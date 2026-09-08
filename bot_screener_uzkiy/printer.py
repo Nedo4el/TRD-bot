@@ -47,15 +47,13 @@ def print_results(
             f"{r.price:.6f}" if r.price < 0.01 else f"{r.price:.4f}",
             f"{r.avg_width_pct:.3f}%",
             f"{r.max_width_pct:.3f}%",
-            f"{r.avg_delta:.0f}",
-            f"{r.max_delta:.0f}",
             f"{r.quiet_candles}/{r.total_candles}",
             f"${r.turnover_24h / 1_000_000:.0f}M",
             r.status,
             r.signal_time,
         ])
 
-    headers = ["#", "Coin", "TF", "Price", "Avg W%", "Max W%", "Avg D", "Max D", "Quiet", "Turnover", "Status", "Time"]
+    headers = ["#", "Coin", "TF", "Price", "Avg W%", "Max W%", "Quiet", "Turnover", "Status", "Time"]
 
     print(tabulate(rows, headers=headers, tablefmt="simple", stralign="right"))
 
