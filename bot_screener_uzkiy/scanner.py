@@ -25,13 +25,13 @@ def _sma(values: list[float], period: int) -> list[float | None]:
 
 @dataclass
 class ScanConfig:
-    lookback: int = 100
+    lookback: int = 20
     volume_sma_period: int = 50
     volume_max_ratio: float = 2.2
     candle_width_max: float = 0.59
     delta_sma_period: int = 20
     delta_max_ratio: float = 3.4
-    min_turnover_24h: float = 5_000_000
+    min_turnover_24h: float = 30_000_000
 
 
 DEFAULT_CONFIG = ScanConfig()
@@ -118,23 +118,25 @@ def analyze_symbol(
     avg_vol = sum(vol_ratios) / len(vol_ratios) if vol_ratios else 0
     max_delta = max(delta_ratios) if delta_ratios else 0
     avg_delta = sum(delta_ratios) / len(delta_ratios) if delta_ratios else 0
-    small = sum(1 for w in widths if w < cfg.candle_width_max)
 
-    # Фильтр: все свечи узкие + нет резких всплесков
-    if max_vol > cfg.volume_max_ratio:
-        return empty
-    if avg_width > cfg.candle_width_max:
-        return empty
-    if max_delta > cfg.delta_max_ratio:
+    # Считаем свечи которые проходят все 3 условия
+    quiet = 0
+    for i in range(len(widths)):
+        if widths[i] < cfg.candle_width_max and vol_ratios[i] < cfg.volume_max_ratio and delta_ratios[i] < cfg.delta_max_ratio:
+            quiet += 1
+
+    quiet_pct = quiet / len(widths) if widths else 0
+
+    # Сигнал: 50%+ свечей тихие
+    if quiet_pct < 0.50:
         return empty
 
-    small_pct = small / len(widths) if widths else 0
-    if small_pct >= 0.8:
+    if quiet_pct >= 0.8:
         status = "ОЧЕНЬ УЗКИЙ"
-    elif small_pct >= 0.6:
+    elif quiet_pct >= 0.6:
         status = "УЗКИЙ"
     else:
-        status = "НОРМА"
+        status = "ТИХИЙ"
 
     return ScanResult(
         symbol=symbol,
@@ -145,7 +147,7 @@ def analyze_symbol(
         avg_vol_ratio=round(avg_vol, 1),
         max_delta_ratio=round(max_delta, 1),
         avg_delta_ratio=round(avg_delta, 1),
-        small_candles=small,
+        small_candles=quiet,
         total_candles=len(widths),
         turnover_24h=turnover_24h,
         status=status,
