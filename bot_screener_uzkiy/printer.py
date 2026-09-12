@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+MSK = timezone(timedelta(hours=3))
 
 from tabulate import tabulate
 
@@ -22,7 +24,7 @@ def print_results(
 ) -> None:
     clear_console()
 
-    now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    now = datetime.now(MSK).strftime("%H:%M:%S MSK")
 
     print("=" * 85)
     print("  UZKIY SCREENER — Quiet Zone")

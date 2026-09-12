@@ -1,6 +1,7 @@
-"""Запуск всех скринеров на 6 часов + сохранение отчётов.
+"""Запуск 5 скринеров на 1 час + отчёты.
 
-Запуск: python run_all_screeners.py
+Скринеры: impulse, krugloe, uzkiy, yrovni, zakonomer
+Запуск: python run_5_screeners_1h.py
 Остановка: Ctrl+C
 """
 
@@ -19,7 +20,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 REPORTS_DIR = Path(r"C:\Users\79095\Desktop\trd\Отчеты скринера")
-RUN_DURATION = 21600  # 6 часов
+RUN_DURATION = 3600  # 1 час
 
 from core.config import get_env_bool, get_env_float, get_env_int, load_bot_env
 from core.logger import get_logger, setup_logging
@@ -27,20 +28,12 @@ from core.metrics import ScreenerMetrics
 
 logger = get_logger(__name__)
 
-# ============================================================
-# Конфигурация каждого скринера
-# ============================================================
-
-PUMP_DIR = _PROJECT_ROOT / "bot_screener_pump"
-KLIN_DIR = _PROJECT_ROOT / "bot_screener_klin"
 UZKIY_DIR = _PROJECT_ROOT / "bot_screener_uzkiy"
 YROVNI_DIR = _PROJECT_ROOT / "bot_screener_yrovni"
 KRUGLOE_DIR = _PROJECT_ROOT / "bot_screener_krugloe"
 IMPULSE_DIR = _PROJECT_ROOT / "bot_screener_impulse"
 ZAKONOMER_DIR = _PROJECT_ROOT / "bot_screener_zakonomer"
 
-
-# Ключи env, которые нужно чистить между скринерами чтобы избежать утечки
 _SCREENING_ENV_KEYS = [
     "BYBIT_API_KEY", "BYBIT_API_SECRET", "TESTNET", "TIMEFRAME", "TIMEFRAMES",
     "SCAN_INTERVAL", "MIN_TURNOVER_24H", "LOOKBACK_BARS", "MIN_PROBABILITY",
@@ -64,100 +57,8 @@ _SCREENING_ENV_KEYS = [
 
 
 def _clear_screener_env() -> None:
-    """Удалить env vars скринеров, чтобы load_bot_env корректно загружал новые."""
     for key in _SCREENING_ENV_KEYS:
         os.environ.pop(key, None)
-
-
-def _load_env(bot_dir: Path) -> dict:
-    """Загрузить .env скринера."""
-    _clear_screener_env()
-    load_bot_env(bot_dir)
-    return {
-        "api_key": os.getenv("BYBIT_API_KEY", ""),
-        "api_secret": os.getenv("BYBIT_API_SECRET", ""),
-        "testnet": get_env_bool("TESTNET", True),
-    }
-
-
-def _load_pump_config() -> tuple[dict, object]:
-    _clear_screener_env()
-    load_bot_env(PUMP_DIR)
-    from bot_screener_pump.scanner import AccumulationConfig
-
-    raw_exclude = os.getenv("EXCLUDE_SYMBOLS", "BTCUSDT,ETHUSDT")
-    exclude = [s.strip() for s in raw_exclude.split(",") if s.strip()]
-
-    env_cfg = {
-        "api_key": os.getenv("BYBIT_API_KEY", ""),
-        "api_secret": os.getenv("BYBIT_API_SECRET", ""),
-        "testnet": get_env_bool("TESTNET", True),
-        "timeframe": os.getenv("TIMEFRAME", "1D"),
-        "scan_interval": get_env_int("SCAN_INTERVAL", 3600),
-        "min_turnover_24h": get_env_float("MIN_TURNOVER_24H", 1_000_000),
-        "lookback_bars": get_env_int("LOOKBACK_BARS", 100),
-        "min_probability": get_env_float("MIN_PROBABILITY", 0.0),
-        "exclude_symbols": exclude,
-    }
-
-    acc_cfg = AccumulationConfig(
-        analysis_period=get_env_int("ANALYSIS_PERIOD", 100),
-        volume_lookback=get_env_int("VOLUME_LOOKBACK", 20),
-        obv_divergence_lookback=get_env_int("OBV_LOOKBACK", 30),
-        bb_period=get_env_int("BB_PERIOD", 20),
-        bb_dev=get_env_float("BB_DEV", 2.0),
-        rsi_period=get_env_int("RSI_PERIOD", 14),
-        smart_money_lookback=get_env_int("SMART_MONEY_LOOKBACK", 7),
-        max_price=get_env_float("MAX_PRICE", 0.03),
-        min_total_volume_usd=get_env_float("MIN_TOTAL_VOLUME_USD", 50_000_000),
-        range_max=get_env_float("RANGE_MAX", 999.0),
-        range_min=get_env_float("RANGE_MIN", 0.0),
-        volume_spike=get_env_float("VOLUME_SPIKE", 0.0),
-        bb_compression=get_env_float("BB_COMPRESSION", 999.0),
-        min_volume_usd=get_env_float("MIN_VOLUME_USD", 0.0),
-        min_trades=get_env_int("MIN_TRADES", 0),
-        max_spread=get_env_float("MAX_SPREAD", 999.0),
-        min_days_listed=get_env_int("MIN_DAYS_LISTED", 0),
-        max_volatility_3d=get_env_float("MAX_VOLATILITY_3D", 999.0),
-        max_drop_7d=get_env_float("MAX_DROP_7D", 999.0),
-        min_pump_probability=get_env_float("MIN_PUMP_PROBABILITY", 0.0),
-        weight_range=get_env_float("WEIGHT_RANGE", 0.0),
-        weight_volume=get_env_float("WEIGHT_VOLUME", 0.0),
-        weight_obv=get_env_float("WEIGHT_OBV", 0.0),
-        weight_bb=get_env_float("WEIGHT_BB", 0.0),
-        weight_smart_money=get_env_float("WEIGHT_SMART_MONEY", 0.0),
-        weight_outflow=get_env_float("WEIGHT_OUTFLOW", 0.0),
-        weight_rsi=get_env_float("WEIGHT_RSI", 0.0),
-        weight_liquidity=get_env_float("WEIGHT_LIQUIDITY", 0.0),
-    )
-
-    return env_cfg, acc_cfg
-
-
-def _load_klin_config() -> dict:
-    _clear_screener_env()
-    load_bot_env(KLIN_DIR)
-
-    raw_timeframes = os.getenv("TIMEFRAMES", "1,3,5")
-    timeframes = [t.strip() for t in raw_timeframes.split(",") if t.strip()]
-    raw_exclude = os.getenv("EXCLUDE_SYMBOLS", "BTCUSDT,ETHUSDT")
-    exclude = [s.strip() for s in raw_exclude.split(",") if s.strip()]
-
-    env_cfg = {
-        "api_key": os.getenv("BYBIT_API_KEY", ""),
-        "api_secret": os.getenv("BYBIT_API_SECRET", ""),
-        "testnet": get_env_bool("TESTNET", True),
-        "timeframes": timeframes,
-        "scan_interval": get_env_int("SCAN_INTERVAL", 10),
-        "min_turnover_24h": get_env_float("MIN_TURNOVER_24H", 10_000_000),
-        "lookback_bars": get_env_int("LOOKBACK_BARS", 50),
-        "spread_max_pct": get_env_float("SPREAD_MAX_PCT", 0.05),
-        "min_score": get_env_int("MIN_SCORE", 40),
-        "max_price": get_env_float("MAX_PRICE", 0),
-        "exclude_symbols": exclude,
-    }
-
-    return env_cfg
 
 
 def _load_uzkiy_config() -> tuple[dict, object]:
@@ -282,16 +183,11 @@ def _load_zakonomer_config() -> tuple[dict, object]:
     return env_cfg, scan_cfg
 
 
-# ============================================================
-# Сканеры (каждый возвращает свой список результатов)
-# ============================================================
-
 MAX_RETRIES = 3
-RETRY_BASE_DELAY = 30  # секунд
+RETRY_BASE_DELAY = 30
 
 
 async def _retry_call(coro_factory, name: str, max_retries: int = MAX_RETRIES):
-    """Вызвать coroutine с retry при 403/RateLimit."""
     for attempt in range(max_retries + 1):
         try:
             return await coro_factory()
@@ -308,111 +204,13 @@ async def _retry_call(coro_factory, name: str, max_retries: int = MAX_RETRIES):
 
 
 async def _staggered_start(fn, all_results: dict, delay: float) -> None:
-    """Запустить скринер с задержкой для снижения нагрузки на API."""
     if delay > 0:
         logger.info("Задержка %.0f сек перед стартом...", delay)
         await asyncio.sleep(delay)
     await fn(all_results)
 
 
-async def _run_pump(all_results: dict) -> None:
-    """Сканер pump."""
-    from bot_screener_pump.main import scan_once
-    from bot_screener_pump.scanner import AccumulationSignal
-
-    env_cfg, acc_cfg = _load_pump_config()
-    metrics = ScreenerMetrics()
-    signals: list[AccumulationSignal] = []
-
-    logger.info("[PUMP] Запуск (interval=%ss)", env_cfg["scan_interval"])
-
-    start = time.monotonic()
-    while time.monotonic() - start < RUN_DURATION:
-        try:
-            import bot_screener_pump.printer as printer_mod
-            import bot_screener_pump.main as main_mod
-
-            original_print = printer_mod.print_results
-            captured: dict = {"results": [], "meta": {}}
-
-            def _capture_print(results, **kwargs):
-                captured["results"] = list(results)
-                captured["meta"] = kwargs
-
-            printer_mod.print_results = _capture_print
-            main_mod.print_results = _capture_print
-            try:
-                await _retry_call(
-                    lambda: scan_once(env_cfg, acc_cfg, metrics), "PUMP"
-                )
-            finally:
-                printer_mod.print_results = original_print
-                main_mod.print_results = original_print
-
-            if captured["results"]:
-                signals.extend(captured["results"])
-
-        except Exception:
-            logger.exception("[PUMP] Ошибка сканирования")
-
-        remaining = RUN_DURATION - (time.monotonic() - start)
-        if remaining > 0:
-            await asyncio.sleep(min(env_cfg["scan_interval"], remaining))
-
-    all_results["pump"] = signals
-    logger.info("[PUMP] Завершено. Сигналов: %d", len(signals))
-
-
-async def _run_klin(all_results: dict) -> None:
-    """Сканер klin (сужение)."""
-    from bot_screener_klin.main import scan_once
-    from bot_screener_klin.scanner import ScanResult
-
-    env_cfg = _load_klin_config()
-    metrics = ScreenerMetrics()
-    signals: list[ScanResult] = []
-
-    logger.info("[KLIN] Запуск (interval=%ss)", env_cfg["scan_interval"])
-
-    start = time.monotonic()
-    while time.monotonic() - start < RUN_DURATION:
-        try:
-            import bot_screener_klin.printer as printer_mod
-            import bot_screener_klin.main as main_mod
-
-            original_print = printer_mod.print_results
-            captured: dict = {"results": [], "meta": {}}
-
-            def _capture_print(results, **kwargs):
-                captured["results"] = list(results)
-                captured["meta"] = kwargs
-
-            printer_mod.print_results = _capture_print
-            main_mod.print_results = _capture_print
-            try:
-                await _retry_call(
-                    lambda: scan_once(env_cfg, metrics), "KLIN"
-                )
-            finally:
-                printer_mod.print_results = original_print
-                main_mod.print_results = original_print
-
-            if captured["results"]:
-                signals.extend(captured["results"])
-
-        except Exception:
-            logger.exception("[KLIN] Ошибка сканирования")
-
-        remaining = RUN_DURATION - (time.monotonic() - start)
-        if remaining > 0:
-            await asyncio.sleep(min(env_cfg["scan_interval"], remaining))
-
-    all_results["klin"] = signals
-    logger.info("[KLIN] Завершено. Сигналов: %d", len(signals))
-
-
 async def _run_uzkiy(all_results: dict) -> None:
-    """Сканер uzkiy (узкий)."""
     from bot_screener_uzkiy.main import scan_once
     from bot_screener_uzkiy.scanner import ScanResult
 
@@ -460,7 +258,6 @@ async def _run_uzkiy(all_results: dict) -> None:
 
 
 async def _run_yrovni(all_results: dict) -> None:
-    """Сканер yrovni (POC)."""
     from bot_screener_yrovni.main import scan_once
     from bot_screener_yrovni.scanner import VPSignal
 
@@ -508,7 +305,6 @@ async def _run_yrovni(all_results: dict) -> None:
 
 
 async def _run_krugloe(all_results: dict) -> None:
-    """Сканер krugloe (круглые числа)."""
     from bot_screener_krugloe.main import scan_once
     from bot_screener_krugloe.scanner import RoundSignal
 
@@ -556,7 +352,6 @@ async def _run_krugloe(all_results: dict) -> None:
 
 
 async def _run_impulse(all_results: dict) -> None:
-    """Сканер impulse (импульсы)."""
     from bot_screener_impulse.main import scan_once
     from bot_screener_impulse.scanner import ImpulseSignal
 
@@ -604,7 +399,6 @@ async def _run_impulse(all_results: dict) -> None:
 
 
 async def _run_zakonomer(all_results: dict) -> None:
-    """Сканер zakonomer (закономерности.volume)."""
     from bot_screener_zakonomer.main import scan_once
     from bot_screener_zakonomer.scanner import ScanResult
 
@@ -652,86 +446,26 @@ async def _run_zakonomer(all_results: dict) -> None:
     logger.info("[ZAKONOMER] Завершено. Сигналов: %d", len(signals))
 
 
-# ============================================================
-# Генерация отчётов
-# ============================================================
+def _dedup_signals(signals: list, key_fn) -> list:
+    """Оставить только последний сигнал на каждый ключ (symbol/timeframe и т.д.)."""
+    seen: dict = {}
+    for s in signals:
+        key = key_fn(s)
+        seen[key] = s
+    return list(seen.values())
+
 
 def _generate_reports(all_results: dict) -> None:
-    """Сформировать txt-отчёты по каждому скринеру."""
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     now = datetime.now(MSK).strftime("%Y-%m-%d_%H-%M")
 
-    # --- PUMP ---
-    signals = all_results.get("pump", [])
-    with open(REPORTS_DIR / f"pump_{now}.txt", "w", encoding="utf-8") as f:
-        f.write("=" * 80 + "\n")
-        f.write("  ACCUMULATION SCREENER — Отчёт\n")
-        f.write(f"  Дата: {now} UTC | Сигналов: {len(signals)}\n")
-        f.write("=" * 80 + "\n\n")
-        if not signals:
-            f.write("  Сигналов не найдено за период.\n\n")
-        else:
-            for i, s in enumerate(signals, 1):
-                f.write(f"  {i}. {s.symbol} [{s.timeframe}]\n")
-                f.write(f"     Цена: {s.price:.4f}\n")
-                f.write(f"     Вероятность: {s.pump_probability:.1%}\n")
-                f.write(f"     Статус: {s.status}\n")
-                f.write(f"     Диапазон: {s.range_pct}%\n")
-                f.write(f"     B/S ratio: {s.buy_sell_ratio:.2f}\n")
-                f.write(f"     F(Диапазон)={s.f_range:.2f} F(Объем)={s.f_volume:.2f} "
-                        f"F(OBV)={s.f_obv:.2f} F(BB)={s.f_bb:.2f} "
-                        f"F(Smart)={s.f_smart_money:.2f}\n")
-                f.write(f"     Время: {s.signal_time}\n\n")
-
-        f.write("\n--- КОММЕНТАРИЙ ---\n")
-        if not signals:
-            f.write("Сигналов нет. Это может означать:\n")
-            f.write("1. Рынок в нейтральной фазе — нет явного накопления.\n")
-            f.write("2. Параметры фильтрации слишком строгие.\n")
-            f.write("3. Период 1 час мал для поиска паттернов накопления.\n")
-        else:
-            f.write(f"Найдено {len(signals)} сигналов. Рекомендую:\n")
-            f.write("- Проверить топ-3 по вероятности вручную.\n")
-            f.write("- Обратить внимание на статус КРИТИЧЕСКИЙ/СИЛЬНЫЙ.\n")
-            f.write("- Не входить сразу — ждать подтверждения на H1/H4.\n")
-        f.write("\n" + "=" * 80 + "\n")
-
-    # --- KLIN ---
-    signals = all_results.get("klin", [])
-    with open(REPORTS_DIR / f"klin_{now}.txt", "w", encoding="utf-8") as f:
-        f.write("=" * 80 + "\n")
-        f.write("  СКРИНЕР СУЖЕНИЯ ДИАПАЗОНА — Отчёт\n")
-        f.write(f"  Дата: {now} UTC | Сигналов: {len(signals)}\n")
-        f.write("=" * 80 + "\n\n")
-        if not signals:
-            f.write("  Сигналов не найдено за период.\n\n")
-        else:
-            for i, s in enumerate(signals, 1):
-                f.write(f"  {i}. {s.symbol} [{s.timeframe}]\n")
-                f.write(f"     Цена: {s.price:.4f}\n")
-                f.write(f"     Тип сужения: {s.squeeze_type.value if s.squeeze_type else 'N/A'}\n")
-                f.write(f"     Направление: {s.direction or 'N/A'}\n")
-                f.write(f"     ATR: {s.atr_current:.4f} ({s.atr_percent:.2f}%)\n")
-                f.write(f"     BB: {s.bb_width:.2f}% | ADX: {s.adx_value:.1f}\n")
-                f.write(f"     Score: {s.score}\n")
-                f.write(f"     Spread: {s.spread_pct:.3f}%\n")
-                f.write(f"     Время: {s.signal_time}\n\n")
-
-        f.write("\n--- КОММЕНТАРИЙ ---\n")
-        if not signals:
-            f.write("Сжатий не найдено. Возможно:\n")
-            f.write("1. Рынок в трендовой фазе — нет консолидации.\n")
-            f.write("2. min_score слишком высокий.\n")
-            f.write("3. Спреды слишком высокие для скальпинга.\n")
-        else:
-            f.write(f"Найдено {len(signals)} сжатий. Рекомендую:\n")
-            f.write("- Сфокусироваться на сигналах с ADX > 25 (сильный тренд после сжатия).\n")
-            f.write("- Проверить спред — чем ниже, тем лучше для скальпинга.\n")
-            f.write("- Ждать breakout из сужения, а не входить внутрь.\n")
-        f.write("\n" + "=" * 80 + "\n")
+    # Лог дедупликации
+    for name in ["uzkiy", "yrovni", "krugloe", "impulse", "zakonomer"]:
+        raw = len(all_results.get(name, []))
+        logger.info("[%s] До дедупликации: %d сигналов", name.upper(), raw)
 
     # --- UZKIY ---
-    signals = all_results.get("uzkiy", [])
+    signals = _dedup_signals(all_results.get("uzkiy", []), lambda s: s.symbol)
     with open(REPORTS_DIR / f"uzkiy_{now}.txt", "w", encoding="utf-8") as f:
         f.write("=" * 80 + "\n")
         f.write("  СКРИНЕР УЗКОГО ДИАПАЗОНА — Отчёт\n")
@@ -749,7 +483,6 @@ def _generate_reports(all_results: dict) -> None:
                 f.write(f"     Оборот: ${s.turnover_24h / 1_000_000:.0f}M\n")
                 f.write(f"     Статус: {s.status}\n")
                 f.write(f"     Время: {s.signal_time}\n\n")
-
         f.write("\n--- КОММЕНТАРИЙ ---\n")
         if not signals:
             f.write("Сжатий не найдено. Возможно:\n")
@@ -763,7 +496,7 @@ def _generate_reports(all_results: dict) -> None:
         f.write("\n" + "=" * 80 + "\n")
 
     # --- YROVNI ---
-    signals = all_results.get("yrovni", [])
+    signals = _dedup_signals(all_results.get("yrovni", []), lambda s: s.symbol)
     with open(REPORTS_DIR / f"yrovni_{now}.txt", "w", encoding="utf-8") as f:
         f.write("=" * 80 + "\n")
         f.write("  VOLUME PROFILE SCREENER — POC + Дневные уровни — Отчёт\n")
@@ -784,7 +517,6 @@ def _generate_reports(all_results: dict) -> None:
                     for lvl in s.daily_levels:
                         f.write(f"       {lvl.level_type}: {lvl.price:.4f} (расст={lvl.distance_pct}%)\n")
                 f.write(f"     Время: {s.scan_time}\n\n")
-
         f.write("\n--- КОММЕНТАРИЙ ---\n")
         if not signals:
             f.write("Уровней не найдено. Возможно:\n")
@@ -798,7 +530,7 @@ def _generate_reports(all_results: dict) -> None:
         f.write("\n" + "=" * 80 + "\n")
 
     # --- KRUGLOE ---
-    signals = all_results.get("krugloe", [])
+    signals = _dedup_signals(all_results.get("krugloe", []), lambda s: s.symbol)
     with open(REPORTS_DIR / f"krugloe_{now}.txt", "w", encoding="utf-8") as f:
         f.write("=" * 80 + "\n")
         f.write("  СКРИНЕР КРУГЛЫХ ЧИСЕЛ — Отчёт\n")
@@ -814,7 +546,6 @@ def _generate_reports(all_results: dict) -> None:
                 f.write(f"     Расстояние: {s.proximity_pct:.2f}%\n")
                 f.write(f"     Оборот: ${s.turnover_24h / 1_000_000:.0f}M\n")
                 f.write(f"     Время: {s.signal_time}\n\n")
-
         f.write("\n--- КОММЕНТАРИЙ ---\n")
         if not signals:
             f.write("Круглых чисел рядом нет. Возможно:\n")
@@ -828,7 +559,7 @@ def _generate_reports(all_results: dict) -> None:
         f.write("\n" + "=" * 80 + "\n")
 
     # --- IMPULSE ---
-    signals = all_results.get("impulse", [])
+    signals = _dedup_signals(all_results.get("impulse", []), lambda s: f"{s.symbol}_{s.timeframe}")
     with open(REPORTS_DIR / f"impulse_{now}.txt", "w", encoding="utf-8") as f:
         f.write("=" * 80 + "\n")
         f.write("  IMPULSE SCREENER — Тиковый объем + Дельта + Ширина — Отчёт\n")
@@ -847,7 +578,6 @@ def _generate_reports(all_results: dict) -> None:
                 f.write(f"     Подтверждено: {'Да' if s.confirmed else 'Нет'}\n")
                 f.write(f"     Оборот: ${s.turnover_24h / 1_000_000:.0f}M\n")
                 f.write(f"     Время: {s.signal_time}\n\n")
-
         f.write("\n--- КОММЕНТАРИЙ ---\n")
         if not signals:
             f.write("Импульсов не найдено. Возможно:\n")
@@ -862,11 +592,11 @@ def _generate_reports(all_results: dict) -> None:
         f.write("\n" + "=" * 80 + "\n")
 
     # --- ZAKONOMER ---
-    signals = all_results.get("zakonomer", [])
+    signals = _dedup_signals(all_results.get("zakonomer", []), lambda s: s.symbol)
     with open(REPORTS_DIR / f"zakonomer_{now}.txt", "w", encoding="utf-8") as f:
         f.write("=" * 80 + "\n")
         f.write("  ZAKONOMER — ГРАФИК АКТИВНОСТИ ВСПЛЕСКОВ ОБЪЁМА\n")
-        f.write(f"  Дата: {now} MSK | Символов: {len(signals)}\n")
+        f.write(f"  Дата: {now} UTC | Символов: {len(signals)}\n")
         f.write("=" * 80 + "\n\n")
         if not signals:
             f.write("  Паттернов не найдено за период.\n\n")
@@ -876,11 +606,9 @@ def _generate_reports(all_results: dict) -> None:
             f.write("  3. lookback_days слишком мал.\n")
         else:
             for i, s in enumerate(signals, 1):
-                # --- Заголовок символа ---
                 f.write(f"  {i}. {s.symbol}\n")
                 f.write(f"     Свечей: {s.total_candles} | Всплесков: {s.spikes_found} | Порог: ${s.threshold_usd:,.0f}\n\n")
 
-                # --- Тепловая карта 24 часа ---
                 hour_map = {p.hour: p for p in s.hourly_patterns}
                 max_count = max((p.count for p in s.hourly_patterns), default=1)
 
@@ -910,7 +638,6 @@ def _generate_reports(all_results: dict) -> None:
 
                     f.write(f"       {h:02d}:00  {bar}  {count:2d}x ({pct:4.1f}%)  {label}\n")
 
-                # --- Банды активности ---
                 all_counts = [hour_map[h].count if h in hour_map else 0 for h in range(24)]
                 sorted_counts = sorted(all_counts)
                 p25 = sorted_counts[5]
@@ -932,7 +659,6 @@ def _generate_reports(all_results: dict) -> None:
                 if quiet:
                     f.write(f"       Тихо:      {', '.join(f'{h:02d}:00' for h in quiet)}\n")
 
-                # Дни недели
                 if s.weekday_patterns:
                     f.write("\n     Дни недели:\n")
                     max_wd = max(c for _, c in s.weekday_patterns) if s.weekday_patterns else 1
@@ -941,7 +667,6 @@ def _generate_reports(all_results: dict) -> None:
                         bar = "█" * bar_len + "░" * (15 - bar_len)
                         f.write(f"       {d:12s}  {bar}  {c}x\n")
 
-                # Топ-3 всплеска
                 if s.top_spikes:
                     f.write("\n     Топ-3 всплеска:\n")
                     for sp in s.top_spikes[:3]:
@@ -953,93 +678,6 @@ def _generate_reports(all_results: dict) -> None:
                 f.write(f"\n     Время сканирования: {s.signal_time}\n")
                 f.write("\n" + "─" * 80 + "\n\n")
 
-            # --- ОБЩИЙ ИТОГ АКТИВНОСТИ ПО ЧАСАМ (все символы) ---
-            f.write("=" * 80 + "\n")
-            f.write("  ОБЩИЙ ИТОГ АКТИВНОСТИ ПО ЧАСАМ (ВСЕ СИМВОЛЫ)\n")
-            f.write("=" * 80 + "\n\n")
-
-            # Собираем данные по часам со всех символов
-            agg_hour_counts = {}  # hour -> total_count
-            agg_hour_pct = {}     # hour -> avg pct
-            for s in signals:
-                hour_map = {p.hour: p for p in s.hourly_patterns}
-                for h in range(24):
-                    tp = hour_map.get(h)
-                    cnt = tp.count if tp else 0
-                    pct = tp.pct if tp else 0.0
-                    agg_hour_counts[h] = agg_hour_counts.get(h, 0) + cnt
-                    agg_hour_pct[h] = agg_hour_pct.get(h, 0.0) + pct
-
-            n_symbols = len(signals)
-            # Усредняем pct по количеству символов
-            for h in range(24):
-                agg_hour_pct[h] = agg_hour_pct[h] / n_symbols if n_symbols else 0
-
-            max_agg = max(agg_hour_counts.values()) if agg_hour_counts else 1
-            if max_agg == 0:
-                max_agg = 1
-
-            # Тепловая карта общая
-            f.write("  Час (MSK)   Бар                              Всего   Ср.%   Градация\n")
-            f.write("  " + "─" * 70 + "\n")
-
-            agg_sorted = sorted(agg_hour_counts.values())
-            a_p25 = agg_sorted[5] if len(agg_sorted) > 5 else 0
-            a_p50 = agg_sorted[11] if len(agg_sorted) > 11 else 0
-            a_p75 = agg_sorted[17] if len(agg_sorted) > 17 else 0
-
-            for h in range(24):
-                cnt = agg_hour_counts.get(h, 0)
-                pct = agg_hour_pct.get(h, 0.0)
-
-                if cnt == 0:
-                    bar = "░░░░░░░░░░"
-                    label = "Тихо"
-                else:
-                    ratio = cnt / max_agg
-                    if ratio >= 0.75:
-                        bar = "██████████"
-                        label = "ПИК"
-                    elif ratio >= 0.50:
-                        bar = "▓▓▓▓▓▓░░░░"
-                        label = "Активно"
-                    elif ratio >= 0.25:
-                        bar = "▓▓▓▓░░░░░░"
-                        label = "Умеренно"
-                    else:
-                        bar = "▓▓░░░░░░░░"
-                        label = "Слабо"
-
-                f.write(f"    {h:02d}:00    {bar}    {cnt:3d}x   {pct:5.1f}%   {label}\n")
-
-            # Градация общая
-            all_agg = [agg_hour_counts.get(h, 0) for h in range(24)]
-            sorted_agg = sorted(all_agg)
-            ga_p25 = sorted_agg[5] if len(sorted_agg) > 5 else 0
-            ga_p50 = sorted_agg[11] if len(sorted_agg) > 11 else 0
-            ga_p75 = sorted_agg[17] if len(sorted_agg) > 17 else 0
-
-            g_peak = [h for h in range(24) if all_agg[h] > ga_p75 and all_agg[h] > 0]
-            g_active = [h for h in range(24) if ga_p50 < all_agg[h] <= ga_p75]
-            g_moderate = [h for h in range(24) if ga_p25 < all_agg[h] <= ga_p50]
-            g_quiet = [h for h in range(24) if 0 < all_agg[h] <= ga_p25]
-            g_empty = [h for h in range(24) if all_agg[h] == 0]
-
-            f.write("\n  Градация (среди " + str(n_symbols) + " символов):\n")
-            if g_peak:
-                f.write(f"    ПИК:       {', '.join(f'{h:02d}:00' for h in g_peak)}\n")
-            if g_active:
-                f.write(f"    Активно:   {', '.join(f'{h:02d}:00' for h in g_active)}\n")
-            if g_moderate:
-                f.write(f"    Умеренно:  {', '.join(f'{h:02d}:00' for h in g_moderate)}\n")
-            if g_quiet:
-                f.write(f"    Тихо:      {', '.join(f'{h:02d}:00' for h in g_quiet)}\n")
-            if g_empty:
-                f.write(f"    Пусто:     {', '.join(f'{h:02d}:00' for h in g_empty)}\n")
-
-            f.write("\n" + "=" * 80 + "\n\n")
-
-            # --- Итоговый комментарий ---
             f.write("--- КОММЕНТАРИЙ ---\n")
             f.write(f"Найдено {len(signals)} символов с паттернами спайков.\n\n")
             f.write("Градация по часам (MSK):\n")
@@ -1057,29 +695,21 @@ def _generate_reports(all_results: dict) -> None:
     logger.info("Отчёты сохранены в %s", REPORTS_DIR)
 
 
-# ============================================================
-# Main
-# ============================================================
-
 async def main() -> None:
-    """Запуск всех скринеров на 6 часов."""
-    setup_logging("logs/run_all_screeners.log", "INFO")
+    setup_logging("logs/run_5_screeners_1h.log", "INFO")
     logger.info("=" * 60)
-    logger.info("ЗАПУСК ВСЕХ СКРИНЕРОВ НА 6 ЧАСОВ")
+    logger.info("ЗАПУСК 5 СКРИНЕРОВ НА 1 ЧАС")
+    logger.info("Скринеры: uzkiy, yrovni, krugloe, impulse, zakonomer")
     logger.info("Отчёты: %s", REPORTS_DIR)
     logger.info("=" * 60)
 
     all_results: dict = {}
-
     start = time.monotonic()
 
-    # Запускаем с задержками чтобы не trip rate limit
-    STAGGER_DELAY = 30  # секунд между стартами (Bybit rate limit ~2 req/s)
+    STAGGER_DELAY = 30
 
     tasks = []
     for i, (name, fn) in enumerate([
-        ("pump", _run_pump),
-        ("klin", _run_klin),
         ("uzkiy", _run_uzkiy),
         ("yrovni", _run_yrovni),
         ("krugloe", _run_krugloe),
@@ -1099,7 +729,6 @@ async def main() -> None:
     elapsed = time.monotonic() - start
     logger.info("Общее время: %.0f сек", elapsed)
 
-    # Генерация отчётов
     logger.info("Генерирую отчёты...")
     _generate_reports(all_results)
 

@@ -6,7 +6,9 @@ import asyncio
 import os
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+MSK = timezone(timedelta(hours=3))
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -184,7 +186,7 @@ async def main():
     scan_limit = 200
 
     duration_sec = 90 * 60  # 90 минут
-    start_time = datetime.now(timezone.utc)
+    start_time = datetime.now(MSK)
     end_time_scan = time.time() + duration_sec
 
     print(f"Старт: {start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
@@ -201,7 +203,7 @@ async def main():
 
     while time.time() < end_time_scan:
         scans_count += 1
-        now = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        now = datetime.now(MSK).strftime("%H:%M:%S")
         print(f"[{now}] Прогон #{scans_count}...", end=" ", flush=True)
 
         try:
@@ -235,7 +237,7 @@ async def main():
         print(f"  Пауза {wait:.0f} сек...")
         await asyncio.sleep(wait)
 
-    end_time = datetime.now(timezone.utc)
+    end_time = datetime.now(MSK)
 
     # Сохраняем отчёт
     report = format_report(all_signals, start_time, end_time, scans_count)

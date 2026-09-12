@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+MSK = timezone(timedelta(hours=3))
 
 from core.logger import get_logger
 
@@ -154,5 +156,5 @@ def scan_symbol(
         level=nearest,
         proximity_pct=round(proximity, 2),
         turnover_24h=turnover_24h,
-        signal_time=datetime.now(timezone.utc).strftime("%H:%M:%S"),
+        signal_time=datetime.now(MSK).strftime("%H:%M:%S"),
     )

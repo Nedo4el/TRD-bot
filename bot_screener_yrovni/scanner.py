@@ -15,8 +15,8 @@ logger = get_logger(__name__)
 
 # Периоды для POC-анализа: (таймфрейм, количество свечей)
 POC_PERIODS = {
-    "12h": ("1H", 12),
-    "24h": ("1H", 24),
+    "12h": ("60", 12),
+    "24h": ("60", 24),
     "7d": ("D", 7),
     "30d": ("D", 30),
 }
@@ -109,36 +109,52 @@ def find_poc(
 
 
 def find_daily_levels(
-    daily_candles: list[dict],
+    hourly_candles: list[dict],
     current_price: float,
     proximity_pct: float = 10.0,
 ) -> list[DailyLevel]:
-    """Найти дневные уровни — open/close вчерашней свечи.
+    """Найти дневные уровни (High/Low) по UTC (03:00 МСК).
+
+    Собирает дневную свечу из 1H баров: 00:00–23:00 UTC.
+    Уровни — High и Low вчерашней свечи (шпильки, не тело).
 
     Args:
-        daily_candles: дневные свечи (от старых к новым).
+        hourly_candles: часовые свечи (последние ~48ч).
         current_price: текущая цена.
         proximity_pct: порог приближения в %.
 
     Returns:
         Список дневных уровней в пределах proximity_pct.
     """
-    if len(daily_candles) < 2:
+    if len(hourly_candles) < 24:
         return []
 
-    # Вчерашняя свеча — предпоследняя
-    yesterday = daily_candles[-2]
-    open_price = yesterday["open"]
-    close_price = yesterday["close"]
+    from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+
+MSK = timezone(timedelta(hours=3))
+
+    days: dict[str, list[dict]] = defaultdict(list)
+    for c in hourly_candles:
+        dt = datetime.fromtimestamp(c["open_time"] / 1000, tz=timezone.utc)
+        day_key = dt.strftime("%Y-%m-%d")
+        days[day_key].append(c)
+
+    sorted_days = sorted(days.keys())
+    if len(sorted_days) < 2:
+        return []
+
+    yesterday_key = sorted_days[-2]
+    yesterday_candles = days[yesterday_key]
+
+    day_high = max(c["high"] for c in yesterday_candles)
+    day_low = min(c["low"] for c in yesterday_candles)
 
     levels = []
-
-    for level_type, price in [("OPEN", open_price), ("CLOSE", close_price)]:
+    for level_type, price in [("HIGH", day_high), ("LOW", day_low)]:
         if price <= 0:
             continue
-
         distance_pct = abs(current_price - price) / current_price * 100
-
         if distance_pct <= proximity_pct:
             levels.append(
                 DailyLevel(
@@ -154,7 +170,7 @@ def find_daily_levels(
 def scan_symbol(
     symbol: str,
     candles_by_period: dict[str, list[dict]],
-    daily_candles: list[dict],
+    hourly_candles: list[dict],
     *,
     num_bins: int = 100,
     proximity_pct: float = 10.0,
@@ -164,14 +180,14 @@ def scan_symbol(
     Args:
         symbol: торговая пара.
         candles_by_period: {период: список свечей}.
-        daily_candles: дневные свечи для дневных уровней.
+        hourly_candles: часовые свечи для построения дневных уровней.
         num_bins: количество ценовых корзин.
         proximity_pct: порог приближения в %.
 
     Returns:
         VPSignal с POC-уровнями и дневными уровнями.
     """
-    now = datetime.now(timezone.utc).strftime("%H:%M")
+    now = datetime.now(MSK).strftime("%H:%M")
 
     # Берём текущую цену из любого периода
     for period_candles in candles_by_period.values():
@@ -207,8 +223,8 @@ def scan_symbol(
                 )
             )
 
-    # Дневные уровни
-    daily_levels = find_daily_levels(daily_candles, current_price, proximity_pct)
+    # Дневные уровни из часовых свечей (UTC)
+    daily_levels = find_daily_levels(hourly_candles, current_price, proximity_pct)
 
     # Сортируем по расстоянию
     poc_levels.sort(key=lambda x: x.distance_pct)

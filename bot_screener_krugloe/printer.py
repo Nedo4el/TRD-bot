@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from bot_screener_krugloe.scanner import RoundSignal
+
+MSK = timezone(timedelta(hours=3))
 
 
 def print_results(
@@ -13,10 +17,11 @@ def print_results(
     proximity_pct: float,
 ) -> None:
     """Вывести таблицу результатов."""
+    now = datetime.now(MSK).strftime("%H:%M:%S MSK")
     header = (
         f"\n{'='*130}\n"
         f"  СКРИНЕР КРУГЛЫХ ЧИСЕЛ — Психологические уровни\n"
-        f"  Bybit USDT-M | Проксимити: {proximity_pct}%\n"
+        f"  Bybit USDT-M | {now} | Проксимити: {proximity_pct}%\n"
         f"{'='*130}"
     )
     print(header)

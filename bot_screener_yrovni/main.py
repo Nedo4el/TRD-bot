@@ -91,20 +91,20 @@ async def scan_once(cfg: dict, metrics: ScreenerMetrics) -> None:
         if not candles_by_period:
             continue
 
-        # Дневные свечи для дневных уровней
-        daily_candles = await fetcher.get_klines(
+        # Дневные свечи для дневных уровней — собираем из 1H по UTC
+        hourly_candles = await fetcher.get_klines(
             symbol=symbol,
-            interval="D",
-            limit=5,
+            interval="60",
+            limit=48,
         )
 
-        if not daily_candles:
+        if not hourly_candles:
             continue
 
         result = scan_symbol(
             symbol=symbol,
             candles_by_period=candles_by_period,
-            daily_candles=daily_candles,
+            hourly_candles=hourly_candles,
             num_bins=cfg["num_bins"],
             proximity_pct=cfg["proximity_pct"],
         )

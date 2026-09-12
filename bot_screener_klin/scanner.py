@@ -5,71 +5,20 @@
 2. ATR compression — ATR упал на 30%+ за последние 10 свечей.
 3. Треугольник/вымпел/клин — линии регрессии по локальным экстремумам.
 4. ADX фильтр — ADX < 20 = ложное сжатие, ADX > 25 + squeeze = сильный сигнал.
-
-Все пороги нормированы на цену (% от цены за свечу) — универсально для BTC и DOGE.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+MSK = timezone(timedelta(hours=3))
 from enum import Enum
 
 from core.indicators import adx, atr, bollinger
 from core.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-# ============================================================
-# Конфигурация паттернов (настраивай здесь)
-# ============================================================
-
-
-@dataclass
-class PatternConfig:
-    """Все настраиваемые пороги для детекции паттернов.
-
-    Наклоны нормированы: slope / current_price * 100 (% от цены за свечу).
-    """
-
-    # --- Extrema ---
-    extrema_window: int = 5  # полуха окна поиска пивотов
-
-    # --- Наклоны (в % от цены за свечу) ---
-    slope_up: float = 0.3  # > 0.3% → восходящий
-    slope_down: float = -0.3  # < -0.3% → нисходящий
-    slope_flat: float = 0.1  # |slope| < 0.1% → горизонтальный
-
-    # --- Сжатие ---
-    compression_ratio: float = 0.75  # текущая ширина / ширина 10 свечей назад
-    triangle_lookback: int = 30  # сколько свечей анализировать
-    min_range_pct: float = 10.0  # минимальный начальный диапазон в %
-
-    # --- BB squeeze ---
-    bb_lookback: int = 20  # окно для минимума BB
-
-    # --- ATR ---
-    atr_lookback: int = 10  # окно падения ATR
-    atr_drop_threshold: float = 0.3  # ATR упал на 30%+
-
-    # --- ADX ---
-    adx_false_threshold: int = 20  # < 20 = ложное
-    adx_strong_threshold: int = 25  # > 25 = сильный
-
-    # --- Вымпел ---
-    pennant_max_candles: int = 15  # макс. длина вымпела
-    pennant_impulse: float = 0.03  # импульс 3% до паттерна
-
-    # --- Индикаторы ---
-    bb_period: int = 20
-    bb_dev: float = 2.0
-    atr_period: int = 14
-    adx_period: int = 14
-
-
-# дефолтный конфиг
-DEFAULT_CONFIG = PatternConfig()
 
 
 # ============================================================
@@ -179,20 +128,13 @@ def _detect_triangle(
     lows: list[float],
     closes: list[float],
     current_price: float,
-    cfg: PatternConfig,
 ) -> tuple[float, float, float, SqueezeType | None]:
-    """Детектировать клин/треугольник через регрессию по экстремумам.
+    """Детектировать клин/треугольник через регрессию по экстремумам."""
+    extrema_window = 5
+    triangle_lookback = 30
+    slope_flat = 0.1
 
-    Настоящий клин:
-      - Максимумы убывают (нисходящая линия сопротивления).
-      - Минимумы возрастают (восходящая линия поддержки).
-      - Линии сходятся к апексу.
-      - Не в тренде — боковое движение.
-
-    Returns:
-        (norm_upper_slope, norm_lower_slope, compression_coef, squeeze_type).
-    """
-    lookback = cfg.triangle_lookback
+    lookback = triangle_lookback
     if len(highs) < lookback or len(lows) < lookback:
         return 0.0, 0.0, 0.0, None
 
@@ -200,7 +142,6 @@ def _detect_triangle(
     lo = lows[-lookback:]
     c = closes[-lookback:] if len(closes) >= lookback else closes
 
-    # --- Фильтр тренда: не ловить сильное направленное движение ---
     if len(c) >= 10:
         up_count = sum(1 for i in range(1, len(c)) if c[i] > c[i - 1])
         down_count = sum(1 for i in range(1, len(c)) if c[i] < c[i - 1])
@@ -209,24 +150,19 @@ def _detect_triangle(
         if trend_ratio > 0.80:
             return 0.0, 0.0, 0.0, None
 
-    # --- Найти локальные экстремумы ---
-    maxs_idx, mins_idx = _find_local_extrema(h, cfg.extrema_window)
+    maxs_idx, mins_idx = _find_local_extrema(h, extrema_window)
 
-    # Нужно минимум 2 максимума и 2 минимума для регрессии
     if len(maxs_idx) < 2 or len(mins_idx) < 2:
         return 0.0, 0.0, 0.0, None
 
-    # --- Регрессия по максимумам (верхняя линия) ---
     max_vals = [h[i] for i in maxs_idx]
     max_slope, max_intercept = _linear_regression(max_vals)
     max_positions = list(range(len(max_vals)))
     max_vals_fit = [max_slope * x + max_intercept for x in max_positions]
 
-    # Нормализация наклона на среднюю цену
     avg_price = sum(max_vals) / len(max_vals) if max_vals else current_price
     norm_upper = (max_slope / avg_price * 100) if avg_price > 0 else 0.0
 
-    # --- Регрессия по минимумам (нижняя линия) ---
     min_vals = [lo[i] for i in mins_idx]
     min_slope, min_intercept = _linear_regression(min_vals)
     min_positions = list(range(len(min_vals)))
@@ -235,15 +171,12 @@ def _detect_triangle(
     avg_price_l = sum(min_vals) / len(min_vals) if min_vals else current_price
     norm_lower = (min_slope / avg_price_l * 100) if avg_price_l > 0 else 0.0
 
-    # --- Проверка: максимумы убывают, минимумы возрастают ---
     highs_decreasing = max_slope < 0
     lows_increasing = min_slope > 0
 
     if not highs_decreasing and not lows_increasing:
         return 0.0, 0.0, 0.0, None
 
-    # --- Расчёт сходимости: насколько линии сжимаются ---
-    # Начальная и конечная ширина канала
     first_upper = max_vals_fit[0]
     first_lower = min_vals_fit[0]
     last_upper = max_vals_fit[-1]
@@ -257,30 +190,22 @@ def _detect_triangle(
 
     compression_coef = 1.0 - (last_width / first_width) if first_width > 0 else 0.0
 
-    # Сжатие должно быть значимым (> 15%)
     if compression_coef < 0.15:
         return 0.0, 0.0, 0.0, None
 
-    # --- Точка апекса: где линии пересекутся ---
-    # upper_line(x) = max_slope * x + max_intercept
-    # lower_line(x) = min_slope * x + min_intercept
-    # Пересечение: max_slope * x + max_intercept = min_slope * x + min_intercept
-    # x = (min_intercept - max_intercept) / (max_slope - min_slope)
     slope_diff = max_slope - min_slope
     if abs(slope_diff) < 1e-12:
         return 0.0, 0.0, 0.0, None
 
     apex_x = (min_intercept - max_intercept) / slope_diff
 
-    # Апекс должен быть впереди (от 3 до 30 баров)
     if apex_x < 3 or apex_x > 30:
         return 0.0, 0.0, 0.0, None
 
-    # --- Тип паттерна ---
     squeeze_type: SqueezeType | None = None
     if highs_decreasing and lows_increasing:
         avg_abs = (abs(norm_upper) + abs(norm_lower)) / 2
-        if avg_abs < cfg.slope_flat:
+        if avg_abs < slope_flat:
             squeeze_type = SqueezeType.PENNANT
         else:
             squeeze_type = SqueezeType.TRIANGLE
@@ -337,25 +262,19 @@ def scan_symbol(
     timeframe: str,
     candles: list[dict],
     *,
-    cfg: PatternConfig | None = None,
     turnover_24h: float = 0.0,
     spread_pct: float = 0.0,
 ) -> ScanResult:
-    """Просканировать один символ на сжатие диапазона.
-
-    Args:
-        symbol: торговая пара.
-        timeframe: таймфрейм.
-        candles: список свечей.
-        cfg: конфигурация порогов (None = дефолт).
-        turnover_24h: оборот за 24ч.
-        spread_pct: спред в %.
-
-    Returns:
-        ScanResult с результатом.
-    """
-    if cfg is None:
-        cfg = DEFAULT_CONFIG
+    """Просканировать один символ на сжатие диапазона."""
+    bb_period = 20
+    bb_dev = 2.0
+    atr_period = 14
+    adx_period = 14
+    bb_lookback = 20
+    atr_lookback = 10
+    atr_drop_threshold = 0.3
+    adx_false_threshold = 20
+    adx_strong_threshold = 25
 
     empty = ScanResult(
         symbol=symbol,
@@ -374,15 +293,7 @@ def scan_symbol(
         spread_pct=spread_pct,
     )
 
-    min_candles = (
-        max(
-            cfg.bb_period,
-            cfg.atr_period * 2,
-            cfg.adx_period * 2,
-            cfg.triangle_lookback,
-        )
-        + 10
-    )
+    min_candles = max(bb_period, atr_period * 2, adx_period * 2, 30) + 10
     if len(candles) < min_candles:
         return empty
 
@@ -394,10 +305,9 @@ def scan_symbol(
     if current_price <= 0:
         return empty
 
-    # === Индикаторы ===
-    upper, middle, lower = bollinger(closes, cfg.bb_period, cfg.bb_dev)
-    atr_vals = atr(highs, lows, closes, cfg.atr_period)
-    adx_vals = adx(highs, lows, closes, cfg.adx_period)
+    upper, middle, lower = bollinger(closes, bb_period, bb_dev)
+    atr_vals = atr(highs, lows, closes, atr_period)
+    adx_vals = adx(highs, lows, closes, adx_period)
 
     if not middle or not atr_vals or not adx_vals:
         return empty
@@ -414,56 +324,32 @@ def scan_symbol(
     atr_pct = (current_atr / current_price * 100) if current_price > 0 else 0.0
     current_adx = adx_vals[-1]
 
-    # === Детекция ===
-    bb_squeeze, _ = _detect_bb_squeeze(bbw_history, cfg.bb_lookback)
+    bb_squeeze, _ = _detect_bb_squeeze(bbw_history, bb_lookback)
     atr_compression, _ = _detect_atr_compression(
-        atr_vals,
-        cfg.atr_lookback,
-        cfg.atr_drop_threshold,
+        atr_vals, atr_lookback, atr_drop_threshold,
     )
     norm_upper, norm_lower, compression_coef, triangle_type = _detect_triangle(
-        highs,
-        lows,
-        closes,
-        current_price,
-        cfg,
+        highs, lows, closes, current_price,
     )
 
     logger.debug(
         "%s %s: upper=%.3f%% lower=%.3f%% comp=%.3f ADX=%.1f BB%=%.2f",
-        symbol,
-        timeframe,
-        norm_upper,
-        norm_lower,
-        compression_coef,
-        current_adx,
-        bbw_pct,
+        symbol, timeframe, norm_upper, norm_lower, compression_coef,
+        current_adx, bbw_pct,
     )
 
-    # === ADX фильтр ===
-    if current_adx < cfg.adx_false_threshold:
+    if current_adx < adx_false_threshold:
         return ScanResult(
-            symbol=symbol,
-            timeframe=timeframe,
-            price=current_price,
-            squeeze_type=None,
-            atr_current=current_atr,
-            atr_percent=atr_pct,
-            bb_width=bbw_pct,
-            adx_value=current_adx,
-            direction="",
-            stop_loss=0.0,
-            take_profit=0.0,
-            score=0,
-            slope_upper=norm_upper,
-            slope_lower=norm_lower,
-            compression_coef=compression_coef,
-            turnover_24h=turnover_24h,
+            symbol=symbol, timeframe=timeframe, price=current_price,
+            squeeze_type=None, atr_current=current_atr, atr_percent=atr_pct,
+            bb_width=bbw_pct, adx_value=current_adx, direction="",
+            stop_loss=0.0, take_profit=0.0, score=0,
+            slope_upper=norm_upper, slope_lower=norm_lower,
+            compression_coef=compression_coef, turnover_24h=turnover_24h,
             spread_pct=spread_pct,
-            signal_time=datetime.now(timezone.utc).strftime("%H:%M:%S"),
+            signal_time=datetime.now(MSK).strftime("%H:%M:%S"),
         )
 
-    # === Тип сжатия ===
     squeeze_type: SqueezeType | None = None
     if triangle_type is not None:
         squeeze_type = triangle_type
@@ -472,27 +358,16 @@ def scan_symbol(
 
     if squeeze_type is None:
         return ScanResult(
-            symbol=symbol,
-            timeframe=timeframe,
-            price=current_price,
-            squeeze_type=None,
-            atr_current=current_atr,
-            atr_percent=atr_pct,
-            bb_width=bbw_pct,
-            adx_value=current_adx,
-            direction="",
-            stop_loss=0.0,
-            take_profit=0.0,
-            score=0,
-            slope_upper=norm_upper,
-            slope_lower=norm_lower,
-            compression_coef=compression_coef,
-            turnover_24h=turnover_24h,
+            symbol=symbol, timeframe=timeframe, price=current_price,
+            squeeze_type=None, atr_current=current_atr, atr_percent=atr_pct,
+            bb_width=bbw_pct, adx_value=current_adx, direction="",
+            stop_loss=0.0, take_profit=0.0, score=0,
+            slope_upper=norm_upper, slope_lower=norm_lower,
+            compression_coef=compression_coef, turnover_24h=turnover_24h,
             spread_pct=spread_pct,
-            signal_time=datetime.now(timezone.utc).strftime("%H:%M:%S"),
+            signal_time=datetime.now(MSK).strftime("%H:%M:%S"),
         )
 
-    # === Направление ===
     last_close = closes[-1]
     candle_range = highs[-1] - lows[-1]
 
@@ -505,11 +380,9 @@ def scan_symbol(
     if not direction:
         direction = "LONG" if last_close > middle[-1] else "SHORT"
 
-    # === SL / TP ===
     stop_loss = current_atr * 1.5
     take_profit = candle_range if candle_range > 0 else current_atr
 
-    # === Score ===
     score = 0
     if squeeze_type == SqueezeType.TRIANGLE:
         score += 30
@@ -526,7 +399,7 @@ def scan_symbol(
         score += 15
     elif compression_coef > 0.3:
         score += 10
-    if current_adx > cfg.adx_strong_threshold:
+    if current_adx > adx_strong_threshold:
         score += 10
     elif current_adx > 20:
         score += 5
@@ -534,84 +407,14 @@ def scan_symbol(
         score = max(0, score - 20)
 
     return ScanResult(
-        symbol=symbol,
-        timeframe=timeframe,
-        price=current_price,
-        squeeze_type=squeeze_type,
-        atr_current=current_atr,
-        atr_percent=atr_pct,
-        bb_width=bbw_pct,
-        adx_value=current_adx,
-        direction=direction,
-        stop_loss=stop_loss,
-        take_profit=take_profit,
-        score=min(score, 100),
-        slope_upper=norm_upper,
-        slope_lower=norm_lower,
-        compression_coef=compression_coef,
-        turnover_24h=turnover_24h,
+        symbol=symbol, timeframe=timeframe, price=current_price,
+        squeeze_type=squeeze_type, atr_current=current_atr, atr_percent=atr_pct,
+        bb_width=bbw_pct, adx_value=current_adx, direction=direction,
+        stop_loss=stop_loss, take_profit=take_profit, score=min(score, 100),
+        slope_upper=norm_upper, slope_lower=norm_lower,
+        compression_coef=compression_coef, turnover_24h=turnover_24h,
         spread_pct=spread_pct,
-        signal_time=datetime.now(timezone.utc).strftime("%H:%M:%S"),
+        signal_time=datetime.now(MSK).strftime("%H:%M:%S"),
     )
 
 
-# ============================================================
-# Backtest: подбор параметров
-# ============================================================
-
-
-def backtest_params(
-    candles: list[dict],
-    symbol: str = "TEST",
-    timeframe: str = "5m",
-) -> dict[str, dict]:
-    """Прогнать скринер с разными параметрами и показать статистику.
-
-    Используй для подбора оптимальных extrema_window / compression_ratio.
-
-    Args:
-        candles: история свечей (минимум 100).
-        symbol: имя для логов.
-        timeframe: TF для логов.
-
-    Returns:
-        {param_name: {signals: int, avg_score: float, types: {...}}}.
-    """
-    results: dict[str, dict] = {}
-
-    configs = {
-        "w3_comp75": PatternConfig(extrema_window=3, compression_ratio=0.75),
-        "w5_comp75": PatternConfig(extrema_window=5, compression_ratio=0.75),
-        "w7_comp75": PatternConfig(extrema_window=7, compression_ratio=0.75),
-        "w10_comp75": PatternConfig(extrema_window=10, compression_ratio=0.75),
-        "w5_comp60": PatternConfig(extrema_window=5, compression_ratio=0.60),
-        "w5_comp85": PatternConfig(extrema_window=5, compression_ratio=0.85),
-        "w5_slope02": PatternConfig(extrema_window=5, slope_up=0.2, slope_down=-0.2),
-        "w5_slope04": PatternConfig(extrema_window=5, slope_up=0.4, slope_down=-0.4),
-    }
-
-    for name, cfg in configs.items():
-        signals = 0
-        total_score = 0
-        type_counts: dict[str, int] = {}
-
-        # Сканируем скользящим окном
-        window_size = cfg.triangle_lookback + 10
-        for i in range(window_size, len(candles)):
-            chunk = candles[i - window_size : i + 10]
-            result = scan_symbol(symbol, timeframe, chunk, cfg=cfg)
-
-            if result.squeeze_type:
-                signals += 1
-                total_score += result.score
-                t = result.squeeze_type.value
-                type_counts[t] = type_counts.get(t, 0) + 1
-
-        avg_score = total_score / signals if signals > 0 else 0.0
-        results[name] = {
-            "signals": signals,
-            "avg_score": round(avg_score, 1),
-            "types": type_counts,
-        }
-
-    return results

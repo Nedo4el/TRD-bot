@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from core.logger import get_logger
 
 logger = get_logger(__name__)
+
+MSK = timezone(timedelta(hours=3))
 
 
 @dataclass
@@ -95,5 +97,5 @@ def analyze_symbol(
         total_candles=len(widths),
         turnover_24h=turnover_24h,
         status=status,
-        signal_time=datetime.now(timezone.utc).strftime("%H:%M:%S"),
+        signal_time=datetime.now(MSK).strftime("%H:%M:%S"),
     )

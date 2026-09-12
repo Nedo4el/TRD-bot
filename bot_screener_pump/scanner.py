@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+MSK = timezone(timedelta(hours=3))
 
 from core.indicators import bollinger, rsi
 from core.logger import get_logger
@@ -768,7 +770,7 @@ def analyze_symbol(
         spread_pct=spread_pct,
         trades_24h=trades_24h,
         turnover_24h=turnover_24h,
-        signal_time=datetime.now(timezone.utc).strftime("%H:%M:%S"),
+        signal_time=datetime.now(MSK).strftime("%H:%M:%S"),
     )
 
 

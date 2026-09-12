@@ -18,7 +18,7 @@ _BOT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_BOT_DIR))
 
 from bot_screener_klin.fetcher import Fetcher
-from bot_screener_klin.scanner import PatternConfig, ScanResult
+from bot_screener_klin.scanner import ScanResult
 from core.config import get_env_bool, get_env_float, get_env_int, load_bot_env
 from core.logger import get_logger, setup_logging
 from core.metrics import ScreenerMetrics
@@ -26,7 +26,7 @@ from core.metrics import ScreenerMetrics
 logger = get_logger(__name__)
 
 
-def _load_config() -> tuple[dict, PatternConfig]:
+def _load_config() -> dict:
     """Загрузить конфигурацию из .env."""
     load_bot_env(_BOT_DIR)
 
@@ -35,25 +35,6 @@ def _load_config() -> tuple[dict, PatternConfig]:
 
     raw_exclude = os.getenv("EXCLUDE_SYMBOLS", "BTCUSDT,ETHUSDT")
     exclude = [s.strip() for s in raw_exclude.split(",") if s.strip()]
-
-    pattern_cfg = PatternConfig(
-        extrema_window=get_env_int("EXTREMA_WINDOW", 5),
-        slope_up=get_env_float("SLOPE_UP", 0.3),
-        slope_down=get_env_float("SLOPE_DOWN", -0.3),
-        slope_flat=get_env_float("SLOPE_FLAT", 0.1),
-        compression_ratio=get_env_float("COMPRESSION_RATIO", 0.75),
-        triangle_lookback=get_env_int("TRIANGLE_LOOKBACK", 30),
-        min_range_pct=get_env_float("MIN_RANGE_PCT", 10.0),
-        bb_lookback=get_env_int("BB_LOOKBACK", 20),
-        atr_lookback=get_env_int("ATR_LOOKBACK", 10),
-        atr_drop_threshold=get_env_float("ATR_DROP_THRESHOLD", 0.3),
-        adx_false_threshold=get_env_int("ADX_FALSE_THRESHOLD", 20),
-        adx_strong_threshold=get_env_int("ADX_STRONG_THRESHOLD", 25),
-        bb_period=get_env_int("BB_PERIOD", 20),
-        bb_dev=get_env_float("BB_DEV", 2.0),
-        atr_period=get_env_int("ATR_PERIOD", 14),
-        adx_period=get_env_int("ADX_PERIOD", 14),
-    )
 
     env_cfg = {
         "api_key": os.getenv("BYBIT_API_KEY", ""),
@@ -69,7 +50,7 @@ def _load_config() -> tuple[dict, PatternConfig]:
         "exclude_symbols": exclude,
     }
 
-    return env_cfg, pattern_cfg
+    return env_cfg
 
 
 async def _scan_symbol(
@@ -78,7 +59,6 @@ async def _scan_symbol(
     turnover: float,
     timeframe: str,
     env_cfg: dict,
-    pattern_cfg: PatternConfig,
     spread_cache: dict[str, float],
 ) -> ScanResult | None:
     """Просканировать один символ на одном таймфрейме."""
@@ -109,7 +89,6 @@ async def _scan_symbol(
         symbol=symbol,
         timeframe=f"{timeframe}m",
         candles=candles,
-        cfg=pattern_cfg,
         turnover_24h=turnover,
         spread_pct=spread,
     )
@@ -128,9 +107,7 @@ async def _scan_symbol(
     return result
 
 
-async def scan_once(
-    env_cfg: dict, pattern_cfg: PatternConfig, metrics: ScreenerMetrics
-) -> None:
+async def scan_once(env_cfg: dict, metrics: ScreenerMetrics) -> None:
     """Один прогон сканирования."""
     from bot_screener_klin.printer import print_results
 
@@ -169,7 +146,7 @@ async def scan_once(
             batch = filtered[i : i + batch_size]
             tasks = [
                 _scan_symbol(
-                    fetcher, sym, tv, timeframe, env_cfg, pattern_cfg, spread_cache
+                    fetcher, sym, tv, timeframe, env_cfg, spread_cache
                 )
                 for sym, tv in batch
             ]
@@ -199,22 +176,19 @@ async def scan_once(
 async def main() -> None:
     """Главный цикл скринера."""
     setup_logging("logs/screener_uzkiy.log", "INFO")
-    env_cfg, pattern_cfg = _load_config()
+    env_cfg = _load_config()
     metrics = ScreenerMetrics()
 
     logger.info(
-        "Скринер запущен: timeframes=%s, interval=%ss, min_turnover=$%sM, "
-        "extrema_window=%d, compression=%.2f",
+        "Скринер запущен: timeframes=%s, interval=%ss, min_turnover=$%sM",
         ",".join(env_cfg["timeframes"]),
         env_cfg["scan_interval"],
         env_cfg["min_turnover_24h"] / 1_000_000,
-        pattern_cfg.extrema_window,
-        pattern_cfg.compression_ratio,
     )
 
     while True:
         try:
-            await scan_once(env_cfg, pattern_cfg, metrics)
+            await scan_once(env_cfg, metrics)
         except (OSError, ValueError):
             logger.exception("Ошибка сканирования")
 

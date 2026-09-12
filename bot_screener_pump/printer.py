@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+MSK = timezone(timedelta(hours=3))
 
 from tabulate import tabulate
 
@@ -60,7 +62,7 @@ def print_results(
     """
     clear_console()
 
-    now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    now = datetime.now(MSK).strftime("%H:%M:%S MSK")
 
     print("=" * 140)
     print("  ACCUMULATION SCREENER — Поиск накопления крупных игроков")

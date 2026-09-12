@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+MSK = timezone(timedelta(hours=3))
 from pathlib import Path
 
 import streamlit as st
@@ -135,7 +137,7 @@ def sidebar() -> str:
 
         st.divider()
         st.caption(
-            f"Обновлено: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}"
+            f"Обновлено: {datetime.now(MSK).strftime('%H:%M:%S MSK')}"
         )
 
     return page
@@ -665,7 +667,7 @@ def _run_screener_async(
 
         if bot_name == "bot_screener_klin":
             from bot_screener_klin.fetcher import fetch_all_symbols
-            from bot_screener_klin.scanner import PatternConfig, scan_symbol
+            from bot_screener_klin.scanner import scan_symbol
 
             loop = asyncio.new_event_loop()
             try:
@@ -676,7 +678,6 @@ def _run_screener_async(
                     return []
 
                 results = []
-                cfg = PatternConfig()
                 for sym_data in symbols[:scan_limit]:
                     symbol = sym_data.get("symbol", "")
                     candles = sym_data.get("candles", [])
@@ -688,7 +689,7 @@ def _run_screener_async(
                         continue
 
                     scan_result = scan_symbol(
-                        symbol, timeframe, candles, cfg=cfg, turnover_24h=turnover
+                        symbol, timeframe, candles, turnover_24h=turnover
                     )
                     if scan_result.score >= min_score:
                         results.append(
