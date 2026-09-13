@@ -262,6 +262,70 @@ def adx(
     return result
 
 
+def vwap(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    volumes: list[float],
+) -> list[float]:
+    """Volume Weighted Average Price — средневзвешенная по объёму.
+
+    VWAP = cumsum(typical * volume) / cumsum(volume),
+    где typical = (high + low + close) / 3.
+
+    Считается накопительно от начала массива (торговая сессия).
+    На каждой свече — актуальное VWAP от открытия сессии.
+
+    Args:
+        highs: максимумы свечей.
+        lows: минимумы свечей.
+        closes: цены закрытия.
+        volumes: объёмы свечей.
+
+    Returns:
+        Значения VWAP; длина = len(closes).
+    """
+    n = len(closes)
+    if n == 0:
+        return []
+    cum_tp_vol = 0.0
+    cum_vol = 0.0
+    result: list[float] = []
+    for i in range(n):
+        typical = (highs[i] + lows[i] + closes[i]) / 3.0
+        cum_tp_vol += typical * volumes[i]
+        cum_vol += volumes[i]
+        result.append(cum_tp_vol / cum_vol if cum_vol > 0 else closes[i])
+    return result
+
+
+def obv(closes: list[float], volumes: list[float]) -> list[float]:
+    """On Balance Volume — накопительный объём.
+
+    Если цена выросла — прибавляем объём, упала — вычитаем.
+    Рост OBV подтверждает рост цены, падение — падение.
+
+    Args:
+        closes: цены закрытия от старых к новым.
+        volumes: объёмы свечей.
+
+    Returns:
+        Значения OBV; длина = len(closes).
+    """
+    n = len(closes)
+    if n == 0:
+        return []
+    result: list[float] = [0.0]
+    for i in range(1, n):
+        if closes[i] > closes[i - 1]:
+            result.append(result[-1] + volumes[i])
+        elif closes[i] < closes[i - 1]:
+            result.append(result[-1] - volumes[i])
+        else:
+            result.append(result[-1])
+    return result
+
+
 def crossed_up(prev_a: float, prev_b: float, now_a: float, now_b: float) -> bool:
     """Пересекла ли линия A линию B снизу вверх на последней свече."""
     return prev_a <= prev_b and now_a > now_b

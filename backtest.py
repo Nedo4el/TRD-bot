@@ -31,7 +31,7 @@ from core.strategies import BaseStrategy, Signal
 # Импорты стратегий — добавляйте по мере написания
 # from robot_flat.strategy import FlatStrategy
 # from robot_yrovni_D.strategy import YrovniDStrategy
-# from robot_trend.strategy import TrendStrategy
+from robot_trend.strategy import TrendStrategy
 # from robot_impulse.strategy import ImpulseStrategy
 # from robot_krugloe.strategy import KrugloeStrategy
 
@@ -45,10 +45,11 @@ def make_strategy(name: str) -> BaseStrategy:
     Returns:
         Готовый объект стратегии с настройками по умолчанию/.env.
     """
-    # TODO: раскомментировать импорты и добавить логику после написания стратегий
+    if name == "trend":
+        return TrendStrategy()
     raise ValueError(
         f"Стратегия '{name}' ещё не реализована. "
-        f"Доступны: flat, yrovni, trend, impulse, zero"
+        f"Доступны: trend"
     )
 
 
@@ -516,7 +517,7 @@ def main() -> None:
     parser.add_argument(
         "--strategy",
         required=True,
-        choices=["flat", "yrovni", "trend", "impulse", "zero"],
+        choices=["trend", "flat", "yrovni", "impulse", "zero"],
         help="какую стратегию тестировать",
     )
     parser.add_argument(
@@ -530,7 +531,12 @@ def main() -> None:
     args = parser.parse_args()
 
     setup_logging("logs/backtest.log", "WARNING")
-    load_bot_env(Path(__file__).parent)
+
+    # Загружаем .env бота (robot_xxx/), а не корневой
+    bot_dir = Path(__file__).parent / f"robot_{args.strategy}"
+    if not bot_dir.exists():
+        bot_dir = Path(__file__).parent
+    load_bot_env(bot_dir)
 
     config = Config()
     if args.symbol:
