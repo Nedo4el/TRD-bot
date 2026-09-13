@@ -29,11 +29,11 @@ from core.logger import setup_logging
 from core.strategies import BaseStrategy, Signal
 
 # Импорты стратегий — добавляйте по мере написания
-# from bot_flat.strategy import FlatStrategy
-# from bot_yrovni.strategy import YrovniStrategy
-# from bot_trend.strategy import TrendStrategy
-# from bot_impulse.strategy import ImpulseStrategy
-# from bot_0.strategy import ZeroStrategy
+# from robot_flat.strategy import FlatStrategy
+# from robot_yrovni_D.strategy import YrovniDStrategy
+# from robot_trend.strategy import TrendStrategy
+# from robot_impulse.strategy import ImpulseStrategy
+# from robot_0.strategy import ZeroStrategy
 
 
 def make_strategy(name: str) -> BaseStrategy:

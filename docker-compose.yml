@@ -1,69 +1,69 @@
 # Запуск любого бота 24/7:
-#   docker compose up -d --build bot-flat
+#   docker compose up -d --build robot-flat
 #   docker compose up -d --build              # все сразу
-# Логи: docker compose logs -f bot-yrovni
+# Логи: docker compose logs -f robot-yrovni-d
 services:
-  bot-flat:
+  robot-flat:
     build:
       context: .
       args:
-        BOT_NAME: bot_flat
-    container_name: trd-bot-flat
+        BOT_NAME: robot_flat
+    container_name: trd-robot-flat
     restart: unless-stopped
     env_file:
-      - bot_flat/.env
+      - robot_flat/.env
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
 
-  bot-yrovni:
+  robot-yrovni-d:
     build:
       context: .
       args:
-        BOT_NAME: bot_yrovni
-    container_name: trd-bot-yrovni
+        BOT_NAME: robot_yrovni_D
+    container_name: trd-robot-yrovni-d
     restart: unless-stopped
     env_file:
-      - bot_yrovni/.env
+      - robot_yrovni_D/.env
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
 
-  bot-trend:
+  robot-trend:
     build:
       context: .
       args:
-        BOT_NAME: bot_trend
-    container_name: trd-bot-trend
+        BOT_NAME: robot_trend
+    container_name: trd-robot-trend
     restart: unless-stopped
     env_file:
-      - bot_trend/.env
+      - robot_trend/.env
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
 
-  bot-impulse:
+  robot-impulse:
     build:
       context: .
       args:
-        BOT_NAME: bot_impulse
-    container_name: trd-bot-impulse
+        BOT_NAME: robot_impulse
+    container_name: trd-robot-impulse
     restart: unless-stopped
     env_file:
-      - bot_impulse/.env
+      - robot_impulse/.env
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
 
-  bot-0:
+  robot-0:
     build:
       context: .
       args:
-        BOT_NAME: bot_0
-    container_name: trd-bot-0
+        BOT_NAME: robot_0
+    container_name: trd-robot-0
     restart: unless-stopped
     env_file:
-      - bot_0/.env
+      - robot_0/.env
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data

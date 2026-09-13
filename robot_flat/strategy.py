@@ -5,7 +5,7 @@ from core.strategies import BaseStrategy, Signal
 
 
 class FlatStrategy(BaseStrategy):
-    """Боковик (рип-сайдинг, консолидации)."""
+    """Боковик — стратегия (параметры будут написаны с нуля)."""
 
     name = "flat"
 

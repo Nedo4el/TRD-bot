@@ -4,10 +4,10 @@ from core.bybit_client import Candle
 from core.strategies import BaseStrategy, Signal
 
 
-class YrovniStrategy(BaseStrategy):
-    """Уровни (пробой + ретест)."""
+class ImpulseStrategy(BaseStrategy):
+    """Импульс — стратегия (параметры будут написаны с нуля)."""
 
-    name = "yrovni"
+    name = "impulse"
 
     def check_signal(self, candles: list[Candle]) -> Signal:
         # TODO: реализовать стратегию

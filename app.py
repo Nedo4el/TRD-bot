@@ -1292,15 +1292,15 @@ def main() -> None:
     if page == "📊 Обзор":
         page_overview()
     elif page == "  Flat":
-        page_bot("bot_flat")
+        page_bot("robot_flat")
     elif page == "  Yrovni":
-        page_bot("bot_yrovni")
+        page_bot("robot_yrovni_D")
     elif page == "  Trend":
-        page_bot("bot_trend")
+        page_bot("robot_trend")
     elif page == "  Impulse":
-        page_bot("bot_impulse")
+        page_bot("robot_impulse")
     elif page == "  Bot 0":
-        page_bot("bot_0")
+        page_bot("robot_0")
     elif page == "  Сжатие (uzkiy)":
         st.title("🔍 Сжатие (uzkiy)")
         _run_screener_tab("bot_screener_uzkiy")

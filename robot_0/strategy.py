@@ -4,10 +4,10 @@ from core.bybit_client import Candle
 from core.strategies import BaseStrategy, Signal
 
 
-class TrendStrategy(BaseStrategy):
-    """Тренд (следование за трендом)."""
+class ZeroStrategy(BaseStrategy):
+    """Нулевой — стратегия (параметры будут написаны с нуля)."""
 
-    name = "trend"
+    name = "zero"
 
     def check_signal(self, candles: list[Candle]) -> Signal:
         # TODO: реализовать стратегию
