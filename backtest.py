@@ -33,7 +33,7 @@ from core.strategies import BaseStrategy, Signal
 # from robot_yrovni_D.strategy import YrovniDStrategy
 # from robot_trend.strategy import TrendStrategy
 # from robot_impulse.strategy import ImpulseStrategy
-# from robot_0.strategy import ZeroStrategy
+# from robot_krugloe.strategy import KrugloeStrategy
 
 
 def make_strategy(name: str) -> BaseStrategy:

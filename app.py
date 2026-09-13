@@ -1300,7 +1300,7 @@ def main() -> None:
     elif page == "  Impulse":
         page_bot("robot_impulse")
     elif page == "  Bot 0":
-        page_bot("robot_0")
+        page_bot("robot_krugloe")
     elif page == "  Сжатие (uzkiy)":
         st.title("🔍 Сжатие (uzkiy)")
         _run_screener_tab("bot_screener_uzkiy")

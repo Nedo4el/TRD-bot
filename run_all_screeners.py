@@ -38,6 +38,7 @@ YROVNI_DIR = _PROJECT_ROOT / "bot_screener_yrovni"
 KRUGLOE_DIR = _PROJECT_ROOT / "bot_screener_krugloe"
 IMPULSE_DIR = _PROJECT_ROOT / "bot_screener_impulse"
 ZAKONOMER_DIR = _PROJECT_ROOT / "bot_screener_zakonomer"
+TREND_DIR = _PROJECT_ROOT / "bot_screener_trend"
 
 
 # Ключи env, которые нужно чистить между скринерами чтобы избежать утечки
@@ -60,6 +61,7 @@ _SCREENING_ENV_KEYS = [
     "CANDLE_WIDTH_MAX", "DELTA_SMA_PERIOD", "DELTA_SPIKE_MULTIPLIER",
     "CONFIRMATION_CANDLES",
     "LOOKBACK_DAYS", "SPIKE_STD_MULTIPLIER",
+    "SWING_WINDOW", "EMA_FAST", "EMA_SLOW", "ADX_MIN", "MIN_SWINGS",
 ]
 
 
@@ -653,6 +655,97 @@ async def _run_zakonomer(all_results: dict) -> None:
 
 
 # ============================================================
+# TREND
+# ============================================================
+
+def _load_trend_config() -> tuple[dict, object]:
+    """Загрузить конфигурацию тренд-скринера."""
+    _clear_screener_env()
+    _load_dotenv(TREND_DIR / ".env")
+    load_bot_env(TREND_DIR)
+
+    raw_exclude = os.getenv("EXCLUDE_SYMBOLS", "")
+    exclude = [s.strip() for s in raw_exclude.split(",") if s.strip()]
+
+    env_cfg = {
+        "api_key": os.getenv("BYBIT_API_KEY", ""),
+        "api_secret": os.getenv("BYBIT_API_SECRET", ""),
+        "testnet": get_env_bool("TESTNET", True),
+        "timeframe": os.getenv("TIMEFRAME", "1"),
+        "scan_interval": get_env_int("SCAN_INTERVAL", 300),
+        "min_turnover_24h": get_env_float("MIN_TURNOVER_24H", 10_000_000),
+        "lookback_bars": get_env_int("LOOKBACK_BARS", 100),
+        "exclude_symbols": exclude,
+    }
+
+    from bot_screener_trend.scanner import ScanConfig
+    scan_cfg = ScanConfig(
+        swing_window=get_env_int("SWING_WINDOW", 5),
+        ema_fast=get_env_int("EMA_FAST", 20),
+        ema_slow=get_env_int("EMA_SLOW", 50),
+        adx_min=get_env_float("ADX_MIN", 20.0),
+        min_swings=get_env_int("MIN_SWINGS", 3),
+        min_turnover_24h=env_cfg["min_turnover_24h"],
+        exclude_symbols=exclude,
+    )
+
+    return env_cfg, scan_cfg
+
+
+async def _run_trend(all_results: dict) -> None:
+    """Сканер тренда (HH/HL — восходящий, LH/LL — нисходящий)."""
+    from bot_screener_trend.fetcher import Fetcher
+    from bot_screener_trend.main import _scan_one
+    from bot_screener_trend.printer import print_results
+    from bot_screener_trend.scanner import ScanResult
+
+    env_cfg, scan_cfg = _load_trend_config()
+    metrics = ScreenerMetrics()
+    signals: list[ScanResult] = []
+
+    logger.info("[TREND] Запуск (interval=%ss, lookback=%d)",
+                env_cfg["scan_interval"], env_cfg["lookback_bars"])
+
+    start = time.monotonic()
+    while time.monotonic() - start < RUN_DURATION:
+        try:
+            fetcher = Fetcher(
+                api_key=env_cfg["api_key"],
+                api_secret=env_cfg["api_secret"],
+                testnet=env_cfg["testnet"],
+                metrics=metrics,
+            )
+
+            filtered = await fetcher.get_filtered_symbols(env_cfg["min_turnover_24h"])
+            exclude = set(env_cfg["exclude_symbols"])
+            filtered = [(s, t) for s, t in filtered if s not in exclude]
+
+            batch_size = 5
+            for i in range(0, len(filtered), batch_size):
+                batch = filtered[i: i + batch_size]
+                tasks = [
+                    _scan_one(fetcher, sym, env_cfg["timeframe"], env_cfg["lookback_bars"], scan_cfg, turnover)
+                    for sym, turnover in batch
+                ]
+                batch_results = await asyncio.gather(*tasks)
+                for r in batch_results:
+                    if r:
+                        signals.append(r)
+
+            logger.info("[TREND] Сканирование завершено. Сигналов: %d", len(signals))
+
+        except Exception:
+            logger.exception("[TREND] Ошибка сканирования")
+
+        remaining = RUN_DURATION - (time.monotonic() - start)
+        if remaining > 0:
+            await asyncio.sleep(min(env_cfg["scan_interval"], remaining))
+
+    all_results["trend"] = signals
+    logger.info("[TREND] Завершено. Сигналов: %d", len(signals))
+
+
+# ============================================================
 # Генерация отчётов
 # ============================================================
 
@@ -1054,6 +1147,43 @@ def _generate_reports(all_results: dict) -> None:
 
         f.write("\n" + "=" * 80 + "\n")
 
+    # --- TREND ---
+    signals = all_results.get("trend", [])
+    with open(REPORTS_DIR / f"trend_{now}.txt", "w", encoding="utf-8") as f:
+        f.write("=" * 80 + "\n")
+        f.write("  TREND SCREENER — HH/HL/LH/LL\n")
+        f.write(f"  Дата: {now} MSK | Сигналов: {len(signals)}\n")
+        f.write("=" * 80 + "\n\n")
+
+        up = [s for s in signals if s.trend == "UP"]
+        down = [s for s in signals if s.trend == "DOWN"]
+
+        if up:
+            f.write(f"  ▲ ВОСХОДЯЩИЙ ТРЕНД (HH+HL): {len(up)}\n")
+            f.write("  " + "─" * 70 + "\n")
+            for s in sorted(up, key=lambda x: x.score, reverse=True):
+                f.write(f"    {s.symbol:<12} ${s.price:<12.4f}  HH={s.hh_count} HL={s.hl_count}  "
+                        f"EMA={'>' if s.ema_fast > s.ema_slow else '<'}  "
+                        f"ADX={s.adx_value:.1f}  RSI={s.rsi_value:.0f}  "
+                        f"Score={s.score}  SL=${s.stop_loss:.4f}  TP=${s.take_profit:.4f}\n")
+            f.write("\n")
+
+        if down:
+            f.write(f"  ▼ НИСХОДЯЩИЙ ТРЕНД (LH+LL): {len(down)}\n")
+            f.write("  " + "─" * 70 + "\n")
+            for s in sorted(down, key=lambda x: x.score, reverse=True):
+                f.write(f"    {s.symbol:<12} ${s.price:<12.4f}  LH={s.lh_count} LL={s.ll_count}  "
+                        f"EMA={'<' if s.ema_fast < s.ema_slow else '>'}  "
+                        f"ADX={s.adx_value:.1f}  RSI={s.rsi_value:.0f}  "
+                        f"Score={s.score}  SL=${s.stop_loss:.4f}  TP=${s.take_profit:.4f}\n")
+            f.write("\n")
+
+        if not signals:
+            f.write("  Трендовых сигналов не найдено.\n")
+            f.write("  Причины: рынок боковой, нет чёткой серии HH/HL или LH/LL.\n")
+
+        f.write("\n" + "=" * 80 + "\n")
+
     logger.info("Отчёты сохранены в %s", REPORTS_DIR)
 
 
@@ -1085,6 +1215,7 @@ async def main() -> None:
         ("krugloe", _run_krugloe),
         ("impulse", _run_impulse),
         ("zakonomer", _run_zakonomer),
+        ("trend", _run_trend),
     ]):
         task = asyncio.create_task(_staggered_start(fn, all_results, i * STAGGER_DELAY), name=name)
         tasks.append(task)

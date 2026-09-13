@@ -55,15 +55,15 @@ services:
       - ./logs:/app/logs
       - ./data:/app/data
 
-  robot-0:
+  robot-krugloe:
     build:
       context: .
       args:
-        BOT_NAME: robot_0
-    container_name: trd-robot-0
+        BOT_NAME: robot_krugloe
+    container_name: trd-robot-krugloe
     restart: unless-stopped
     env_file:
-      - robot_0/.env
+      - robot_krugloe/.env
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data

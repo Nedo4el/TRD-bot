@@ -1,6 +1,6 @@
-"""Robot — Zero (нулевой).
+"""Robot — Krugloe (круглое).
 
-Запуск:  python robot_0/main.py
+Запуск:  python robot_krugloe/main.py
 Остановка: Ctrl+C
 """
 
@@ -16,17 +16,17 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 from core.config import Config, load_bot_env
 from core.engine import Engine
 from core.logger import setup_logging
-from robot_0.strategy import ZeroStrategy
+from robot_krugloe.strategy import KrugloeStrategy
 
 
 async def main() -> None:
-    setup_logging("logs/robot_0.log", "INFO")
+    setup_logging("logs/robot_krugloe.log", "INFO")
     load_bot_env(Path(__file__).parent)
 
     config = Config()
     config.validate()
 
-    strategy = ZeroStrategy()
+    strategy = KrugloeStrategy()
     engine = Engine(config, strategy)
     await engine.run()
 
