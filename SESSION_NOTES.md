@@ -7,6 +7,33 @@
 - Ботов НЕ запускать — пользователь скажет когда.
 - Стратегии переписываем с нуля — пользователь сам решает что в каждом боте.
 - Авто-синхронизация с git каждые 2 часа (TRD-bot-autosync).
+- Торгуем через **Bybit** (Tiger Trade API не поддерживает perpetual futures).
+- Первый инструмент для роботов: **BTRUSDT** (перепишем стратегии под него).
+
+### Что сделано (сессия 2026-09-15)
+- **Тест лимитного ордера BTRUSDT:**
+  - Текущая цена: ~0.05105
+  - Лимитный ордер Buy 110 @ 0.0485 (5% ниже)
+  - Ордер размещён, виден в терминале Tiger Trade
+  - Order ID: ab573083-f863-4330-bcb3-fe5acba366b6
+  - Примечание: минимум ордера 5 USDT, qty=100 не хватало (4.85 USDT)
+- **Тест robot_flat на Bybit mainnet:**
+  - Исправлен баг в `robot_flat/main.py`: import `Engine` → `TradingBot` (класса Engine не существует)
+  - Обновлён `robot_flat/.env`: `SIMULATION_MODE=false`, `POLL_INTERVAL=30`
+  - Добавлен `FIXED_QTY` в .env (для маленьких балансов qty считался 0)
+  - Тестовая стратегия: buy каждые 3 свечи
+  - **Результат:** ордера доходят до Bybit, SL/TP устанавливаются
+  - Закрыта тестовая позиция BTCUSDT (0.001 BTC @ 76880)
+- **BTRUSDT:**
+  - Найден на Bybit linear: `qtyStep=1`, `minQty=1`, `tickSize=0.00001`, цена ~$0.05
+  - Тестовый ордер: Buy 100 @ 0.05012, SL=0.04984, TP=0.0506, leverage=10x
+  - Ордер успешно закрыт, state очищен
+- **Tiger Trade API:**
+  - Установлен `tigeropen 3.7.2`
+  - Tiger Trade поддерживает крипто как CC (sec_type='CC'), но только спот (BTC.USD и 25 монет)
+  - **Perpetual futures недоступны** через Tiger Trade → остаёмся на Bybit (pybit)
+  - Символы Tiger Trade: APT, AAVE, ARB, ATOM, AVAX, COMP, DOGE, DOT, DYDX, ETH, IMX, KAIA, LDO, LINK, LTC, MKR, OP, POL, SOL, SNX, TON, UNI, USDT, BTC
+- **Импортируемый SDK:** `tigeropen` установлен, но не используется ( Tiger не поддерживает perpetual)
 
 ### Что сделано (сессия 2026-09-13)
 - **ZAKONOMER summary:**
