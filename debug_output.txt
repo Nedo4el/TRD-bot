@@ -1,0 +1,45 @@
+Could not find platform independent libraries <prefix>
+Symbols to scan: 26
+
+ZECUSDT: 100 candles
+  Top 5 moves:
+    [22] LONG: 1.93%
+    [44] LONG: 1.44%
+    [97] SHORT: 1.19%
+    [12] LONG: 1.07%
+    [96] SHORT: 0.94%
+
+HYPEUSDT: 100 candles
+  Top 5 moves:
+    [30] LONG: 0.85%
+    [6] SHORT: 0.62%
+    [17] SHORT: 0.53%
+    [74] LONG: 0.45%
+    [25] LONG: 0.44%
+
+LSKUSDT: 100 candles
+  Top 5 moves:
+    [30] LONG: 8.04%
+    [18] SHORT: 6.94%
+    [94] SHORT: 4.85%
+    [31] LONG: 4.57%
+    [34] LONG: 4.51%
+
+ARBUSDT: 100 candles
+  Top 5 moves:
+    [8] LONG: 2.41%
+    [18] LONG: 2.01%
+    [4] LONG: 1.68%
+    [22] LONG: 1.66%
+    [74] LONG: 1.52%
+
+AKEUSDT: 100 candles
+  Top 5 moves:
+    [82] LONG: 7.78%
+    [84] SHORT: 4.21%
+    [8] SHORT: 3.12%
+    [7] LONG: 2.70%
+    [21] SHORT: 1.90%
+
+Test with 1% threshold, no confirmation: ImpulseSignal(symbol='ZECUSDT', timeframe='5', price=1160.06, direction='SHORT', move_pct=1.19, confirmed=True, turnover_24h=0.0, signal_time='16:32:13')
+Test with 4% threshold, no confirmation: None

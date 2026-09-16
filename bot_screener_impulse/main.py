@@ -1,6 +1,6 @@
-"""Скринер импульсов: тиковый объем + ширина + дельта + подтверждение.
+"""Скринер импульсов: свеча с движением >= N%.
 
-Запуск:  python bot_screener_impulse/main.py
+Запуск:  py bot_screener_impulse/main.py
 Остановка: Ctrl+C
 """
 
@@ -26,7 +26,6 @@ logger = get_logger(__name__)
 
 
 def _load_config() -> tuple[dict, ImpulseConfig]:
-    """Загрузить конфигурацию из .env."""
     load_bot_env(_BOT_DIR)
 
     raw_exclude = os.getenv("EXCLUDE_SYMBOLS", "BTCUSDT,ETHUSDT")
@@ -38,18 +37,13 @@ def _load_config() -> tuple[dict, ImpulseConfig]:
         "testnet": get_env_bool("TESTNET", True),
         "timeframe": os.getenv("TIMEFRAME", "1"),
         "scan_interval": get_env_int("SCAN_INTERVAL", 15),
-        "min_turnover_24h": get_env_float("MIN_TURNOVER_24H", 50_000_000),
+        "min_turnover_24h": get_env_float("MIN_TURNOVER_24H", 30_000_000),
         "lookback_bars": get_env_int("LOOKBACK_BARS", 100),
         "exclude_symbols": exclude,
     }
 
     impulse_cfg = ImpulseConfig(
-        volume_sma_period=get_env_int("VOLUME_SMA_PERIOD", 50),
-        volume_spike_multiplier=get_env_float("VOLUME_SPIKE_MULTIPLIER", 5.0),
-        candle_width_min=get_env_float("CANDLE_WIDTH_MIN", 0.15),
-        candle_width_max=get_env_float("CANDLE_WIDTH_MAX", 0.30),
-        delta_sma_period=get_env_int("DELTA_SMA_PERIOD", 20),
-        delta_spike_multiplier=get_env_float("DELTA_SPIKE_MULTIPLIER", 4.0),
+        min_move_pct=get_env_float("MIN_MOVE_PCT", 4.0),
         confirmation_candles=get_env_int("CONFIRMATION_CANDLES", 2),
     )
 
@@ -64,7 +58,6 @@ async def _scan_one(
     impulse_cfg: ImpulseConfig,
     turnover_24h: float,
 ) -> ImpulseSignal | None:
-    """Просканировать один символ."""
     from bot_screener_klin.fetcher import Fetcher
 
     assert isinstance(fetcher, Fetcher)
@@ -88,7 +81,6 @@ async def _scan_one(
 
 
 async def scan_once(cfg: dict, impulse_cfg: ImpulseConfig, metrics: ScreenerMetrics) -> None:
-    """Один прогон сканирования."""
     from bot_screener_impulse.printer import print_results
     from bot_screener_klin.fetcher import Fetcher
 
@@ -116,7 +108,6 @@ async def scan_once(cfg: dict, impulse_cfg: ImpulseConfig, metrics: ScreenerMetr
         len(exclude),
     )
 
-    # Получаем тикеры для оборота
     tickers_map: dict[str, dict] = {}
     tickers = await fetcher.get_linear_tickers()
     for t in tickers:
@@ -143,16 +134,14 @@ async def scan_once(cfg: dict, impulse_cfg: ImpulseConfig, metrics: ScreenerMetr
         for result in batch_results:
             if result is not None:
                 logger.info(
-                    "ИМПУЛЬС: %s %s vol=%.1fx width=%.3f%% delta=%.1fx",
+                    "ИМПУЛЬС: %s %s move=%.2f%%",
                     result.symbol,
                     result.direction,
-                    result.volume_ratio,
-                    result.candle_width,
-                    result.delta_ratio,
+                    result.move_pct,
                 )
                 results.append(result)
 
-    results.sort(key=lambda r: r.volume_ratio, reverse=True)
+    results.sort(key=lambda r: r.move_pct, reverse=True)
     elapsed = time.monotonic() - start
 
     metrics.record_scan(elapsed, len(results), len(filtered))
@@ -166,7 +155,6 @@ async def scan_once(cfg: dict, impulse_cfg: ImpulseConfig, metrics: ScreenerMetr
 
 
 def _get_turnover(tickers_map: dict[str, dict], symbol: str) -> float:
-    """Получить оборот за 24ч из тикера."""
     t = tickers_map.get(symbol, {})
     vol = t.get("turnover24h", "0")
     try:
@@ -176,20 +164,15 @@ def _get_turnover(tickers_map: dict[str, dict], symbol: str) -> float:
 
 
 async def main() -> None:
-    """Главный цикл скринера."""
     setup_logging("logs/screener_impulse.log", "INFO")
     env_cfg, impulse_cfg = _load_config()
     metrics = ScreenerMetrics()
 
     logger.info(
-        "Скринер импульсов запущен: timeframe=%s, interval=%ss, "
-        "vol_spike=%.1fx, delta_spike=%.1fx, width=%.2f-%.2f%%, min_turnover=$%sM",
+        "Скринер импульсов: timeframe=%s, interval=%ss, min_move=%.1f%%, min_turnover=$%sM",
         env_cfg["timeframe"],
         env_cfg["scan_interval"],
-        impulse_cfg.volume_spike_multiplier,
-        impulse_cfg.delta_spike_multiplier,
-        impulse_cfg.candle_width_min,
-        impulse_cfg.candle_width_max,
+        impulse_cfg.min_move_pct,
         env_cfg["min_turnover_24h"] / 1_000_000,
     )
 
