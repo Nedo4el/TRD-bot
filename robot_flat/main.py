@@ -1,4 +1,4 @@
-"""Robot — Flat (боковик).
+"""Robot — Flat (боковик на основе POC).
 
 Запуск:  py robot_flat/main.py
 Остановка: Ctrl+C
@@ -22,12 +22,8 @@ async def main() -> None:
     load_bot_env(Path(__file__).parent)
 
     cfg = FlatConfig(
-        atr_period=get_env_int("ATR_PERIOD", 14),
-        atr_lookback=get_env_int("ATR_LOOKBACK", 60),
-        atr_decrease_pct=get_env_float("ATR_DECREASE_PCT", 0.7),
-        range_pct=get_env_float("RANGE_PCT", 15.0),
-        min_candles=get_env_int("MIN_CANDLES", 100),
-        bb_squeeze_threshold=get_env_float("BB_SQUEEZE_THRESHOLD", 30.0),
+        poc_lookback=get_env_int("POC_LOOKBACK", 60),
+        range_pct=get_env_float("RANGE_PCT", 40.0),
     )
 
     config = Config()

@@ -176,8 +176,9 @@ TRD bot/
 - **LSKUSDT:** Детальный анализ пампа и боковика
   - Памп: 00:00-06:00 MSK, +333%, пик $2.78
   - Боковик: 07:00-12:00+ MSK, 29 часов, ATR снижается с 9% до 0.8%
-- **robot_flat:** Настроен на поиск боковиков
-  - Параметры: ATR_PERIOD=14, ATR_LOOKBACK=60, ATR_DECREASE_PCT=0.7, RANGE_PCT=15%, BB_SQUEEZE_THRESHOLD=30
-  - Логика: ATR снижается + цена в коридоре ±15% + BB сжимается → БОКОВИК
+- **robot_flat:** Настроен на поиск боковиков (POC-based)
+  - Параметры: POC_LOOKBACK=60 (1 час при TF=1m), RANGE_PCT=40 (±20% от POC)
+  - TODO: определить оптимальный POC_LOOKBACK (60 мин? 1440 мин/день?)
+  - Логика: цена в пределах ±20% от POC → БОКОВИК
   - SIMULATION_MODE=true (тестирование)
   - Символ: LSKUSDT, timeframe: 1m

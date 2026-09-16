@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from core.bybit_client import Candle
 from core.strategies import BaseStrategy, Signal
@@ -8,18 +8,14 @@ from core.strategies import BaseStrategy, Signal
 
 @dataclass
 class FlatConfig:
-    """Минимальные параметры поиска боковика."""
+    """Параметры боковика на основе POC."""
 
-    atr_period: int = 14
-    atr_lookback: int = 60
-    atr_decrease_pct: float = 0.7
-    range_pct: float = 15.0
-    min_candles: int = 100
-    bb_squeeze_threshold: float = 30.0
+    poc_lookback: int = 60
+    range_pct: float = 40.0
 
 
 class FlatStrategy(BaseStrategy):
-    """Боковик — поиск консолидации после импульса."""
+    """Боковик: цена вокруг POC в пределах ±range_pct/2."""
 
     name = "flat"
     cfg: FlatConfig = FlatConfig()
@@ -29,78 +25,67 @@ class FlatStrategy(BaseStrategy):
             self.cfg = cfg
 
     def check_signal(self, candles: list[Candle]) -> Signal:
-        if len(candles) < self.cfg.min_candles:
-            return Signal(action="hold", reason=f"мало свечей ({len(candles)}/{self.cfg.min_candles})")
+        if len(candles) < 20:
+            return Signal(action="hold", reason=f"мало свечей ({len(candles)})")
 
         closes = [c.close for c in candles]
+        volumes = [c.volume for c in candles]
         highs = [c.high for c in candles]
         lows = [c.low for c in candles]
 
-        # ATR текущий и N свечей назад
-        atr_now = self._atr(highs, lows, closes, self.cfg.atr_period)
+        # POC: цена с максимальным объёмом за lookback свечей
+        poc = self._calc_poc(closes[-self.cfg.poc_lookback:], volumes[-self.cfg.poc_lookback:])
 
-        if len(candles) >= self.cfg.atr_lookback + self.cfg.atr_period:
-            atr_prev = self._atr(
-                highs[-self.cfg.atr_lookback:],
-                lows[-self.cfg.atr_lookback:],
-                closes[-self.cfg.atr_lookback:],
-                self.cfg.atr_period,
-            )
-        else:
-            atr_prev = atr_now
-
-        # 1. ATR снижается
-        atr_decreasing = atr_now < atr_prev * self.cfg.atr_decrease_pct
-
-        # 2. Цена в коридоре
-        avg_price = sum(closes[-60:]) / min(60, len(closes))
         current_price = closes[-1]
-        deviation_pct = abs(current_price - avg_price) / avg_price * 100
-        in_range = deviation_pct <= self.cfg.range_pct
+        deviation = (current_price - poc) / poc * 100 if poc > 0 else 0
+        half_range = self.cfg.range_pct / 2
 
-        # 3. BB Width сжимается
-        recent_high = max(highs[-20:])
-        recent_low = min(lows[-20:])
-        bb_width_pct = (recent_high - recent_low) / avg_price * 100
-        bb_squeezed = bb_width_pct < self.cfg.bb_squeeze_threshold
+        is_flat = abs(deviation) <= half_range
 
-        is_flat = atr_decreasing and in_range and bb_squeezed
-
-        if is_flat:
-            grid_step = atr_now * 0.5
-            buy_price = current_price - grid_step
-            sell_price = current_price + grid_step
+        if is_grid := is_flat:
+            # Грид: buy ниже POC, sell выше POC
+            buy_price = poc * (1 - half_range / 100)
+            sell_price = poc * (1 + half_range / 100)
 
             return Signal(
                 action="hold",
                 reason=(
-                    f"БОКОВИК | ATR: {atr_now:.4f} < {atr_prev:.4f}*{self.cfg.atr_decrease_pct} | "
-                    f"откл: {deviation_pct:.1f}% < {self.cfg.range_pct}% | "
-                    f"BB: {bb_width_pct:.1f}% | "
-                    f"GRID: buy={buy_price:.4f} sell={sell_price:.4f} step={grid_step:.4f}"
+                    f"БОКОВИК | POC={poc:.4f} | цена={current_price:.4f} | "
+                    f"откл={deviation:+.1f}% (диапазон ±{half_range:.0f}%) | "
+                    f"GRID: buy={buy_price:.4f} sell={sell_price:.4f}"
                 ),
             )
 
+        direction = "ВВЕРХ" if deviation > 0 else "ВНИЗ"
         return Signal(
             action="hold",
             reason=(
-                f"ТРЕНД | ATR: {atr_now:.4f} (prev={atr_prev:.4f}) | "
-                f"откл: {deviation_pct:.1f}% | BB: {bb_width_pct:.1f}%"
+                f"ТРЕНД {direction} | POC={poc:.4f} | цена={current_price:.4f} | "
+                f"откл={deviation:+.1f}% > ±{half_range:.0f}%"
             ),
         )
 
     @staticmethod
-    def _atr(highs: list[float], lows: list[float], closes: list[float], period: int) -> float:
-        if len(closes) < period + 1:
+    def _calc_poc(closes: list[float], volumes: list[float]) -> float:
+        """Point of Control — цена с максимальным объёмом."""
+        if not closes or not volumes:
             return 0.0
 
-        trs = []
-        for i in range(1, len(closes)):
-            tr = max(
-                highs[i] - lows[i],
-                abs(highs[i] - closes[i - 1]),
-                abs(lows[i] - closes[i - 1]),
-            )
-            trs.append(tr)
+        # Группируем по уровням (50 бакетов)
+        mn, mx = min(closes), max(closes)
+        if mn == mx:
+            return mn
 
-        return sum(trs[-period:]) / period
+        n_buckets = 50
+        bucket_size = (mx - mn) / n_buckets
+        buckets_vol = [0.0] * n_buckets
+
+        for price, vol in zip(closes, volumes):
+            idx = min(int((price - mn) / bucket_size), n_buckets - 1)
+            buckets_vol[idx] += vol
+
+        # POC = центр бакета с максимальным объёмом
+        best_idx = buckets_vol.index(max(buckets_vol))
+        poc = mn + (best_idx + 0.5) * bucket_size
+
+        return poc
