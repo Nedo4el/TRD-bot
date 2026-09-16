@@ -1,6 +1,6 @@
 """Robot — Flat (боковик).
 
-Запуск:  python robot_flat/main.py
+Запуск:  py robot_flat/main.py
 Остановка: Ctrl+C
 """
 
@@ -13,17 +13,27 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from core.config import Config, load_bot_env
+from core.config import Config, get_env_float, get_env_int, load_bot_env
 from core.engine import TradingBot, setup_logging_and_validate
-from robot_flat.strategy import FlatStrategy
+from robot_flat.strategy import FlatConfig, FlatStrategy
 
 
 async def main() -> None:
     load_bot_env(Path(__file__).parent)
+
+    cfg = FlatConfig(
+        atr_period=get_env_int("ATR_PERIOD", 14),
+        atr_lookback=get_env_int("ATR_LOOKBACK", 60),
+        atr_decrease_pct=get_env_float("ATR_DECREASE_PCT", 0.7),
+        range_pct=get_env_float("RANGE_PCT", 15.0),
+        min_candles=get_env_int("MIN_CANDLES", 100),
+        bb_squeeze_threshold=get_env_float("BB_SQUEEZE_THRESHOLD", 30.0),
+    )
+
     config = Config()
     setup_logging_and_validate(config)
 
-    strategy = FlatStrategy()
+    strategy = FlatStrategy(cfg)
     bot = TradingBot(config, strategy)
     try:
         await bot.run()
