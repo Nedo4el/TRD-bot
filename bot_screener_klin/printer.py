@@ -67,15 +67,13 @@ def print_results(
         "TF",
         "Цена",
         "Тип сужения",
-        "ATR",
+        "Окно",
         "ATR%",
         "BB%",
         "ADX",
         "Направление",
         "SL",
         "TP",
-        "Спред",
-        "Оборот",
         "Score",
         "Время",
     ]
@@ -86,7 +84,7 @@ def print_results(
         direction = r.direction if r.direction else "-"
         atr_sl = f"{r.stop_loss:.4f}" if r.stop_loss > 0 else "-"
         tp = f"{r.take_profit:.4f}" if r.take_profit > 0 else "-"
-        spread = f"{r.spread_pct:.3f}%" if r.spread_pct > 0 else "-"
+        window = str(r.lookback_window) if r.lookback_window > 0 else "-"
 
         rows.append(
             [
@@ -94,15 +92,13 @@ def print_results(
                 r.timeframe,
                 f"{r.price:.4f}",
                 squeeze_name,
-                f"{r.atr_current:.4f}",
+                window,
                 f"{r.atr_percent:.2f}%",
                 f"{r.bb_width:.2f}%",
                 f"{r.adx_value:.1f}",
                 direction,
                 atr_sl,
                 tp,
-                spread,
-                format_turnover(r.turnover_24h),
                 r.score,
                 r.signal_time,
             ]

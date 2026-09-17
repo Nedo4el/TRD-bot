@@ -57,6 +57,7 @@ class ScanResult:
     spread_pct: float = 0.0
     turnover_24h: float = 0.0
     signal_time: str = ""
+    lookback_window: int = 0
 
 
 # ============================================================
@@ -128,17 +129,23 @@ def _detect_triangle(
     lows: list[float],
     closes: list[float],
     current_price: float,
+    lookback: int = 100,
 ) -> tuple[float, float, float, SqueezeType | None]:
-    """Детектировать клин/треугольник через регрессию по экстремумам."""
-    extrema_window = 5
-    triangle_lookback = 30
+    """Детектировать клин/треугольник через регрессию по экстремумам.
+
+    Используем CLOSE для верхней линии (фильтрация теней/спайков)
+    и LOW для нижней линии.
+
+    Адаптивные параметры под размер окна:
+    - extrema_window: 5 для 100 свечей, 8 для 200, 12 для 300
+    - apex_x: до lookback * 0.6
+    """
     slope_flat = 0.1
 
-    lookback = triangle_lookback
     if len(highs) < lookback or len(lows) < lookback:
         return 0.0, 0.0, 0.0, None
 
-    h = highs[-lookback:]
+    h = closes[-lookback:]  # CLOSE вместо HIGH для фильтрации теней
     lo = lows[-lookback:]
     c = closes[-lookback:] if len(closes) >= lookback else closes
 
@@ -149,6 +156,14 @@ def _detect_triangle(
         trend_ratio = max(up_count, down_count) / total if total > 0 else 0
         if trend_ratio > 0.80:
             return 0.0, 0.0, 0.0, None
+
+    # Адаптивный extrema_window под размер окна
+    if lookback >= 300:
+        extrema_window = 12
+    elif lookback >= 200:
+        extrema_window = 8
+    else:
+        extrema_window = 5
 
     maxs_idx, mins_idx = _find_local_extrema(h, extrema_window)
 
@@ -199,7 +214,9 @@ def _detect_triangle(
 
     apex_x = (min_intercept - max_intercept) / slope_diff
 
-    if apex_x < 3 or apex_x > 30:
+    # Адаптивный apex_x под размер окна
+    apex_max = lookback * 0.6
+    if apex_x < 3 or apex_x > apex_max:
         return 0.0, 0.0, 0.0, None
 
     squeeze_type: SqueezeType | None = None
@@ -215,6 +232,36 @@ def _detect_triangle(
         squeeze_type = SqueezeType.WEDGE
 
     return norm_upper, norm_lower, compression_coef, squeeze_type
+
+
+def _detect_triangle_multi(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    current_price: float,
+    lookbacks: list[int] | None = None,
+) -> tuple[float, float, float, SqueezeType | None, int]:
+    """Детектировать клин/треугольник на нескольких окнах.
+
+    Пробует lookbacks=[100, 200, 300] и возвращает лучший результат.
+    Приоритет: большие окна > маленькие (более надёжный паттерн).
+    """
+    if lookbacks is None:
+        lookbacks = [300, 200, 100]
+
+    best = (0.0, 0.0, 0.0, None, 0)
+
+    for lb in lookbacks:
+        norm_upper, norm_lower, comp, stype = _detect_triangle(
+            highs, lows, closes, current_price, lookback=lb,
+        )
+        if stype is not None:
+            # Приоритет: большее окно = лучше
+            priority = lb
+            if best[3] is None or priority > best[4]:
+                best = (norm_upper, norm_lower, comp, stype, lb)
+
+    return best[0], best[1], best[2], best[3], best[4]
 
 
 def _detect_bb_squeeze(
@@ -291,6 +338,7 @@ def scan_symbol(
         score=0,
         turnover_24h=turnover_24h,
         spread_pct=spread_pct,
+        lookback_window=0,
     )
 
     min_candles = max(bb_period, atr_period * 2, adx_period * 2, 30) + 10
@@ -328,8 +376,8 @@ def scan_symbol(
     atr_compression, _ = _detect_atr_compression(
         atr_vals, atr_lookback, atr_drop_threshold,
     )
-    norm_upper, norm_lower, compression_coef, triangle_type = _detect_triangle(
-        highs, lows, closes, current_price,
+    norm_upper, norm_lower, compression_coef, triangle_type, lookback_window = (
+        _detect_triangle_multi(highs, lows, closes, current_price)
     )
 
     logger.debug(
@@ -348,6 +396,7 @@ def scan_symbol(
             compression_coef=compression_coef, turnover_24h=turnover_24h,
             spread_pct=spread_pct,
             signal_time=datetime.now(MSK).strftime("%H:%M:%S"),
+            lookback_window=lookback_window,
         )
 
     squeeze_type: SqueezeType | None = None
@@ -366,6 +415,7 @@ def scan_symbol(
             compression_coef=compression_coef, turnover_24h=turnover_24h,
             spread_pct=spread_pct,
             signal_time=datetime.now(MSK).strftime("%H:%M:%S"),
+            lookback_window=lookback_window,
         )
 
     last_close = closes[-1]
@@ -415,6 +465,7 @@ def scan_symbol(
         compression_coef=compression_coef, turnover_24h=turnover_24h,
         spread_pct=spread_pct,
         signal_time=datetime.now(MSK).strftime("%H:%M:%S"),
+        lookback_window=lookback_window,
     )
 
 
