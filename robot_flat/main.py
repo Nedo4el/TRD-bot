@@ -24,6 +24,9 @@ async def main() -> None:
     cfg = FlatConfig(
         poc_lookback=get_env_int("POC_LOOKBACK", 60),
         range_pct=get_env_float("RANGE_PCT", 40.0),
+        impulse_min_pct=get_env_float("IMPULSE_MIN_PCT", 15.0),
+        impulse_window=get_env_int("IMPULSE_WINDOW", 5),
+        impulse_cooldown=get_env_int("IMPULSE_COOLDOWN", 30),
     )
 
     config = Config()
