@@ -193,3 +193,20 @@ TRD bot/
 - **Тест:** BRUSDT — импульс 31.9% в 12:12 MSK, POC=0.6506, боковик 4.5+ часа
 - **Данные:** `robot_flat/brusdt_1m_1200_now.csv` (306 свечей, 12:00-17:05 MSK)
 - **TODO:** ложные пробои — свеча вышла за коридор, но вернулась = не тренд
+- **КРИТИЧНО:** Использовать CLOSE вместо HIGH для верхней линии регрессии — фильтрация теней/спайков
+
+### bot_screener_klin — мульти-оконный поиск клинов (2026-09-17)
+- **Изменения в scanner.py:**
+  - `_detect_triangle(lookback)` — параметр lookback (100/200/300)
+  - CLOSE вместо HIGH для верхней линии — фильтрация теней/спайков
+  - Адаптивный `extrema_window`: 5 (100), 8 (200), 12 (300)
+  - Адаптивный `apex_max`: lookback * 0.6
+  - `_detect_triangle_multi` — пробует 300→200→100, лучший результат
+  - `ScanResult.lookback_window` — какое окно нашло паттерн
+- **Результаты:**
+  - BRUSDT: WEDGE, 300 свечей, score=50, LONG, compression=22%
+  - LSKUSDT: WEDGE, 300 свечей, score=50, SHORT, compression=63.5%
+  - HYPEUSDT: WEDGE, 100 свечей, score=40, LONG, compression=45.1%
+- **.env:** LOOKBACK_BARS=400, TRIANGLE_LOOKBACKS=300,200,100
+- **printer.py:** добавлен столбец "Окно" вместо "ATR"/"Спред"/"Оборот"
+- **TODO:** ложные пробои — спайк 0.7391 на BRUSDT (17:28) исправлен через CLOSE
