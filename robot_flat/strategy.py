@@ -17,7 +17,7 @@ class FlatConfig:
     impulse_cooldown: int = 30
 
     # Сетка ордеров (от POC, %)
-    order_levels: list[float] = field(default_factory=lambda: [-6.0, -8.0, -10.0])
+    order_levels: list[float] = field(default_factory=lambda: [-6.0, -8.0, -10.0, 6.0, 8.0, 10.0])
     # Стоп зона (±% от POC, запрет ордеров)
     stop_zone_pct: float = 5.0
     # Стоп от границы коридора (%)
