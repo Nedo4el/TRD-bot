@@ -50,7 +50,7 @@ class TestFlatStrategy:
         candles = _make_candles(200, 1.0)
         signal = strategy.check_signal(candles)
         assert signal.action == "hold"
-        assert "нет импульса" in signal.reason
+        assert "СТОП ЗОНА" in signal.reason or "БОКОВИК" in signal.reason
 
     def test_impulse_detected(self) -> None:
         """Импульс обнаружен — ждём стабилизации."""

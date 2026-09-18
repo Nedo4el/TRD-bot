@@ -10,7 +10,7 @@ from core.strategies import BaseStrategy, Signal
 class FlatConfig:
     """Параметры боковика после импульса."""
 
-    poc_lookback: int = 360
+    poc_lookback: int = 600
     range_pct: float = 20.0
     impulse_min_pct: float = 15.0
     impulse_window: int = 5
@@ -99,26 +99,6 @@ class FlatStrategy(BaseStrategy):
                 ),
             )
 
-        # СТОП ЗОНА: ±5% от POC — запрет ордеров
-        if abs(deviation) < self.cfg.stop_zone_pct:
-            return Signal(
-                action="hold",
-                reason=(
-                    f"СТОП ЗОНА | POC={poc:.4f} | цена={current_price:.4f} | "
-                    f"откл={deviation:+.1f}% < ±{self.cfg.stop_zone_pct:.0f}%"
-                ),
-            )
-
-        # Проверяем, достигли ли мы POC для частичного закрытия
-        if abs(deviation) < 1.0:
-            return Signal(
-                action="hold",
-                reason=(
-                    f"НА POC | POC={poc:.4f} | цена={current_price:.4f} | "
-                    f"откл={deviation:+.1f}%"
-                ),
-            )
-
         # Ищем лучший ордер в стакане
         best_order = self._find_best_order(
             current_price, poc, deviation, half_range
@@ -126,6 +106,17 @@ class FlatStrategy(BaseStrategy):
 
         if best_order:
             return best_order
+
+        # СТОП ЗОНА: цена рядом с POC — ждём движения
+        if abs(deviation) < self.cfg.stop_zone_pct:
+            return Signal(
+                action="hold",
+                reason=(
+                    f"СТОП ЗОНА | POC={poc:.4f} | цена={current_price:.4f} | "
+                    f"откл={deviation:+.1f}% < ±{self.cfg.stop_zone_pct:.0f}% | "
+                    f"сетка: buy@-6/-8/-10% sell@+6/+8/+10%"
+                ),
+            )
 
         # Нет подходящих ордеров — ждём
         return Signal(

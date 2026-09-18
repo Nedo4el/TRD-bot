@@ -29,7 +29,7 @@ from core.logger import setup_logging
 from core.strategies import BaseStrategy, Signal
 
 # Импорты стратегий — добавляйте по мере написания
-# from robot_flat.strategy import FlatStrategy
+from robot_flat.strategy import FlatStrategy, FlatConfig
 # from robot_yrovni_D.strategy import YrovniDStrategy
 from robot_trend.strategy import TrendStrategy
 # from robot_impulse.strategy import ImpulseStrategy
@@ -47,9 +47,11 @@ def make_strategy(name: str) -> BaseStrategy:
     """
     if name == "trend":
         return TrendStrategy()
+    if name == "flat":
+        return FlatStrategy(FlatConfig(poc_lookback=600, impulse_min_pct=15.0))
     raise ValueError(
         f"Стратегия '{name}' ещё не реализована. "
-        f"Доступны: trend"
+        f"Доступны: trend, flat"
     )
 
 
