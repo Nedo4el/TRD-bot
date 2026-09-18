@@ -286,7 +286,7 @@ def format_report(
 
     lines = []
     lines.append("=" * 70)
-    lines.append(f"  БЭКТЕСТ: {symbol} | robot_flat | M1 | {days:.1f} дней")
+    lines.append(f"  БЭКТЕСТ: {symbol} | robot_flat | M5 | {days:.1f} дней")
     lines.append("=" * 70)
     lines.append("")
     lines.append("  ПАРАМЕТРЫ:")
