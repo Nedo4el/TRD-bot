@@ -61,6 +61,14 @@ def get_env_int(name: str, default: int) -> int:
     return int(value)
 
 
+def get_env_list(name: str, default: list[float]) -> list[float]:
+    """Прочитать переменную окружения как список чисел через запятую."""
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return [float(x.strip()) for x in value.split(",") if x.strip()]
+
+
 @dataclass
 class Config:
     """Общие настройки бота (одинаковые для всех стратегий).
