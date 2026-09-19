@@ -124,13 +124,13 @@ def _sortino(curve):
 
 
 def _order_qty(level: float) -> float:
-    """Размер ордера зависит от уровня сетки: чем дальше от POC — тем меньше."""
+    """Размер ордера: -6/+6 → $20, -8/+8 → $15, -10/+10 → $15 (всего $100)."""
     abs_level = abs(level)
     if abs_level <= 6:
-        return 30.0  # -6% / +6% → $30
+        return 20.0
     if abs_level <= 8:
-        return 20.0  # -8% / +8% → $20
-    return 10.0      # -10% / +10% → $10
+        return 15.0
+    return 15.0
 
 
 def run_backtest(candles, cfg):
@@ -344,14 +344,15 @@ async def main():
 
     lines = [
         "=" * 80,
-        "  BACKTEST PRO | 90 DAYS | M5 | SPREAD 0.3% | COMMISSION 0.04% | GRID $30/$20/$10",
+        "  BACKTEST PRO | 90 DAYS | M5 | SPREAD 0.3% | COMMISSION 0.04% | POC=600 | GRID $20/$15/$15",
         "=" * 80,
         "",
         f"  Date: {date_str}",
         "",
         "  Strategy:",
         "    POC: Volume Profile (100 bins), window=600 M5, fixed\n"
-        "    Grid: -6%=$30, -8%=$20, -10%=$10 (LONG) | +6%=$30, +8%=$20, +10%=$10 (SHORT)",
+        "    Grid: -6%=$20, -8%=$15, -10%=$15 (LONG) | +6%=$20, +8%=$15, +10%=$15 (SHORT)\n"
+        "    Total: $100",
         "    Corridor: +/-10% | Stop zone: +/-5% | Grid: -6/-8/-10 (L) +6/+8/+10 (S)",
         "    SL: +/-13% | TP: opposite order -1% | Trailing: 2% | Partial: 50%",
         "",
