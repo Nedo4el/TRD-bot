@@ -11,36 +11,30 @@ class FlatConfig:
     """Параметры боковика после импульса."""
 
     poc_lookback: int = 600
-    range_pct: float = 12.0
+    range_pct: float = 20.0
     impulse_min_pct: float = 15.0
     impulse_window: int = 5
     impulse_cooldown: int = 30
 
     # Сетка ордеров (от POC, %)
-    order_levels: list[float] = field(default_factory=lambda: [-3.0, -5.0, -8.0, 3.0, 5.0, 8.0])
+    order_levels: list[float] = field(default_factory=lambda: [-6.0, -8.0, -10.0, 6.0, 8.0, 10.0])
     # Стоп зона (±% от POC, запрет ордеров)
-    stop_zone_pct: float = 3.0
-    # Стоп от POC: POC ± (range/2 + stop_from_border_pct)
-    stop_from_border_pct: float = 8.0
-    # TP: фиксированный от входа (%)
-    tp_offset_pct: float = 12.0
+    stop_zone_pct: float = 5.0
+    # Стоп от границы коридора (%)
+    stop_from_border_pct: float = 3.0
+    # Тейк: на 1% ближе к POC от противоположного ордера
+    tp_offset_pct: float = 1.0
     # Максимум позиций в одну сторону
     max_positions: int = 3
-    # Пересчёт POC каждые N свечей (0 = не пересчитывать)
-    poc_recalc_every: int = 0
     # Частичное закрытие на POC (%)
     partial_close_pct: float = 50.0
     # Трейлинг TP после POC (%)
     trailing_after_poc_pct: float = 2.0
-    # Размер ордера по уровням (всего $75/сторону)
+    # Размер ордера по уровням: -6/+6 → $20, -8/+8 → $15, -10/+10 → $15 (всего $100)
     order_sizes: dict[float, float] = field(default_factory=lambda: {
-        -3.0: 25.0, -5.0: 25.0, -8.0: 25.0,
-        3.0: 25.0, 5.0: 25.0, 8.0: 25.0,
+        -6.0: 20.0, -8.0: 15.0, -10.0: 15.0,
+        6.0: 20.0, 8.0: 15.0, 10.0: 15.0,
     })
-    # Тренд-фильтр (EMA)
-    trend_filter_enabled: bool = True
-    trend_ema_fast: int = 50
-    trend_ema_slow: int = 200
 
 
 @dataclass
@@ -62,36 +56,13 @@ class FlatStrategy(BaseStrategy):
         self.cfg = cfg or FlatConfig()
         self._positions: list[PositionState] = []
         self._fixed_poc: float | None = None
-        self._ema_fast: list[float] = []
-        self._ema_slow: list[float] = []
-
-    @staticmethod
-    def _calc_ema(values: list[float], period: int) -> list[float]:
-        if not values:
-            return []
-        result = [values[0]]
-        k = 2 / (period + 1)
-        for v in values[1:]:
-            result.append(v * k + result[-1] * (1 - k))
-        return result
-
-    def _trend_direction(self, closes: list[float]) -> str | None:
-        """None = нет фильтра, 'long' = тренд вверх, 'short' = тренд вниз."""
-        if not self.cfg.trend_filter_enabled:
-            return None
-        if len(closes) < self.cfg.trend_ema_slow:
-            return None
-        ema_fast = self._calc_ema(closes, self.cfg.trend_ema_fast)
-        ema_slow = self._calc_ema(closes, self.cfg.trend_ema_slow)
-        if ema_fast[-1] > ema_slow[-1]:
-            return "long"
-        return "short"
+        self._needs_poc_recalc: bool = False
 
     def check_signal(self, candles: list[Candle]) -> Signal:
         if len(candles) < self.cfg.poc_lookback:
             return Signal(action="hold", reason=f"мало свечей ({len(candles)}/{self.cfg.poc_lookback})")
 
-        # Фиксируем POC при первом вызове — больше не пересчитываем
+        # Фиксируем POC при первом вызове
         if self._fixed_poc is None:
             window = candles[-self.cfg.poc_lookback:]
             self._fixed_poc = self._calc_volume_poc(
@@ -99,6 +70,16 @@ class FlatStrategy(BaseStrategy):
                 [c.low for c in window],
                 [c.volume for c in window],
             )
+
+        # Пересчитываем POC после закрытия всех позиций
+        if self._needs_poc_recalc and not self._positions:
+            window = candles[-self.cfg.poc_lookback:]
+            self._fixed_poc = self._calc_volume_poc(
+                [c.high for c in window],
+                [c.low for c in window],
+                [c.volume for c in window],
+            )
+            self._needs_poc_recalc = False
 
         poc = self._fixed_poc
 
@@ -134,9 +115,8 @@ class FlatStrategy(BaseStrategy):
             )
 
         # Ищем лучший ордер в стакане
-        trend = self._trend_direction(closes)
         best_order = self._find_best_order(
-            current_price, poc, deviation, half_range, trend
+            current_price, poc, deviation, half_range
         )
 
         if best_order:
@@ -185,6 +165,7 @@ class FlatStrategy(BaseStrategy):
                 # Проверяем удар стопа
                 if low <= pos.trailing_stop:
                     self._positions.remove(pos)
+                    self._needs_poc_recalc = True
                     return Signal(
                         action="close_long",
                         reason=(
@@ -214,6 +195,7 @@ class FlatStrategy(BaseStrategy):
                 # Проверяем удар стопа
                 if high >= pos.trailing_stop:
                     self._positions.remove(pos)
+                    self._needs_poc_recalc = True
                     return Signal(
                         action="close_short",
                         reason=(
@@ -242,23 +224,28 @@ class FlatStrategy(BaseStrategy):
         poc: float,
         deviation: float,
         half_range: float,
-        trend: str | None = None,
     ) -> Signal | None:
-        """Найти лучший ордер в стакане с учётом тренд-фильтра."""
+        """Найти лучший ордер в стакане с учётом приоритета TP."""
 
-        sl_poc_offset = half_range + self.cfg.stop_from_border_pct
+        buy_boundary = poc * (1 - half_range / 100)
+        sell_boundary = poc * (1 + half_range / 100)
 
         # Проверяем LONG ордера (цена ниже POC)
-        if deviation < 0 and trend != "short":
+        if deviation < 0:
             for level in sorted(self.cfg.order_levels, reverse=True):
                 if level > 0:
                     continue
                 order_price = poc * (1 + level / 100)
 
                 if current_price <= order_price:
-                    tp_price = current_price * (1 + self.cfg.tp_offset_pct / 100)
-                    sl_price = poc * (1 - sl_poc_offset / 100)
+                    # TP = противоположный ордер на 1% ближе к POC
+                    tp_level = abs(level) - self.cfg.tp_offset_pct
+                    tp_price = poc * (1 + tp_level / 100)
 
+                    # SL от границы коридора 3%
+                    sl_price = buy_boundary * (1 - self.cfg.stop_zone_pct / 100)
+
+                    # Добавляем позицию в состояние
                     self._positions.append(
                         PositionState(
                             direction="long",
@@ -273,25 +260,28 @@ class FlatStrategy(BaseStrategy):
                         reason=(
                             f"LONG @{level:+.0f}% | POC={poc:.4f} | "
                             f"цена={current_price:.4f} | "
-                            f"TP={tp_price:.4f} (+{self.cfg.tp_offset_pct}%) | "
-                            f"SL={sl_price:.4f} (-{sl_poc_offset:.1f}%) | "
-                            f"trend={trend or 'off'}"
+                            f"TP={tp_price:.4f} | SL={sl_price:.4f}"
                         ),
                         stop_loss=sl_price,
                         take_profit=tp_price,
                     )
 
         # Проверяем SHORT ордера (цена выше POC)
-        if deviation > 0 and trend != "long":
+        if deviation > 0:
             for level in sorted(self.cfg.order_levels):
                 if level < 0:
                     continue
                 order_price = poc * (1 + level / 100)
 
                 if current_price >= order_price:
-                    tp_price = current_price * (1 - self.cfg.tp_offset_pct / 100)
-                    sl_price = poc * (1 + sl_poc_offset / 100)
+                    # TP = противоположный ордер на 1% ближе к POC
+                    tp_level = level - self.cfg.tp_offset_pct
+                    tp_price = poc * (1 - tp_level / 100)
 
+                    # SL от границы коридора 3%
+                    sl_price = sell_boundary * (1 + self.cfg.stop_zone_pct / 100)
+
+                    # Добавляем позицию в состояние
                     self._positions.append(
                         PositionState(
                             direction="short",
@@ -306,9 +296,7 @@ class FlatStrategy(BaseStrategy):
                         reason=(
                             f"SHORT @{level:+.0f}% | POC={poc:.4f} | "
                             f"цена={current_price:.4f} | "
-                            f"TP={tp_price:.4f} (-{self.cfg.tp_offset_pct}%) | "
-                            f"SL={sl_price:.4f} (+{sl_poc_offset:.1f}%) | "
-                            f"trend={trend or 'off'}"
+                            f"TP={tp_price:.4f} | SL={sl_price:.4f}"
                         ),
                         stop_loss=sl_price,
                         take_profit=tp_price,

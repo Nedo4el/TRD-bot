@@ -30,12 +30,13 @@ ALL_SYMBOLS = ["AKEUSDT", "BTRUSDT", "BRUSDT", "LSKUSDT", "NILUSDT", "LABUSDT"]
 
 # ========== PARAMETERS ==========
 POC_LOOKBACK = 600
-RANGE_PCT = 12.0
-ORDER_LEVELS = [-3.0, -5.0, -8.0, 3.0, 5.0, 8.0]
-SL_FROM_POC = 8.0
-TP_PCT = 12.0
+RANGE_PCT = 20.0
+ORDER_LEVELS = [-6.0, -8.0, -10.0, 6.0, 8.0, 10.0]
+STOP_ZONE_PCT = 5.0
+STOP_FROM_BORDER_PCT = 3.0
+TP_OFFSET_PCT = 1.0
 MAX_POSITIONS = 3
-ORDER_SIZES = {3.0: 25.0, 5.0: 25.0, 8.0: 25.0}
+ORDER_SIZES = {-6.0: 20.0, -8.0: 15.0, -10.0: 15.0, 6.0: 20.0, 8.0: 15.0, 10.0: 15.0}
 
 
 def fetch_candles(session: HTTP, symbol: str) -> list[Candle]:
@@ -86,7 +87,7 @@ def _ema(values: list[float], period: int) -> list[float]:
     return result
 
 
-def run_backtest(candles, trend_filter=False):
+def run_backtest(candles):
     if len(candles) < POC_LOOKBACK:
         return None
 
@@ -102,10 +103,6 @@ def run_backtest(candles, trend_filter=False):
     wins = 0
     sl_count = 0
     tp_count = 0
-
-    closes = [c.close for c in candles]
-    ema50 = _ema(closes, 50)
-    ema200 = _ema(closes, 200)
 
     w = candles[:POC_LOOKBACK]
     poc = FlatStrategy._calc_volume_poc(
@@ -186,29 +183,31 @@ def run_backtest(candles, trend_filter=False):
         longs = sum(1 for p in positions if p["side"] == "long")
         shorts = sum(1 for p in positions if p["side"] == "short")
 
-        trend_up = ema50[i] > ema200[i] if trend_filter else True
-        trend_dn = ema50[i] < ema200[i] if trend_filter else True
+        buy_boundary = poc * (1 - half_range / 100)
+        sell_boundary = poc * (1 + half_range / 100)
 
-        if longs < MAX_POSITIONS and trend_up:
+        if longs < MAX_POSITIONS:
             for level in sorted(ORDER_LEVELS, reverse=True):
                 if level > 0 or level in fl:
                     continue
                 op = poc * (1 + level / 100)
                 if lo <= op <= h:
-                    tp_p = op * (1 + TP_PCT / 100)
-                    sl_p = poc * (1 - (half_range + SL_FROM_POC) / 100)
+                    tp_level = abs(level) - TP_OFFSET_PCT
+                    tp_p = poc * (1 + tp_level / 100)
+                    sl_p = buy_boundary * (1 - STOP_ZONE_PCT / 100)
                     positions.append({"side": "long", "entry": op, "sl": sl_p, "tp": tp_p, "qty": _qty(level)})
                     fl.add(level)
                     break
 
-        if shorts < MAX_POSITIONS and trend_dn:
+        if shorts < MAX_POSITIONS:
             for level in sorted(ORDER_LEVELS):
                 if level < 0 or level in fs:
                     continue
                 op = poc * (1 + level / 100)
                 if h >= op >= lo:
-                    tp_p = op * (1 - TP_PCT / 100)
-                    sl_p = poc * (1 + (half_range + SL_FROM_POC) / 100)
+                    tp_level = level - TP_OFFSET_PCT
+                    tp_p = poc * (1 - tp_level / 100)
+                    sl_p = sell_boundary * (1 + STOP_ZONE_PCT / 100)
                     positions.append({"side": "short", "entry": op, "sl": sl_p, "tp": tp_p, "qty": _qty(level)})
                     fs.add(level)
                     break
@@ -246,27 +245,19 @@ async def main():
     date_str = datetime.now(tz=MSK).strftime("%d.%m.%Y %H:%M MSK")
 
     results = []
-    results_tf = []
     for sym in ALL_SYMBOLS:
         print(f"  {sym}...", end=" ", flush=True)
         candles = fetch_candles(session, sym)
         print(f"{len(candles)} candles...", end=" ", flush=True)
 
-        r = run_backtest(candles, trend_filter=True)
-        r2 = None  # skip no-tf for final
+        r = run_backtest(candles)
         if r is None:
             print("not enough data")
             continue
         r["symbol"] = sym
         r["candles"] = len(candles)
         results.append(r)
-        if r2:
-            r2["symbol"] = sym
-            r2["candles"] = len(candles)
-            results_tf.append(r2)
-            print(f"NO_TF: WR={r['wr']:.0f}% PnL={r['pnl']:+.1f}%  TF: WR={r2['wr']:.0f}% PnL={r2['pnl']:+.1f}%")
-        else:
-            print(f"OK WR={r['wr']:.0f}% PnL={r['pnl']:+.1f}%")
+        print(f"OK WR={r['wr']:.0f}% PnL={r['pnl']:+.1f}%")
 
     if not results:
         print("No results")
@@ -276,7 +267,6 @@ async def main():
     lines = [
         "=" * 80,
         "  BACKTEST PRO | 90 DAYS | M5 | SPREAD 0.3% | COMMISSION 0.04%",
-        "  HIGH WR + PROFITABLE: TP=12% from entry, SL=POC+8%, TREND FILTER (EMA50/200)",
         "=" * 80,
         "",
         f"  Date: {date_str}",
@@ -284,10 +274,10 @@ async def main():
         "  Strategy:",
         f"    POC: Volume Profile (100 bins), window={POC_LOOKBACK} M5, fixed",
         f"    Grid: {ORDER_LEVELS}",
-        f"    Sizes: $25 per level (total $75/side)",
-        f"    TP: {TP_PCT}% from entry (fixed)",
-        f"    SL: POC +/- {half_range + SL_FROM_POC}% (range/2 + {SL_FROM_POC}%)",
-        f"    Corridor: +/-{half_range}% | Max positions: {MAX_POSITIONS}",
+        f"    Sizes: $20/$15/$15 per level ($100 total)",
+        f"    TP: opposite order - {TP_OFFSET_PCT}% closer to POC",
+        f"    SL: boundary + {STOP_FROM_BORDER_PCT}% = ±{half_range + STOP_FROM_BORDER_PCT}%",
+        f"    Stop zone: ±{STOP_ZONE_PCT}% | Corridor: ±{half_range}% | Max positions: {MAX_POSITIONS}",
         "",
         "  Costs:",
         f"    Spread: {SPREAD_PCT}% | Commission: {COMMISSION_PCT}%",
@@ -322,36 +312,6 @@ async def main():
     lines.append("")
     lines.append(f"  Profitable: {profitable}/{len(results)} | Avg PnL: {avg_pnl:+.1f}% | Avg Win%: {avg_wr:.0f}%")
     lines.append("=" * 80)
-
-    if results_tf:
-        avg_pnl2 = sum(r["pnl"] for r in results_tf) / len(results_tf)
-        avg_wr2 = sum(r["wr"] for r in results_tf) / len(results_tf)
-        avg_dd2 = sum(r["dd"] for r in results_tf) / len(results_tf)
-        prof2 = sum(1 for r in results_tf if r["pnl"] > 0)
-        lines += [
-            "",
-            "=" * 80,
-            "  WITH TREND FILTER (EMA-50/EMA-200):",
-            "=" * 80,
-            "",
-            "  {:<14s} {:>5s} {:>5s} {:>5s} {:>4s} {:>4s} {:>7s} {:>5s} {:>6s}".format(
-                "Coin", "Cand", "Trds", "Win%", "SL", "TP", "PnL", "PF", "MaxDD"
-            ),
-            "  " + "-" * 60,
-        ]
-        for r in results_tf:
-            pf = r["pnl"] / max(1, r["trades"] - r["wins"]) if r["trades"] > r["wins"] else 999.0
-            pf_s = "inf" if pf > 100 else f"{pf:.1f}"
-            lines.append(
-                "  {:<14s} {:5d} {:5d} {:4.0f}% {:4d} {:4d} {:+6.1f}% {:>5s} {:5.1f}%".format(
-                    r["symbol"], r["candles"], r["trades"], r["wr"],
-                    r["sl"], r["tp"], r["pnl"], pf_s, r["dd"],
-                )
-            )
-        lines.append("  " + "-" * 60)
-        lines.append(f"  AVG             {'':5s} {'':5s} {avg_wr2:.0f}% {'':4s} {'':4s} {avg_pnl2:+6.1f}%        {avg_dd2:.1f}%")
-        lines.append(f"  Profitable: {prof2}/{len(results_tf)} | Avg PnL: {avg_pnl2:+.1f}% | Avg Win%: {avg_wr2:.0f}%")
-        lines.append("=" * 80)
 
     filepath = REPORT_DIR / f"backtest_90d_PRO_{now_str}.txt"
     filepath.write_text("\n".join(lines), encoding="utf-8")
