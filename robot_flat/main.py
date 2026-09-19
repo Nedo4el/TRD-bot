@@ -32,9 +32,9 @@ async def main() -> None:
         stop_from_border_pct=get_env_float("STOP_FROM_BORDER_PCT", 3.0),
         tp_offset_pct=get_env_float("TP_OFFSET_PCT", 1.0),
         max_positions=get_env_int("MAX_POSITIONS", 3),
+        poc_recalc_every=get_env_int("POC_RECALC_EVERY", 72),
         partial_close_pct=get_env_float("PARTIAL_CLOSE_PCT", 50.0),
         trailing_after_poc_pct=get_env_float("TRAILING_AFTER_POC_PCT", 2.0),
-        order_size_usd=get_env_float("ORDER_SIZE_USD", 1.0),
     )
 
     config = Config()

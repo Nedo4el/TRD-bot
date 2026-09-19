@@ -26,12 +26,17 @@ class FlatConfig:
     tp_offset_pct: float = 1.0
     # Максимум позиций в одну сторону
     max_positions: int = 3
+    # Пересчёт POC каждые N свечей (0 = не пересчитывать)
+    poc_recalc_every: int = 72  # 6 часов при M5
     # Частичное закрытие на POC (%)
     partial_close_pct: float = 50.0
     # Трейлинг TP после POC (%)
     trailing_after_poc_pct: float = 2.0
-    # Размер ордера ($)
-    order_size_usd: float = 1.0
+    # Размер ордера по уровням: -6/+6 → $30, -8/+8 → $20, -10/+10 → $10
+    order_sizes: dict[float, float] = field(default_factory=lambda: {
+        -6.0: 30.0, -8.0: 20.0, -10.0: 10.0,
+        6.0: 30.0, 8.0: 20.0, 10.0: 10.0,
+    })
 
 
 @dataclass
@@ -60,10 +65,12 @@ class FlatStrategy(BaseStrategy):
 
         # Фиксируем POC при первом вызове — больше не пересчитываем
         if self._fixed_poc is None:
-            highs = [c.high for c in candles]
-            lows = [c.low for c in candles]
-            volumes = [c.volume for c in candles]
-            self._fixed_poc = self._calc_volume_poc(highs, lows, volumes)
+            window = candles[-self.cfg.poc_lookback:]
+            self._fixed_poc = self._calc_volume_poc(
+                [c.high for c in window],
+                [c.low for c in window],
+                [c.volume for c in window],
+            )
 
         poc = self._fixed_poc
 

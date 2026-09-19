@@ -25,7 +25,7 @@ CANDLES_TOTAL = DAYS * 24 * 12
 PAGE_SIZE = 1000
 SPREAD_PCT = 0.3
 COMMISSION_PCT = 0.04
-POC_RECALC_EVERY = 120
+POC_RECALC_EVERY = 999999  # отключено — POC фиксируется один раз
 
 ALL_SYMBOLS = [
     "AKEUSDT", "BTRUSDT", "BRUSDT", "LSKUSDT", "NILUSDT", "LABUSDT",
@@ -121,6 +121,16 @@ def _sortino(curve):
     if dd == 0:
         return 999.0
     return (avg / dd) * math.sqrt(105120)
+
+
+def _order_qty(level: float) -> float:
+    """Размер ордера зависит от уровня сетки: чем дальше от POC — тем меньше."""
+    abs_level = abs(level)
+    if abs_level <= 6:
+        return 30.0  # -6% / +6% → $30
+    if abs_level <= 8:
+        return 20.0  # -8% / +8% → $20
+    return 10.0      # -10% / +10% → $10
 
 
 def run_backtest(candles, cfg):
@@ -246,7 +256,7 @@ def run_backtest(candles, cfg):
                     tpl = abs(level) - tp_off
                     tp_p = poc * (1 + tpl / 100)
                     sl_p = poc * (1 - (half_range + 3) / 100)
-                    positions.append({"side": "long", "entry": op, "sl": sl_p, "tp": tp_p, "qty": 33.0})
+                    positions.append({"side": "long", "entry": op, "sl": sl_p, "tp": tp_p, "qty": _order_qty(level)})
                     fl.add(level)
                     res.longs += 1
                     break
@@ -260,7 +270,7 @@ def run_backtest(candles, cfg):
                     tpl = level - tp_off
                     tp_p = poc * (1 - tpl / 100)
                     sl_p = poc * (1 + (half_range + 3) / 100)
-                    positions.append({"side": "short", "entry": op, "sl": sl_p, "tp": tp_p, "qty": 33.0})
+                    positions.append({"side": "short", "entry": op, "sl": sl_p, "tp": tp_p, "qty": _order_qty(level)})
                     fs.add(level)
                     res.shorts += 1
                     break
@@ -334,13 +344,14 @@ async def main():
 
     lines = [
         "=" * 80,
-        "  BACKTEST PRO | 90 DAYS | M5 | SPREAD 0.3% | COMMISSION 0.04% | POC RECALC 6H",
+        "  BACKTEST PRO | 90 DAYS | M5 | SPREAD 0.3% | COMMISSION 0.04% | GRID $30/$20/$10",
         "=" * 80,
         "",
         f"  Date: {date_str}",
         "",
         "  Strategy:",
-        "    POC: Volume Profile (100 bins), window=600 M5, recalc every 6h",
+        "    POC: Volume Profile (100 bins), window=600 M5, fixed\n"
+        "    Grid: -6%=$30, -8%=$20, -10%=$10 (LONG) | +6%=$30, +8%=$20, +10%=$10 (SHORT)",
         "    Corridor: +/-10% | Stop zone: +/-5% | Grid: -6/-8/-10 (L) +6/+8/+10 (S)",
         "    SL: +/-13% | TP: opposite order -1% | Trailing: 2% | Partial: 50%",
         "",
