@@ -351,10 +351,8 @@ async def main() -> None:
     session = HTTP(testnet=False, api_key=API_KEY, api_secret=API_SECRET)
 
     symbols = ["AKEUSDT", "BTRUSDT", "BRUSDT", "LSKUSDT"]
-    # niulai — проверим وجود
     niulai_candidates = ["NIULAUSDT", "NILUSDT", "NIUUSDT"]
 
-    # Проверяем niulai
     resp = session.get_tickers(category="linear")
     available = {t["symbol"] for t in resp["result"]["list"]}
     niulai_symbol = None
@@ -367,10 +365,7 @@ async def main() -> None:
         symbols.append(niulai_symbol)
         print(f"Niulai найден: {niulai_symbol}")
     else:
-        print(f"Niulai не найден на Bybit. Доступные похожие:")
-        for s in sorted(available):
-            if "NIU" in s or "NIL" in s:
-                print(f"  {s}")
+        print("Niulai не найден на Bybit")
 
     print(f"\nТестирую: {symbols}")
     print()
