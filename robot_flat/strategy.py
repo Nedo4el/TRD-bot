@@ -30,11 +30,8 @@ class FlatConfig:
     partial_close_pct: float = 50.0
     # Трейлинг TP после POC (%)
     trailing_after_poc_pct: float = 2.0
-    # Размер ордера по уровням: -6/+6 → $20, -8/+8 → $15, -10/+10 → $15 (всего $100)
-    order_sizes: dict[float, float] = field(default_factory=lambda: {
-        -6.0: 20.0, -8.0: 15.0, -10.0: 15.0,
-        6.0: 20.0, 8.0: 15.0, 10.0: 15.0,
-    })
+    # Размер ордера ($)
+    order_size_usd: float = 1.0
 
 
 @dataclass
@@ -56,30 +53,17 @@ class FlatStrategy(BaseStrategy):
         self.cfg = cfg or FlatConfig()
         self._positions: list[PositionState] = []
         self._fixed_poc: float | None = None
-        self._needs_poc_recalc: bool = False
 
     def check_signal(self, candles: list[Candle]) -> Signal:
         if len(candles) < self.cfg.poc_lookback:
             return Signal(action="hold", reason=f"мало свечей ({len(candles)}/{self.cfg.poc_lookback})")
 
-        # Фиксируем POC при первом вызове
+        # Фиксируем POC при первом вызове — больше не пересчитываем
         if self._fixed_poc is None:
-            window = candles[-self.cfg.poc_lookback:]
-            self._fixed_poc = self._calc_volume_poc(
-                [c.high for c in window],
-                [c.low for c in window],
-                [c.volume for c in window],
-            )
-
-        # Пересчитываем POC после закрытия всех позиций
-        if self._needs_poc_recalc and not self._positions:
-            window = candles[-self.cfg.poc_lookback:]
-            self._fixed_poc = self._calc_volume_poc(
-                [c.high for c in window],
-                [c.low for c in window],
-                [c.volume for c in window],
-            )
-            self._needs_poc_recalc = False
+            highs = [c.high for c in candles]
+            lows = [c.low for c in candles]
+            volumes = [c.volume for c in candles]
+            self._fixed_poc = self._calc_volume_poc(highs, lows, volumes)
 
         poc = self._fixed_poc
 
@@ -89,6 +73,7 @@ class FlatStrategy(BaseStrategy):
         closes = [c.close for c in candles]
         highs = [c.high for c in candles]
         lows = [c.low for c in candles]
+        volumes = [c.volume for c in candles]
 
         current_price = closes[-1]
         high = highs[-1]
@@ -165,7 +150,6 @@ class FlatStrategy(BaseStrategy):
                 # Проверяем удар стопа
                 if low <= pos.trailing_stop:
                     self._positions.remove(pos)
-                    self._needs_poc_recalc = True
                     return Signal(
                         action="close_long",
                         reason=(
@@ -195,7 +179,6 @@ class FlatStrategy(BaseStrategy):
                 # Проверяем удар стопа
                 if high >= pos.trailing_stop:
                     self._positions.remove(pos)
-                    self._needs_poc_recalc = True
                     return Signal(
                         action="close_short",
                         reason=(
