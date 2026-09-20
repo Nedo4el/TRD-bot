@@ -207,7 +207,7 @@ def run_backtest(
                         "entry": order_price,
                         "sl": sl_price,
                         "tp": tp_price,
-                        "qty": 33.0,
+                        "qty": 100.0,
                     })
                     filled_long_levels.add(level)
                     break
@@ -227,7 +227,7 @@ def run_backtest(
                         "entry": order_price,
                         "sl": sl_price,
                         "tp": tp_price,
-                        "qty": 33.0,
+                        "qty": 100.0,
                     })
                     filled_short_levels.add(level)
                     break

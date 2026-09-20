@@ -31,7 +31,7 @@ class FlatConfig:
     # Трейлинг TP после POC (%)
     trailing_after_poc_pct: float = 2.0
     # Размер ордера ($)
-    order_size_usd: float = 1.0
+    order_size_usd: float = 100.0
 
 
 @dataclass
