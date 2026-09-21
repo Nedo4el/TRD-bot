@@ -177,10 +177,13 @@ def run_backtest(
     take_price = 0.0
 
     # Разогрев: пропускаем свечи, пока стратегии хватает данных
-    warmup = max(len(closed) // 4, 210)
+    warmup = getattr(strategy, '_min_warmup', max(len(closed) // 4, 210))
 
     for i in range(warmup, len(closed)):
-        window = closed[: i + 1]
+        # Оптимизация: передаём только окно вокруг текущей свечи
+        lookback = getattr(strategy, '_max_lookback', len(closed))
+        start = max(0, i - lookback)
+        window = closed[start:i + 1]
         signal: Signal = strategy.check_signal(window)
         bar = window[-1]
 

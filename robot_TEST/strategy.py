@@ -208,16 +208,25 @@ class TestStrategy(BaseStrategy):
     """Grid Flat — сетка в боковике с фильтрами тренда."""
 
     name = "grid_flat"
+    _max_lookback = 500
+    _min_warmup = 350
 
     def __init__(self, cfg: TestConfig | None = None):
         self.cfg = cfg or TestConfig()
         self._fixed_poc: float | None = None
-        self._grid: list[float] = []  # уровни сетки (от дальнего к ближнему)
+        self._grid: list[float] = []
         self._positions: list[GridPosition] = []
-        self._active: bool = False  # сетка запущена
-        self._last_sl_time: float = 0.0  # время последнего SL
+        self._active: bool = False
+        self._last_sl_time: float = 0.0
         self._candles_since_exit: int = 0
-        self._atr_avg: float = 0.0  # средний ATR за 60 свечей
+        self._atr_avg: float = 0.0
+        # Cache
+        self._cache_n: int = 0
+        self._cache_er: float = 0.0
+        self._cache_ci: float = 0.0
+        self._cache_adx: float = 0.0
+        self._cache_vol: float = 0.0
+        self._cache_atr: float = 0.0
 
     def check_signal(self, candles: list[Candle]) -> Signal:
         n = len(candles)
@@ -245,7 +254,7 @@ class TestStrategy(BaseStrategy):
         if poc <= 0:
             return Signal(action="hold", reason="POC = 0")
 
-        # === Вычисляем индикаторы ===
+        # === Индикаторы ===
         er_vals = _efficiency_ratio(closes, self.cfg.er_period)
         ci_vals = _choppiness_index(highs, lows, closes, self.cfg.ci_period)
         adx_vals = _adx(highs, lows, closes, self.cfg.adx_period)
@@ -254,14 +263,11 @@ class TestStrategy(BaseStrategy):
         er_now = er_vals[-1]
         ci_now = ci_vals[-1]
         adx_now = adx_vals[-1]
+        atr_now = atr_vals[-1]
 
-        # Средний ATR за 60 свечей (для триггера)
         if n >= self.cfg.atr_avg_period + self.cfg.atr_period:
             self._atr_avg = sum(atr_vals[-self.cfg.atr_avg_period:]) / self.cfg.atr_avg_period
 
-        atr_now = atr_vals[-1]
-
-        # Объём
         vol_fast = sum(volumes[-self.cfg.vol_avg_fast:]) / self.cfg.vol_avg_fast if self.cfg.vol_avg_fast > 0 else 0
         vol_slow = sum(volumes[-self.cfg.vol_avg_slow:]) / self.cfg.vol_avg_slow if self.cfg.vol_avg_slow > 0 else 0
         vol_ratio = vol_fast / vol_slow if vol_slow > 0 else 1.0
@@ -384,10 +390,14 @@ class TestStrategy(BaseStrategy):
         """Найти вход по сетке."""
         long_count = sum(1 for p in self._positions if p.direction == "long")
         short_count = sum(1 for p in self._positions if p.direction == "short")
+        occupied_long = {p.level_idx for p in self._positions if p.direction == "long"}
+        occupied_short = {p.level_idx for p in self._positions if p.direction == "short"}
 
         # LONG (ниже POC)
         if long_count < 6:
             for idx in range(6):
+                if idx in occupied_long:
+                    continue
                 level_price = self._grid[idx]
                 if current_price <= level_price:
                     sl_price = poc * (1 - self.cfg.corridor_pct / 100) * 0.965
@@ -415,6 +425,8 @@ class TestStrategy(BaseStrategy):
         # SHORT (выше POC)
         if short_count < 6:
             for idx in range(6, 12):
+                if idx in occupied_short:
+                    continue
                 level_price = self._grid[idx]
                 if current_price >= level_price:
                     sl_price = poc * (1 + self.cfg.corridor_pct / 100) * 1.035
