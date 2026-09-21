@@ -24,9 +24,9 @@ async def main() -> None:
     cfg = FlatConfig(
         poc_lookback=get_env_int("POC_LOOKBACK", 600),
         range_pct=get_env_float("RANGE_PCT", 20.0),
-        impulse_min_pct=get_env_float("IMPULSE_MIN_PCT", 15.0),
-        impulse_window=get_env_int("IMPULSE_WINDOW", 5),
-        impulse_cooldown=get_env_int("IMPULSE_COOLDOWN", 30),
+        trend_ema_fast=get_env_int("TREND_EMA_FAST", 50),
+        trend_ema_slow=get_env_int("TREND_EMA_SLOW", 200),
+        trend_threshold=get_env_float("TREND_THRESHOLD", 2.0),
         order_levels=get_env_list("ORDER_LEVELS", [-6.0, -8.0, -10.0]),
         stop_zone_pct=get_env_float("STOP_ZONE_PCT", 5.0),
         stop_from_border_pct=get_env_float("STOP_FROM_BORDER_PCT", 3.0),

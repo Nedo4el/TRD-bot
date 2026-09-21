@@ -34,6 +34,7 @@ from robot_flat.strategy import FlatStrategy, FlatConfig
 from robot_trend.strategy import TrendStrategy
 # from robot_impulse.strategy import ImpulseStrategy
 # from robot_krugloe.strategy import KrugloeStrategy
+from robot_TEST.strategy import TestStrategy, TestConfig
 
 
 def make_strategy(name: str) -> BaseStrategy:
@@ -48,7 +49,9 @@ def make_strategy(name: str) -> BaseStrategy:
     if name == "trend":
         return TrendStrategy()
     if name == "flat":
-        return FlatStrategy(FlatConfig(poc_lookback=600, impulse_min_pct=15.0))
+        return FlatStrategy(FlatConfig(poc_lookback=600))
+    if name == "grid_flat":
+        return TestStrategy(TestConfig(poc_lookback=300))
     raise ValueError(
         f"Стратегия '{name}' ещё не реализована. "
         f"Доступны: trend, flat"
@@ -249,7 +252,12 @@ def run_backtest(
     return result
 
 
-async def fetch_candles(config: Config, limit: int) -> list[Candle]:
+async def fetch_candles(
+    config: Config,
+    limit: int,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+) -> list[Candle]:
     """Загрузить свечи с Bybit через API с пагинацией.
 
     Bybit отдаёт максимум 1000 свечей за запрос.
@@ -263,7 +271,7 @@ async def fetch_candles(config: Config, limit: int) -> list[Candle]:
 
         while remaining > 0:
             batch = min(remaining, PAGE)
-            end_ts = None
+            end_ts = end_ms
             if all_candles:
                 end_ts = all_candles[0].open_time - 1
 
@@ -281,6 +289,10 @@ async def fetch_candles(config: Config, limit: int) -> list[Candle]:
 
             if len(candles) < batch:
                 break
+
+        # Фильтрация по start_ms если задано
+        if start_ms is not None:
+            all_candles = [c for c in all_candles if c.open_time >= start_ms]
 
         return all_candles
     finally:
@@ -519,7 +531,7 @@ def main() -> None:
     parser.add_argument(
         "--strategy",
         required=True,
-        choices=["trend", "flat", "yrovni", "impulse", "zero"],
+        choices=["trend", "flat", "grid_flat", "yrovni", "impulse", "zero"],
         help="какую стратегию тестировать",
     )
     parser.add_argument(
@@ -530,6 +542,9 @@ def main() -> None:
     parser.add_argument("--sl", type=float, default=None, help="SL %% (fallback)")
     parser.add_argument("--tp", type=float, default=None, help="TP %% (fallback)")
     parser.add_argument("--no-chart", action="store_true", help="не показывать график")
+    parser.add_argument("--start-date", default=None, help="начальная дата (YYYY-MM-DD)")
+    parser.add_argument("--end-date", default=None, help="конечная дата (YYYY-MM-DD)")
+    parser.add_argument("--save-report", default=None, help="путь для сохранения отчёта (.txt)")
     args = parser.parse_args()
 
     setup_logging("logs/backtest.log", "WARNING")
@@ -549,11 +564,60 @@ def main() -> None:
     tp_pct = args.tp if args.tp is not None else config.take_profit_pct
     config.validate()
 
+    # Конвертация дат в timestamp
+    from datetime import datetime, timezone
+    start_ms = None
+    end_ms = None
+    if args.start_date:
+        start_ms = int(datetime.strptime(args.start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
+    if args.end_date:
+        end_dt = datetime.strptime(args.end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        end_ms = int(end_dt.timestamp() * 1000)
+        # Для end_date берём конец дня (23:59:59.999)
+        end_ms = end_ms + 86400000 - 1
+
+    # Если заданы даты — считаем limit автоматически
+    limit = args.limit
+    if start_ms and end_ms:
+        tf_minutes = int(config.timeframe) if config.timeframe.isdigit() else 5
+        days = (end_ms - start_ms) / 86400000
+        limit = int(days * 24 * 60 / tf_minutes) + 100  # +100 запас
+        print(f"Даты: {args.start_date} → {args.end_date} | {days:.0f} дней | ~{limit} свечей")
+
     strategy = make_strategy(args.strategy)
-    candles = asyncio.run(fetch_candles(config, args.limit))
+    candles = asyncio.run(fetch_candles(config, limit, start_ms=start_ms, end_ms=end_ms))
     result = run_backtest(candles, strategy, sl_pct, tp_pct)
 
     print_stats(result, strategy.name, config.symbol, config.timeframe)
+
+    # Сохранение отчёта в файл
+    if args.save_report:
+        from datetime import datetime, timezone
+        report_path = Path(args.save_report)
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(f"Backtest Report: {strategy.name} | {config.symbol} | {config.timeframe}\n")
+            f.write(f"Date range: {args.start_date or 'N/A'} → {args.end_date or 'N/A'}\n")
+            f.write(f"Candles: {len(candles)}\n")
+            f.write("=" * 55 + "\n")
+            f.write(f"  Trades:         {result.total_trades}\n")
+            f.write(f"  Wins:           {result.wins} ({result.win_rate:.1f}%)\n")
+            f.write(f"  Losses:         {result.losses}\n")
+            f.write(f"  Avg Win:        {result.avg_win:+.3f}%\n")
+            f.write(f"  Avg Loss:       {result.avg_loss:+.3f}%\n")
+            f.write(f"  Profit Factor:  {result.profit_factor:.2f}\n")
+            f.write(f"  Max Streak:     +{result.max_win_streak} / -{result.max_loss_streak}\n")
+            f.write("-" * 55 + "\n")
+            f.write(f"  Total PnL:      {result.total_pnl:+.2f}%\n")
+            f.write(f"  Max Drawdown:   {result.max_drawdown:.2f}%\n")
+            f.write("=" * 55 + "\n\n")
+            f.write("Trades detail:\n")
+            for i, t in enumerate(result.trades, 1):
+                from datetime import datetime, timezone
+                entry_dt = datetime.fromtimestamp(t.entry_time / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                exit_dt = datetime.fromtimestamp(t.exit_time / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                f.write(f"  {i:3d}. {t.side:4s} | {entry_dt} → {exit_dt} | entry={t.entry_price:.5f} exit={t.exit_price:.5f} | {t.pnl_pct:+.3f}% ({t.exit_reason})\n")
+        print(f"\nОтчёт сохранён: {report_path}")
 
     if not args.no_chart and result.equity_curve:
         plot_equity(result, strategy.name, config.symbol, config.timeframe)

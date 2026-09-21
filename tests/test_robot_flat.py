@@ -10,10 +10,9 @@ def _make_candles(
     n: int = 200,
     base_price: float = 1.0,
     trend: str = "flat",
-    impulse_at: int | None = None,
-    impulse_size: float = 20.0,
+    ema_fast_above: bool | None = None,
 ) -> list[Candle]:
-    """Создать свечи с опциональным импульсом."""
+    """Создать свечи с опциональным трендом."""
     candles = []
     for i in range(n):
         if trend == "up":
@@ -22,10 +21,6 @@ def _make_candles(
             price = base_price * (1 - i * 0.001)
         else:
             price = base_price
-
-        # Добавляем импульс в указанной позиции
-        if impulse_at and i == impulse_at:
-            price = base_price * (1 + impulse_size / 100)
 
         candles.append(
             Candle(
@@ -43,47 +38,32 @@ def _make_candles(
 class TestFlatStrategy:
     """Тесты основной логики."""
 
-    def test_no_impulse_hold(self) -> None:
-        """Без импульса — hold."""
-        cfg = FlatConfig(impulse_min_pct=15.0, poc_lookback=100)
+    def test_flat_market_hold(self) -> None:
+        """Боковик — hold (ждём подходящего уровня)."""
+        cfg = FlatConfig(poc_lookback=100, trend_ema_slow=150)
         strategy = FlatStrategy(cfg)
         candles = _make_candles(200, 1.0)
         signal = strategy.check_signal(candles)
         assert signal.action == "hold"
         assert "СТОП ЗОНА" in signal.reason or "БОКОВИК" in signal.reason
 
-    def test_impulse_detected(self) -> None:
-        """Импульс обнаружен — ждём стабилизации."""
-        cfg = FlatConfig(
-            impulse_min_pct=15.0,
-            impulse_window=5,
-            impulse_cooldown=30,
-            stop_zone_pct=5.0,
-            poc_lookback=100,
-        )
+    def test_uptrend_blocked(self) -> None:
+        """Восходящий тренд — заблокирован фильтром."""
+        cfg = FlatConfig(poc_lookback=100, trend_ema_fast=50, trend_ema_slow=150, trend_threshold=2.0)
         strategy = FlatStrategy(cfg)
-        # Импульс на свече 150, стабилизация 30 свечей → 180/200
-        # Цена после импульса = 1.2 (выше стоп зоны)
-        candles = _make_candles(200, 1.0, impulse_at=150, impulse_size=20.0)
+        candles = _make_candles(200, 1.0, trend="up")
         signal = strategy.check_signal(candles)
         assert signal.action == "hold"
-        # Либо стабилизация, либо стоп зона (цена на POC)
-        assert "стабилизации" in signal.reason or "СТОП ЗОНА" in signal.reason
+        assert "ТРЕНД" in signal.reason
 
-    def test_impulse_stabilized(self) -> None:
-        """Импульс + стабилизация — ищем боковик."""
-        cfg = FlatConfig(
-            impulse_min_pct=15.0,
-            impulse_window=5,
-            impulse_cooldown=30,
-            poc_lookback=60,
-        )
+    def test_downtrend_blocked(self) -> None:
+        """Нисходящий тренд — заблокирован фильтром."""
+        cfg = FlatConfig(poc_lookback=100, trend_ema_fast=50, trend_ema_slow=150, trend_threshold=2.0)
         strategy = FlatStrategy(cfg)
-        # Импульс на свече 100, стабилизация 30 свечей, итого 130+
-        candles = _make_candles(200, 1.0, impulse_at=100, impulse_size=20.0)
+        candles = _make_candles(200, 1.0, trend="down")
         signal = strategy.check_signal(candles)
-        # Должны получить любой сигнал кроме "нет импульса"
-        assert signal.action != "hold" or "импульс" not in signal.reason
+        assert signal.action == "hold"
+        assert "ТРЕНД" in signal.reason
 
 
 class TestTrailingStop:
@@ -111,13 +91,11 @@ class TestTrailingStop:
             )
         )
 
-        # Цена растёт — пик обновляется
         signal = strategy._check_trailing_stop(
             current_price=1.05, high=1.06, low=1.04, poc=1.0, half_range=10.0
         )
         assert signal is None
         assert strategy._positions[0].current_peak == 1.06
-        # Стоп = 1.06 * (1 - 2%) = 1.0388
         assert abs(strategy._positions[0].trailing_stop - 1.0388) < 0.001
 
     def test_long_trailing_stop_hit(self) -> None:
@@ -135,7 +113,6 @@ class TestTrailingStop:
             )
         )
 
-        # Цена падает ниже стопа
         signal = strategy._check_trailing_stop(
             current_price=1.03, high=1.04, low=1.02, poc=1.0, half_range=10.0
         )
@@ -158,14 +135,11 @@ class TestTrailingStop:
             )
         )
 
-        # Цена падает — пик обновляется
-        # high должен быть < trailing_stop (0.9588) чтобы не сработал стоп
         signal = strategy._check_trailing_stop(
             current_price=0.95, high=0.955, low=0.94, poc=1.0, half_range=10.0
         )
         assert signal is None
         assert strategy._positions[0].current_peak == 0.94
-        # Стоп = 0.94 * (1 + 2%) = 0.9588
         assert abs(strategy._positions[0].trailing_stop - 0.9588) < 0.001
 
     def test_short_trailing_stop_hit(self) -> None:
@@ -183,7 +157,6 @@ class TestTrailingStop:
             )
         )
 
-        # Цена растёт выше стопа
         signal = strategy._check_trailing_stop(
             current_price=0.97, high=0.98, low=0.96, poc=1.0, half_range=10.0
         )
@@ -199,7 +172,6 @@ class TestPositionManagement:
         """Максимум позиций — не больше 3 в одну сторону."""
         cfg = FlatConfig(max_positions=3)
         strategy = FlatStrategy(cfg)
-        # Добавляем 3 LONG позиции
         for _ in range(3):
             strategy._positions.append(
                 __import__("robot_flat.strategy", fromlist=["PositionState"]).PositionState(
@@ -220,7 +192,6 @@ class TestPOCCalculation:
         closes = [1.0, 1.0, 1.0, 2.0, 2.0]
         volumes = [100.0, 100.0, 100.0, 50.0, 50.0]
         poc = FlatStrategy._calc_poc(closes, volumes)
-        # POC должен быть ближе к 1.0 (там больше объёма)
         assert 0.9 < poc < 1.5
 
     def test_poc_empty(self) -> None:
@@ -230,12 +201,10 @@ class TestPOCCalculation:
 
     def test_volume_poc_basic(self) -> None:
         """Volume POC — объём по диапазону high/low."""
-        # Свеча с большим объёмом в диапазоне 1.0-1.1
         highs = [1.1, 1.05, 1.05]
         lows = [1.0, 1.0, 1.0]
         volumes = [100.0, 10.0, 10.0]
         poc = FlatStrategy._calc_volume_poc(highs, lows, volumes)
-        # POC должен быть ближе к 1.05 (там больше объёма)
         assert 1.0 < poc < 1.1
 
     def test_volume_poc_equal_distribution(self) -> None:
@@ -244,8 +213,22 @@ class TestPOCCalculation:
         lows = [1.0, 1.0]
         volumes = [50.0, 50.0]
         poc = FlatStrategy._calc_volume_poc(highs, lows, volumes)
-        # При равномерном распределении argmax вернёт первый бин
         assert 1.0 < poc < 1.1
+
+
+class TestEMACalculation:
+    """Тесты EMA фильтра."""
+
+    def test_ema_basic(self) -> None:
+        """EMA — базовый расчёт."""
+        data = [1.0 + i * 0.01 for i in range(100)]
+        ema = FlatStrategy._ema(data, 20)
+        assert ema > 0
+
+    def test_ema_insufficient_data(self) -> None:
+        """EMA = 0 при недостаточных данных."""
+        ema = FlatStrategy._ema([1.0, 2.0], 20)
+        assert ema == 0.0
 
 
 if __name__ == "__main__":

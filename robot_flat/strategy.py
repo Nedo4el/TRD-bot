@@ -8,13 +8,15 @@ from core.strategies import BaseStrategy, Signal
 
 @dataclass
 class FlatConfig:
-    """Параметры боковика после импульса."""
+    """Параметры боковика на основе POC."""
 
     poc_lookback: int = 600
     range_pct: float = 20.0
-    impulse_min_pct: float = 15.0
-    impulse_window: int = 5
-    impulse_cooldown: int = 30
+
+    # Фильтр тренда (EMA)
+    trend_ema_fast: int = 50
+    trend_ema_slow: int = 200
+    trend_threshold: float = 2.0  # % разницы EMA — выше = тренд
 
     # Сетка ордеров (от POC, %)
     order_levels: list[float] = field(default_factory=lambda: [-6.0, -8.0, -10.0, 6.0, 8.0, 10.0])
@@ -55,8 +57,9 @@ class FlatStrategy(BaseStrategy):
         self._fixed_poc: float | None = None
 
     def check_signal(self, candles: list[Candle]) -> Signal:
-        if len(candles) < self.cfg.poc_lookback:
-            return Signal(action="hold", reason=f"мало свечей ({len(candles)}/{self.cfg.poc_lookback})")
+        min_candles = max(self.cfg.poc_lookback, self.cfg.trend_ema_slow)
+        if len(candles) < min_candles:
+            return Signal(action="hold", reason=f"мало свечей ({len(candles)}/{min_candles})")
 
         # Фиксируем POC при первом вызове — больше не пересчитываем
         if self._fixed_poc is None:
@@ -73,7 +76,6 @@ class FlatStrategy(BaseStrategy):
         closes = [c.close for c in candles]
         highs = [c.high for c in candles]
         lows = [c.low for c in candles]
-        volumes = [c.volume for c in candles]
 
         current_price = closes[-1]
         high = highs[-1]
@@ -88,13 +90,32 @@ class FlatStrategy(BaseStrategy):
         if trailing_signal:
             return trailing_signal
 
+        # === ФИЛЬТР ТРЕНДА: EMA fast vs slow ===
+        ema_fast = self._ema(closes, self.cfg.trend_ema_fast)
+        ema_slow = self._ema(closes, self.cfg.trend_ema_slow)
+        if ema_slow > 0:
+            trend_pct = (ema_fast - ema_slow) / ema_slow * 100
+        else:
+            trend_pct = 0.0
+
+        if abs(trend_pct) > self.cfg.trend_threshold:
+            direction = "ВВЕРХ" if trend_pct > 0 else "ВНИЗ"
+            return Signal(
+                action="hold",
+                reason=(
+                    f"ТРЕНД {direction} | EMA{self.cfg.trend_ema_fast}={ema_fast:.4f} "
+                    f"vs EMA{self.cfg.trend_ema_slow}={ema_slow:.4f} | "
+                    f"разница={trend_pct:+.2f}% > ±{self.cfg.trend_threshold}%"
+                ),
+            )
+
         # ТРЕНД: цена за пределами коридора
         if abs(deviation) > half_range:
             direction = "ВВЕРХ" if deviation > 0 else "ВНИЗ"
             return Signal(
                 action="hold",
                 reason=(
-                    f"ТРЕНД {direction} | POC={poc:.4f} | цена={current_price:.4f} | "
+                    f"КОРИДОР {direction} | POC={poc:.4f} | цена={current_price:.4f} | "
                     f"откл={deviation:+.1f}% > ±{half_range:.0f}%"
                 ),
             )
@@ -287,43 +308,16 @@ class FlatStrategy(BaseStrategy):
 
         return None
 
-    def _detect_impulse(
-        self,
-        closes: list[float],
-        highs: list[float],
-        lows: list[float],
-    ) -> tuple[int, float, float] | None:
-        """Найти импульс: ≥ impulse_min_pct за impulse_window свечей.
-
-        Ищет импульс, который завершился НЕ позже impulse_cooldown свечей назад,
-        чтобы была стабилизация после него.
-
-        Returns:
-            Кортеж (impulse_end_idx, high, low) или None.
-        """
-        window = self.cfg.impulse_window
-        cooldown = self.cfg.impulse_cooldown
-        search_end = len(closes) - cooldown
-        if search_end < window + 1:
-            return None
-
-        for end_idx in range(search_end - 1, window - 1, -1):
-            start_idx = end_idx - window
-            segment_highs = highs[start_idx : end_idx + 1]
-            segment_lows = lows[start_idx : end_idx + 1]
-
-            high = max(segment_highs)
-            low = min(segment_lows)
-
-            if low <= 0:
-                continue
-
-            move_pct = (high - low) / low * 100
-
-            if move_pct >= self.cfg.impulse_min_pct:
-                return (end_idx, high, low)
-
-        return None
+    @staticmethod
+    def _ema(data: list[float], period: int) -> float:
+        """Exponential Moving Average."""
+        if len(data) < period:
+            return 0.0
+        multiplier = 2 / (period + 1)
+        ema = sum(data[:period]) / period
+        for price in data[period:]:
+            ema = (price - ema) * multiplier + ema
+        return ema
 
     @staticmethod
     def _calc_volume_poc(
