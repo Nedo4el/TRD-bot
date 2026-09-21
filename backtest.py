@@ -154,101 +154,100 @@ def run_backtest(
     sl_pct_fallback: float,
     tp_pct_fallback: float,
 ) -> BacktestResult:
-    """Эмулировать торговлю по свечам.
+    """Эмулировать торговлю по свечам (мульти-позиции).
 
     Args:
-        candles: свечи от старых к новым (последняя может быть незакрытой —
-            она отбрасывается, как и в живом движке).
-        strategy: объект стратегии (check_signal вызывается на каждой свече).
-        sl_pct_fallback: SL в %, если стратегия не дала свою цену стопа.
+        candles: свечи от старых к новым.
+        strategy: объект стратегии.
+        sl_pct_fallback: SL в %, если стратегия не дала свою.
         tp_pct_fallback: TP в %, аналогично.
 
     Returns:
         BacktestResult со сделками и equity curve.
     """
-    closed = candles[:-1]  # незакрытая свеча не участвует
+    closed = candles[:-1]
     result = BacktestResult()
     result.candles_used = closed
-    equity = 100.0  # стартовый "баланс" в %
-    in_position: str | None = None  # "Buy"/"Sell" или None
-    entry_price = 0.0
-    entry_time = 0
-    stop_price = 0.0
-    take_price = 0.0
+    equity = 100.0
 
-    # Разогрев: пропускаем свечи, пока стратегии хватает данных
+    @dataclass
+    class OpenPos:
+        side: str
+        entry_price: float
+        entry_time: int
+        stop_price: float
+        take_price: float
+
+    open_positions: list[OpenPos] = []
+
     warmup = getattr(strategy, '_min_warmup', max(len(closed) // 4, 210))
 
     for i in range(warmup, len(closed)):
-        # Оптимизация: передаём только окно вокруг текущей свечи
         lookback = getattr(strategy, '_max_lookback', len(closed))
         start = max(0, i - lookback)
         window = closed[start:i + 1]
         signal: Signal = strategy.check_signal(window)
         bar = window[-1]
 
-        if in_position is not None:
-            # --- Позиция открыта: проверяем SL/TP внутри свечи ---
-            hit_sl = (
-                bar.low <= stop_price
-                if in_position == "Buy"
-                else bar.high >= stop_price
-            )
-            hit_tp = (
-                bar.high >= take_price
-                if in_position == "Buy"
-                else bar.low <= take_price
-            )
-            if hit_sl:
-                exit_price = stop_price
-                exit_reason = "SL"
-            elif hit_tp:
-                exit_price = take_price
-                exit_reason = "TP"
+        # --- Проверяем SL/TP для всех открытых позиций ---
+        closed_this_bar = []
+        for pos in open_positions:
+            if pos.side == "Buy":
+                hit_sl = bar.low <= pos.stop_price
+                hit_tp = bar.high >= pos.take_price
             else:
-                result.equity_curve.append(equity)
-                result.equity_times.append(bar.open_time)
-                continue  # позиция ещё жива
+                hit_sl = bar.high >= pos.stop_price
+                hit_tp = bar.low <= pos.take_price
+
+            if hit_sl:
+                exit_price = pos.stop_price
+                reason = "SL"
+            elif hit_tp:
+                exit_price = pos.take_price
+                reason = "TP"
+            else:
+                continue
+
             move = (
-                (exit_price - entry_price) / entry_price * 100
-                if in_position == "Buy"
-                else (entry_price - exit_price) / entry_price * 100
+                (exit_price - pos.entry_price) / pos.entry_price * 100
+                if pos.side == "Buy"
+                else (pos.entry_price - exit_price) / pos.entry_price * 100
             )
             equity += move
             result.trades.append(
                 Trade(
-                    side=in_position,
-                    entry_price=entry_price,
+                    side=pos.side,
+                    entry_price=pos.entry_price,
                     exit_price=exit_price,
-                    entry_time=entry_time,
+                    entry_time=pos.entry_time,
                     exit_time=bar.open_time,
                     pnl_pct=move,
-                    exit_reason=exit_reason,
+                    exit_reason=reason,
                 ),
             )
-            in_position = None
-            result.equity_curve.append(equity)
-            result.equity_times.append(bar.open_time)
-            continue
+            closed_this_bar.append(pos)
 
-        # --- Вне позиции: входим по сигналу на закрытии свечи ---
-        if signal.action not in ("buy", "sell"):
-            result.equity_curve.append(equity)
-            result.equity_times.append(bar.open_time)
-            continue
-        in_position = signal.action.capitalize()
-        entry_price = bar.close
-        entry_time = bar.open_time
-        if signal.stop_loss is not None and signal.take_profit is not None:
-            stop_price = signal.stop_loss
-            take_price = signal.take_profit
-        else:
-            if in_position == "Buy":
-                stop_price = entry_price * (1 - sl_pct_fallback / 100.0)
-                take_price = entry_price * (1 + tp_pct_fallback / 100.0)
+        for pos in closed_this_bar:
+            open_positions.remove(pos)
+
+        # --- Входим по сигналу ---
+        if signal.action in ("buy", "sell"):
+            side = signal.action.capitalize()
+            entry_price = bar.close
+            entry_time = bar.open_time
+            if signal.stop_loss is not None and signal.take_profit is not None:
+                sp = signal.stop_loss
+                tp = signal.take_profit
             else:
-                stop_price = entry_price * (1 + sl_pct_fallback / 100.0)
-                take_price = entry_price * (1 - tp_pct_fallback / 100.0)
+                if side == "Buy":
+                    sp = entry_price * (1 - sl_pct_fallback / 100.0)
+                    tp = entry_price * (1 + tp_pct_fallback / 100.0)
+                else:
+                    sp = entry_price * (1 + sl_pct_fallback / 100.0)
+                    tp = entry_price * (1 - tp_pct_fallback / 100.0)
+            open_positions.append(OpenPos(side=side, entry_price=entry_price,
+                                          entry_time=entry_time, stop_price=sp, take_price=tp))
+
         result.equity_curve.append(equity)
         result.equity_times.append(bar.open_time)
 
