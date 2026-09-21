@@ -51,7 +51,7 @@ def make_strategy(name: str) -> BaseStrategy:
     if name == "flat":
         return FlatStrategy(FlatConfig(poc_lookback=600))
     if name == "grid_flat":
-        return TestStrategy(TestConfig(poc_lookback=300))
+        return TestStrategy(TestConfig(poc_lookback=600))
     raise ValueError(
         f"Стратегия '{name}' ещё не реализована. "
         f"Доступны: trend, flat"
