@@ -46,6 +46,15 @@ class Position:
     unrealised_pnl: float  # нереализованная прибыль/убыток
     stop_loss: float | None = None
     take_profit: float | None = None
+    position_idx: int = 0  # 0 — one-way, 1 — long (хедж), 2 — short (хедж)
+
+
+def _fmt_num(value: float) -> str:
+    """Отформатировать число для API биржи: без scientific notation и хвостов."""
+    text = f"{value:.12f}"
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
 
 
 class BybitClient:
@@ -84,6 +93,8 @@ class BybitClient:
         self.last_ws_price: dict[str, float] = {}  # последние цены из WS
         self._ws_lock = threading.Lock()
 
+        # Кэш фильтров инструментов по символам (qtyStep, tickSize, минимумы)
+        self._instruments: dict[str, dict[str, Any]] = {}
         # Кэш шагов объёма по символам (для округления размеров ордеров)
         self._qty_steps: dict[str, float] = {}
 
@@ -219,6 +230,10 @@ class BybitClient:
         qty: float,
         order_type: str = "Market",
         price: float | None = None,
+        *,
+        post_only: bool = False,
+        reduce_only: bool = False,
+        position_idx: int | None = None,
     ) -> dict[str, Any]:
         """Выставить ордер (рыночный или лимитный).
 
@@ -226,8 +241,11 @@ class BybitClient:
             symbol: торговая пара.
             side: "Buy" или "Sell".
             qty: количество в базовом активе (например, 0.001 BTC).
-            order_type: "Market" или "Limit".
-            price: цена для лимитного ордера (для Market не нужна).
+            order_type: тип ордера ("Market" или "Limit").
+            price: цена лимитного ордера (округляется до tickSize биржи).
+            post_only: True — PostOnly (отклоняется, если исполнится как taker).
+            reduce_only: True — ордер только уменьшает позицию (фьючерсы).
+            position_idx: 1/2 — хедж-режим (long/short); None — one-way.
 
         Returns:
             Ответ API с данными созданного ордера.
@@ -237,12 +255,180 @@ class BybitClient:
             "symbol": symbol,
             "side": side,
             "orderType": order_type,
-            "qty": str(self._round_qty(qty, await self._get_qty_step(symbol))),
+            "qty": _fmt_num(self._round_qty(qty, await self._get_qty_step(symbol))),
             "timeInForce": "IOC" if order_type == "Market" else "GTC",
         }
+        if order_type == "Limit" and post_only:
+            params["timeInForce"] = "PostOnly"
         if price is not None:
-            params["price"] = str(price)
+            tick = (await self.get_instrument_filters(symbol)).tick_size
+            params["price"] = _fmt_num(round(price / tick) * tick)
+        if reduce_only:
+            params["reduceOnly"] = True
+        if position_idx is not None:
+            params["positionIdx"] = position_idx
         return cast(dict[str, Any], await self._call("place_order", **params))
+
+    async def cancel_order(self, symbol: str, order_id: str) -> dict[str, Any]:
+        """Отменить ордер по orderId (обычный или conditional)."""
+        return cast(
+            dict[str, Any],
+            await self._call(
+                "cancel_order",
+                category=self.config.category,
+                symbol=symbol,
+                orderId=order_id,
+            ),
+        )
+
+    async def cancel_all_orders(self, symbol: str) -> dict[str, Any]:
+        """Отменить все открытые ордера символа (включая conditional)."""
+        return cast(
+            dict[str, Any],
+            await self._call(
+                "cancel_all_orders",
+                category=self.config.category,
+                symbol=symbol,
+            ),
+        )
+
+    async def get_open_orders(self, symbol: str) -> list[dict[str, Any]]:
+        """Все открытые ордера символа (с пагинацией по курсору).
+
+        Returns:
+            Список сырых ордеров API (orderId, orderStatus, cumExecQty, ...).
+        """
+        orders: list[dict[str, Any]] = []
+        cursor = ""
+        while True:
+            params: dict[str, Any] = {
+                "category": self.config.category,
+                "symbol": symbol,
+                "limit": 50,
+            }
+            if cursor:
+                params["cursor"] = cursor
+            resp = await self._call("get_open_orders", **params)
+            orders.extend(resp["result"].get("list", []))
+            cursor = resp["result"].get("nextPageCursor") or ""
+            if not cursor:
+                return orders
+
+    async def get_order(self, symbol: str, order_id: str) -> dict[str, Any] | None:
+        """Найти ордер в истории по orderId (None — не найден)."""
+        resp = await self._call(
+            "get_order_history",
+            category=self.config.category,
+            symbol=symbol,
+            orderId=order_id,
+            limit=1,
+        )
+        rows = resp["result"].get("list", [])
+        return rows[0] if rows else None
+
+    async def get_orderbook(self, symbol: str, limit: int = 50) -> dict[str, Any]:
+        """Стакан уровня symbol: {"b": [[price, qty], ...], "a": [...]}."""
+        resp = await self._call(
+            "get_orderbook",
+            category=self.config.category,
+            symbol=symbol,
+            limit=limit,
+        )
+        return cast(dict[str, Any], resp["result"])
+
+    async def get_funding_rate(self, symbol: str) -> float | None:
+        """Последний зафиксированный funding rate инструмента (None — нет данных).
+
+        Returns:
+            Ставка дробью (0.0001 = 0.01% за интервал финансирования).
+        """
+        resp = await self._call(
+            "get_funding_rate_history",
+            category=self.config.category,
+            symbol=symbol,
+            limit=1,
+        )
+        rows = resp["result"].get("list", [])
+        if not rows:
+            return None
+        rate = rows[0].get("fundingRate")
+        return float(rate) if rate is not None else None
+
+    async def place_stop_market(
+        self,
+        symbol: str,
+        side: str,
+        qty: float,
+        trigger_price: float,
+        *,
+        reduce_only: bool = True,
+        position_idx: int | None = None,
+    ) -> dict[str, Any]:
+        """Выставить conditional stop-market ордер (срабатывает по triggerPrice).
+
+        Args:
+            symbol: торговая пара.
+            side: сторона ордера ("Buy"/"Sell") — для закрытия лонга Sell.
+            qty: объём.
+            trigger_price: цена срабатывания (MarkPrice).
+            reduce_only: только уменьшение позиции.
+            position_idx: 1/2 — хедж-режим; None — one-way.
+
+        Returns:
+            Ответ API с данными созданного ордера.
+        """
+        tick = (await self.get_instrument_filters(symbol)).tick_size
+        trigger = _fmt_num(round(trigger_price / tick) * tick)
+        params: dict[str, Any] = {
+            "category": self.config.category,
+            "symbol": symbol,
+            "side": side,
+            "orderType": "Market",
+            "qty": _fmt_num(self._round_qty(qty, await self._get_qty_step(symbol))),
+            "stopOrderType": "Stop",
+            "triggerPrice": trigger,
+            "triggerBy": "MarkPrice",
+        }
+        if reduce_only:
+            params["reduceOnly"] = True
+        if position_idx is not None:
+            params["positionIdx"] = position_idx
+        return cast(dict[str, Any], await self._call("place_order", **params))
+
+    @dataclass(frozen=True)
+    class InstrumentFilters:
+        """Торговые фильтры инструмента (шаги и минимумы биржи)."""
+
+        tick_size: float
+        qty_step: float
+        min_qty: float
+        min_notional: float
+
+    async def get_instrument_filters(self, symbol: str) -> BybitClient.InstrumentFilters:
+        """Получить фильтры инструмента (с кэшем): tickSize, qtyStep, минимумы."""
+        row = await self._get_instrument(symbol)
+        price_filter = row.get("priceFilter", {})
+        lot = row.get("lotSizeFilter", {})
+        return BybitClient.InstrumentFilters(
+            tick_size=float(price_filter.get("tickSize", 0.0001)),
+            qty_step=float(lot.get("qtyStep", 0.001)),
+            min_qty=float(lot.get("minOrderQty", 0.0)),
+            min_notional=float(lot.get("minNotionalValue", 0.0)),
+        )
+
+    async def _get_instrument(self, symbol: str) -> dict[str, Any]:
+        """Сырая строка get_instruments_info по символу (с кэшем)."""
+        if symbol not in self._instruments:
+            resp = await self._call(
+                "get_instruments_info",
+                category=self.config.category,
+                symbol=symbol,
+            )
+            rows = resp["result"]["list"]
+            if not rows:
+                raise ValueError(f"Инструмент {symbol} не найден")
+            self._instruments[symbol] = rows[0]
+        return self._instruments[symbol]
 
     async def _get_qty_step(self, symbol: str) -> float:
         """Получить шаг объёма инструмента (с кэшем).
@@ -253,17 +439,10 @@ class BybitClient:
         Returns:
             Минимальный шаг объёма (lotSizeFilter.qtyStep).
         """
-        if symbol not in self._qty_steps:
-            resp = await self._call(
-                "get_instruments_info",
-                category=self.config.category,
-                symbol=symbol,
-            )
-            rows = resp["result"]["list"]
-            if not rows:
-                raise ValueError(f"Инструмент {symbol} не найден")
-            self._qty_steps[symbol] = float(rows[0]["lotSizeFilter"]["qtyStep"])
-        return self._qty_steps[symbol]
+        row = await self._get_instrument(symbol)
+        step = float(row["lotSizeFilter"]["qtyStep"])
+        self._qty_steps[symbol] = step
+        return step
 
     @staticmethod
     def _round_qty(qty: float, step: float) -> float:
@@ -296,24 +475,33 @@ class BybitClient:
 
     async def get_position(self, symbol: str) -> Position | None:
         """Получить открытую позицию по инструменту (None если позиции нет)."""
+        positions = await self.get_positions(symbol)
+        return positions[0] if positions else None
+
+    async def get_positions(self, symbol: str) -> list[Position]:
+        """Все открытые позиции символа (one-way — до 1, хедж — до 2)."""
         resp = await self._call(
             "get_positions",
             category=self.config.category,
             symbol=symbol,
         )
-        rows = resp["result"]["list"]
-        if not rows or float(rows[0]["size"]) == 0:
-            return None
-        row = rows[0]
-        return Position(
-            symbol=symbol,
-            side=row["side"],
-            size=float(row["size"]),
-            avg_price=float(row["avgPrice"]),
-            unrealised_pnl=float(row["unrealisedPnl"]),
-            stop_loss=float(row["stopLoss"]) if row.get("stopLoss") else None,
-            take_profit=float(row["takeProfit"]) if row.get("takeProfit") else None,
-        )
+        positions: list[Position] = []
+        for row in resp["result"]["list"]:
+            if float(row["size"]) == 0:
+                continue
+            positions.append(
+                Position(
+                    symbol=symbol,
+                    side=row["side"],
+                    size=float(row["size"]),
+                    avg_price=float(row["avgPrice"]),
+                    unrealised_pnl=float(row["unrealisedPnl"]),
+                    stop_loss=float(row["stopLoss"]) if row.get("stopLoss") else None,
+                    take_profit=float(row["takeProfit"]) if row.get("takeProfit") else None,
+                    position_idx=int(row.get("positionIdx") or 0),
+                ),
+            )
+        return positions
 
     async def close_position(
         self, symbol: str, qty: float, side: str

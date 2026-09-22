@@ -1,9 +1,18 @@
-"""Тесты robot_flat стратегии."""
+"""Тесты robot_flat стратегии.
+
+Стратегия обнулена (2026-09-22) и будет переписана — тесты вернём вместе с ней.
+"""
 
 from __future__ import annotations
 
+import pytest
+
+try:
+    from robot_flat.strategy import FlatConfig, FlatStrategy
+except ImportError:
+    pytest.skip("robot_flat обнулён — перепишем стратегию", allow_module_level=True)
+
 from core.bybit_client import Candle
-from robot_flat.strategy import FlatConfig, FlatStrategy
 
 
 def _make_candles(

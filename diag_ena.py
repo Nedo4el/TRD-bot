@@ -1,16 +1,17 @@
-import asyncio, sys
-from pathlib import Path
+import asyncio
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
-sys.path.insert(0, str(Path('.').resolve()))
+sys.path.insert(0, str(Path.cwd()))
 
+from backtest import fetch_candles, run_backtest
 from core.config import Config, load_bot_env
-from robot_TEST.strategy import TestStrategy, TestConfig
-from backtest import run_backtest, fetch_candles, Trade
+from robot_flat.strategy import FlatStrategy
 
-load_bot_env(Path('robot_TEST'))
+load_bot_env(Path('robot_flat'))
 
-async def main():
+async def main() -> None:
     config = Config()
     config.symbol = 'ENAUSDT'
     config.timeframe = '5'
@@ -20,7 +21,7 @@ async def main():
     )
     print(f'Candles: {len(candles)}')
 
-    strategy = TestStrategy(TestConfig(poc_lookback=600))
+    strategy = FlatStrategy()
     result = run_backtest(candles, strategy, 10.0, 10.0)
 
     print(f'\nTrades: {result.total_trades}')

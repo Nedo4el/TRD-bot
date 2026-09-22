@@ -29,19 +29,20 @@ from core.logger import setup_logging
 from core.strategies import BaseStrategy, Signal
 
 # Импорты стратегий — добавляйте по мере написания
-from robot_flat.strategy import FlatStrategy, FlatConfig
+from robot_flat.strategy import FlatStrategy
+
 # from robot_yrovni_D.strategy import YrovniDStrategy
 from robot_trend.strategy import TrendStrategy
+
 # from robot_impulse.strategy import ImpulseStrategy
 # from robot_krugloe.strategy import KrugloeStrategy
-from robot_TEST.strategy import TestStrategy, TestConfig
 
 
 def make_strategy(name: str) -> BaseStrategy:
     """Создать стратегию по имени (параметры — из .env корня, если есть).
 
     Args:
-        name: flat | yrovni | trend | impulse | zero.
+        name: flat | trend | grid_flat | yrovni | impulse | zero.
 
     Returns:
         Готовый объект стратегии с настройками по умолчанию/.env.
@@ -49,9 +50,12 @@ def make_strategy(name: str) -> BaseStrategy:
     if name == "trend":
         return TrendStrategy()
     if name == "flat":
-        return FlatStrategy(FlatConfig(poc_lookback=600))
+        return FlatStrategy()
     if name == "grid_flat":
-        return TestStrategy(TestConfig(poc_lookback=600))
+        raise NotImplementedError(
+            "grid_flat — сеточная стратегия (robot_grid_flat), "
+            "бэктест этого движка её не поддерживает"
+        )
     raise ValueError(
         f"Стратегия '{name}' ещё не реализована. "
         f"Доступны: trend, flat"
