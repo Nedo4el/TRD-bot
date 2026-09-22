@@ -59,3 +59,13 @@ class BaseStrategy(ABC):
         Returns:
             Signal с действием и пояснением.
         """
+
+    def on_position_closed(self, direction: str) -> None:
+        """Уведомить стратегию о внешнем закрытии позиции (SL/TP).
+
+        По умолчанию no-op. Переопределите, если стратегия хранит
+        внутреннее состояние позиций.
+
+        Args:
+            direction: "long" или "short".
+        """

@@ -1,1 +1,0 @@
-# Grid Flat robot

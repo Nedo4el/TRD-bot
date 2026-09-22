@@ -58,7 +58,9 @@ class TestFlatStrategy:
 
     def test_uptrend_blocked(self) -> None:
         """Восходящий тренд — заблокирован фильтром."""
-        cfg = FlatConfig(poc_lookback=100, trend_ema_fast=50, trend_ema_slow=150, trend_threshold=2.0)
+        cfg = FlatConfig(
+            poc_lookback=100, trend_ema_fast=50, trend_ema_slow=150, trend_threshold=2.0
+        )
         strategy = FlatStrategy(cfg)
         candles = _make_candles(200, 1.0, trend="up")
         signal = strategy.check_signal(candles)
@@ -67,7 +69,9 @@ class TestFlatStrategy:
 
     def test_downtrend_blocked(self) -> None:
         """Нисходящий тренд — заблокирован фильтром."""
-        cfg = FlatConfig(poc_lookback=100, trend_ema_fast=50, trend_ema_slow=150, trend_threshold=2.0)
+        cfg = FlatConfig(
+            poc_lookback=100, trend_ema_fast=50, trend_ema_slow=150, trend_threshold=2.0
+        )
         strategy = FlatStrategy(cfg)
         candles = _make_candles(200, 1.0, trend="down")
         signal = strategy.check_signal(candles)
@@ -183,7 +187,9 @@ class TestPositionManagement:
         strategy = FlatStrategy(cfg)
         for _ in range(3):
             strategy._positions.append(
-                __import__("robot_flat.strategy", fromlist=["PositionState"]).PositionState(
+                __import__(
+                    "robot_flat.strategy", fromlist=["PositionState"]
+                ).PositionState(
                     direction="long",
                     entry_price=1.0,
                     current_peak=1.0,
@@ -242,4 +248,5 @@ class TestEMACalculation:
 
 if __name__ == "__main__":
     import pytest
+
     pytest.main([__file__, "-v"])

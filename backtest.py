@@ -33,6 +33,7 @@ from robot_flat.strategy import FlatStrategy
 
 # from robot_yrovni_D.strategy import YrovniDStrategy
 from robot_trend.strategy import TrendStrategy
+from robot_zakol.strategy import ZakolStrategy
 
 # from robot_impulse.strategy import ImpulseStrategy
 # from robot_krugloe.strategy import KrugloeStrategy
@@ -42,7 +43,7 @@ def make_strategy(name: str) -> BaseStrategy:
     """Создать стратегию по имени (параметры — из .env корня, если есть).
 
     Args:
-        name: flat | trend | grid_flat | yrovni | impulse | zero.
+        name: flat | trend | zakol | yrovni | impulse | zero.
 
     Returns:
         Готовый объект стратегии с настройками по умолчанию/.env.
@@ -51,14 +52,11 @@ def make_strategy(name: str) -> BaseStrategy:
         return TrendStrategy()
     if name == "flat":
         return FlatStrategy()
-    if name == "grid_flat":
-        raise NotImplementedError(
-            "grid_flat — сеточная стратегия (robot_grid_flat), "
-            "бэктест этого движка её не поддерживает"
-        )
+    if name == "zakol":
+        return ZakolStrategy()
     raise ValueError(
         f"Стратегия '{name}' ещё не реализована. "
-        f"Доступны: trend, flat"
+        f"Доступны: trend, flat, zakol"
     )
 
 
@@ -233,6 +231,42 @@ def run_backtest(
 
         for pos in closed_this_bar:
             open_positions.remove(pos)
+            notify = getattr(strategy, "on_position_closed", None)
+            if notify is not None:
+                notify("long" if pos.side == "Buy" else "short")
+            strategy.on_position_closed("long" if pos.side == "Buy" else "short")
+            notify = getattr(strategy, "on_position_closed", None)
+            if notify is not None:
+                notify("long" if pos.side == "Buy" else "short")
+
+        # --- Выход по трейлингу стратегии (close_long / close_short) ---
+        if signal.action in ("close_long", "close_short"):
+            want_side = "Buy" if signal.action == "close_long" else "Sell"
+            target = next((p for p in open_positions if p.side == want_side), None)
+            if target is not None:
+                open_positions.remove(target)
+                exit_price = (
+                    target.stop_price
+                    if signal.stop_loss is None
+                    else signal.stop_loss
+                )
+                move = (
+                    (exit_price - target.entry_price) / target.entry_price * 100
+                    if want_side == "Buy"
+                    else (target.entry_price - exit_price) / target.entry_price * 100
+                )
+                equity += move
+                result.trades.append(
+                    Trade(
+                        side=target.side,
+                        entry_price=target.entry_price,
+                        exit_price=exit_price,
+                        entry_time=target.entry_time,
+                        exit_time=bar.open_time,
+                        pnl_pct=move,
+                        exit_reason="TRAIL",
+                    ),
+                )
 
         # --- Входим по сигналу ---
         if signal.action in ("buy", "sell"):
@@ -537,7 +571,7 @@ def main() -> None:
     parser.add_argument(
         "--strategy",
         required=True,
-        choices=["trend", "flat", "grid_flat", "yrovni", "impulse", "zero"],
+        choices=["trend", "flat", "zakol", "yrovni", "impulse", "zero"],
         help="какую стратегию тестировать",
     )
     parser.add_argument(
