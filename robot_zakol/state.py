@@ -48,8 +48,8 @@ class ZakolState:
     phase: str = PHASE_IDLE
     pending: PendingOrder | None = None
     position: OpenPosition | None = None
-    consecutive_losses: int = 0
     session_pnl: float = 0.0
+    peak_session_pnl: float = 0.0
     kill: bool = False
 
 
@@ -74,8 +74,8 @@ class StateStore:
                 phase=raw.get("phase", PHASE_IDLE),
                 pending=PendingOrder(**pending) if pending else None,
                 position=OpenPosition(**position) if position else None,
-                consecutive_losses=int(raw.get("consecutive_losses", 0)),
                 session_pnl=float(raw.get("session_pnl", 0.0)),
+                peak_session_pnl=float(raw.get("peak_session_pnl", 0.0)),
                 kill=bool(raw.get("kill", False)),
             )
             logger.info("state восстановлен: phase=%s", self.state.phase)

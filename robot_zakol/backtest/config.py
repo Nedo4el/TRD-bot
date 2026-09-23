@@ -14,9 +14,10 @@ class StrategyConfig:
     min_price_change: float = 0.003
     stop_pct: float = 0.02
     trail_pct: float = 0.02
-    be_trigger_pct: float = 0.01
+    be_trigger_pct: float = 0.005
+    be_offset_pct: float = 0.002
     max_loss_usd: float = 10.0
-    max_consecutive_losses: int = 5
+    max_drawdown_pct: float = 0.05
     deposit_usd: float = 100.0
     position_pct: float = 10.0
     tick_size: float = 0.0001

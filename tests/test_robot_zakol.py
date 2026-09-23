@@ -55,9 +55,11 @@ def _cfg(**overrides: Any) -> ZakolConfig:
         "min_price_change": 0.003,
         "stop_pct": 0.02,
         "trail_pct": 0.02,
-        "be_trigger_pct": 0.01,
+        "be_trigger_pct": 0.005,
+        "be_offset_pct": 0.002,
         "max_loss_usd": 10.0,
-        "max_consecutive_losses": 5,
+        "max_drawdown_pct": 0.05,
+        "deposit_usd": 100.0,
         "partial_fill_pct": 0.80,
     }
     base.update(overrides)
@@ -78,8 +80,8 @@ def test_sl_formula_no_tp() -> None:
 
 
 def test_be_trigger() -> None:
-    assert not should_be(100.0, 100.9, 0.01)
-    assert should_be(100.0, 101.0, 0.01)
+    assert not should_be(100.0, 100.4, 0.005)
+    assert should_be(100.0, 100.5, 0.005)
 
 
 def test_trail_level() -> None:
@@ -102,10 +104,26 @@ def test_on_price_updates_peak_and_trail() -> None:
     assert d.update_server
 
 
-def test_kill_by_losses_and_max_loss() -> None:
-    assert not should_kill(4, -9.0, 10.0, 5)
-    assert should_kill(5, 0.0, 10.0, 5)
-    assert should_kill(0, -10.0, 10.0, 5)
+def test_on_price_be_offset() -> None:
+    cfg = _cfg()
+    d = on_price(
+        entry=100.0,
+        peak=100.5,
+        price=100.5,
+        current_stop=98.0,
+        cfg=cfg,
+        be_active=False,
+    )
+    assert d.be_active
+    assert d.stop_loss == pytest.approx(100.2)
+
+
+def test_kill_by_drawdown_and_max_loss() -> None:
+    assert not should_kill(-4.0, 0.0, 100.0, 10.0, 0.05)
+    assert should_kill(-5.0, 0.0, 100.0, 10.0, 0.05)
+    assert should_kill(0.0, 6.0, 100.0, 10.0, 0.05)
+    assert should_kill(-10.0, 0.0, 100.0, 10.0, 0.05)
+    assert not should_kill(-4.9, 0.0, 100.0, 10.0, 0.05)
 
 
 def test_partial_fill() -> None:
@@ -142,7 +160,7 @@ def test_state_store_roundtrip(tmp_path: Path) -> None:
         peak_price=98.0,
         stop_loss=95.06,
     )
-    store.state.consecutive_losses = 2
+    store.state.peak_session_pnl = -2.0
     store.state.session_pnl = -3.5
     loop = asyncio.new_event_loop()
     loop.run_until_complete(store.save())
@@ -153,7 +171,8 @@ def test_state_store_roundtrip(tmp_path: Path) -> None:
     assert store2.state.pending.order_id == "1"
     assert store2.state.position is not None
     assert store2.state.position.entry_price == 97.0
-    assert store2.state.consecutive_losses == 2
+    assert store2.state.peak_session_pnl == -2.0
+    assert store2.state.session_pnl == -3.5
 
 
 def test_state_corrupt_file(tmp_path: Path) -> None:
@@ -280,7 +299,7 @@ def test_on_filled_full_fill_opens_position_no_tp(tmp_path: Path) -> None:
     assert client.sl_calls[0][1] is None
 
 
-def test_kill_after_five_losses(tmp_path: Path) -> None:
+def test_kill_after_max_drawdown(tmp_path: Path) -> None:
     client = FakeClient()
     cycle = _make_cycle(tmp_path, client)
 
@@ -291,7 +310,8 @@ def test_kill_after_five_losses(tmp_path: Path) -> None:
             peak_price=97.0,
             stop_loss=95.06,
         )
-        cycle.store.state.consecutive_losses = 4
+        cycle.store.state.session_pnl = 0.0
+        cycle.store.state.peak_session_pnl = 5.0
         client.pos = None
         cycle.feed.last_price = 96.0
         client.price = 96.0
@@ -468,8 +488,8 @@ def test_update_position_risk_be_lifts_stop() -> None:
         stop=98.0,
         be_active=False,
     )
-    need, reason = update_position_risk(pos, 101.0, cfg)
+    need, reason = update_position_risk(pos, 100.5, cfg)
     assert pos.be_active
-    assert pos.stop >= 100.0
+    assert pos.stop == pytest.approx(100.0 * (1.0 + cfg.be_offset_pct))
     assert reason is None
     assert need

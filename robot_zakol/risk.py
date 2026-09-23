@@ -49,7 +49,10 @@ def on_price(
     new_peak = max(peak, price)
     be_now = be_active or should_be(entry, price, cfg.be_trigger_pct)
     trail = trail_level(new_peak, cfg.trail_pct)
-    base = entry * (1.0 - cfg.stop_pct) if not be_now else entry
+    if be_now:
+        base = entry * (1.0 + cfg.be_offset_pct)
+    else:
+        base = entry * (1.0 - cfg.stop_pct)
     new_stop = max(current_stop, base, trail)
     update = abs(new_stop - current_stop) > 0 or new_peak != peak or be_now != be_active
     return RiskDecision(
@@ -61,14 +64,16 @@ def on_price(
 
 
 def should_kill(
-    consecutive_losses: int,
     session_pnl: float,
+    peak_session_pnl: float,
+    deposit_usd: float,
     max_loss_usd: float,
-    max_consecutive_losses: int,
+    max_drawdown_pct: float,
 ) -> bool:
     if session_pnl <= -abs(max_loss_usd):
         return True
-    return consecutive_losses >= max_consecutive_losses
+    drawdown = peak_session_pnl - session_pnl
+    return drawdown >= deposit_usd * abs(max_drawdown_pct)
 
 
 def partial_fill_ok(filled_qty: float, order_qty: float, partial_pct: float) -> bool:

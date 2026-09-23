@@ -54,13 +54,14 @@ class ZakolConfig(BaseModel):
     stop_pct: float = Field(default_factory=lambda: _env_float("STOP_PCT", 0.02))
     trail_pct: float = Field(default_factory=lambda: _env_float("TRAIL_PCT", 0.02))
     be_trigger_pct: float = Field(
-        default_factory=lambda: _env_float("BE_TRIGGER", 0.01)
+        default_factory=lambda: _env_float("BE_TRIGGER", 0.005)
     )
+    be_offset_pct: float = Field(default_factory=lambda: _env_float("BE_OFFSET", 0.002))
     max_loss_usd: float = Field(
         default_factory=lambda: _env_float("MAX_LOSS_USD", 10.0)
     )
-    max_consecutive_losses: int = Field(
-        default_factory=lambda: _env_int("MAX_CONSECUTIVE_LOSSES", 5),
+    max_drawdown_pct: float = Field(
+        default_factory=lambda: _env_float("MAX_DRAWDOWN_PCT", 0.05),
     )
     partial_fill_pct: float = Field(
         default_factory=lambda: _env_float("PARTIAL_FILL_PCT", 0.80),

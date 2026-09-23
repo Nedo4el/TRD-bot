@@ -314,23 +314,29 @@ class OrderCycle:
             return
         pnl = (await self._current_price() - pos.entry_price) * pos.qty
         self.store.state.session_pnl += pnl
-        if pnl < 0:
-            self.store.state.consecutive_losses += 1
-        else:
-            self.store.state.consecutive_losses = 0
+        self.store.state.peak_session_pnl = max(
+            self.store.state.peak_session_pnl,
+            self.store.state.session_pnl,
+        )
         self.store.state.position = None
         self.store.state.phase = PHASE_IDLE
         if should_kill(
-            self.store.state.consecutive_losses,
-            self.store.state.session_pnl,
-            self.cfg.max_loss_usd,
-            self.cfg.max_consecutive_losses,
+            session_pnl=self.store.state.session_pnl,
+            peak_session_pnl=self.store.state.peak_session_pnl,
+            deposit_usd=self.cfg.deposit_usd,
+            max_loss_usd=self.cfg.max_loss_usd,
+            max_drawdown_pct=self.cfg.max_drawdown_pct,
         ):
             self.store.state.kill = True
             logger.error(
-                "KILL: pnl=%.2f losses=%d (%s)",
+                "KILL: pnl=%.2f peak=%.2f dd=%.2f%% (%s)",
                 self.store.state.session_pnl,
-                self.store.state.consecutive_losses,
+                self.store.state.peak_session_pnl,
+                (
+                    (self.store.state.peak_session_pnl - self.store.state.session_pnl)
+                    / max(self.cfg.deposit_usd, 1e-9)
+                    * 100.0
+                ),
                 reason,
             )
         else:

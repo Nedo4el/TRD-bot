@@ -1,0 +1,50 @@
+=== robot_zakol HONEST BACKTEST ===
+symbol=AVAXUSDT dates=2026-08-24 -> 2026-09-22 deposit=$100
+source: source=kline interval=1 bars=43200 fidelity=1S (synthetic ticks from OHLC, not publicTrade)
+
+## Сравнение режимов
+| mode | trades | WR | PF | maxDD% | avg$ | sum$ | equity$ | Sharpe | RF | trail% | sl% | partial% | PO_rej% | fidelity |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| ideal | 0 | 0.0% | 0.00 | 0.00 | 0.000 | 0.000 | 100.00 | 0.00 | 0.00 | 0.0% | 0.0% | 0.0% | 0.0% | 1S |
+| realistic | 0 | 0.0% | 0.00 | 0.00 | 0.000 | 0.000 | 100.00 | 0.00 | 0.00 | 0.0% | 0.0% | 0.0% | 0.0% | 1S |
+| pessimistic | 0 | 0.0% | 0.00 | 0.00 | 0.000 | 0.000 | 100.00 | 0.00 | 0.00 | 0.0% | 0.0% | 0.0% | 0.0% | 1S |
+
+## mode=ideal fidelity=1S
+source: source=kline interval=1 bars=43200 fidelity=1S (synthetic ticks from OHLC, not publicTrade)
+trades=0 wins=0 WR=0.0% PF=0.00
+pnl=0.0000$ (0.000% депо) equity=$100.00 kills=0
+maxDD=0.000% / 0.0000$ Sharpe=0.00 Recovery=0.00
+avg_pnl=0.0000$ avg%=0.000 avg_hold=0.0s
+exits: trail=0.0% sl=0.0% be=0.0% end=0.0%
+fill: partial=0.0% post_only_rej=0.0% false_fill=0.0% ttl_cancels=129599 re_places=827 queue_rej=0 po_rej=0
+slippage: entry=0.000000 exit=0.000000
+WARNING: Нет сделок — fill-модель или данные не дали входов.
+
+### сделки
+
+## mode=realistic fidelity=1S
+source: source=kline interval=1 bars=43200 fidelity=1S (synthetic ticks from OHLC, not publicTrade)
+trades=0 wins=0 WR=0.0% PF=0.00
+pnl=0.0000$ (0.000% депо) equity=$100.00 kills=0
+maxDD=0.000% / 0.0000$ Sharpe=0.00 Recovery=0.00
+avg_pnl=0.0000$ avg%=0.000 avg_hold=0.0s
+exits: trail=0.0% sl=0.0% be=0.0% end=0.0%
+fill: partial=0.0% post_only_rej=0.0% false_fill=0.0% ttl_cancels=129599 re_places=827 queue_rej=0 po_rej=0
+slippage: entry=0.000000 exit=0.000000
+WARNING: Нет сделок — fill-модель или данные не дали входов.
+
+### сделки
+
+## mode=pessimistic fidelity=1S
+source: source=kline interval=1 bars=43200 fidelity=1S (synthetic ticks from OHLC, not publicTrade)
+trades=0 wins=0 WR=0.0% PF=0.00
+pnl=0.0000$ (0.000% депо) equity=$100.00 kills=0
+maxDD=0.000% / 0.0000$ Sharpe=0.00 Recovery=0.00
+avg_pnl=0.0000$ avg%=0.000 avg_hold=0.0s
+exits: trail=0.0% sl=0.0% be=0.0% end=0.0%
+fill: partial=0.0% post_only_rej=0.0% false_fill=0.0% ttl_cancels=129599 re_places=827 queue_rej=0 po_rej=0
+slippage: entry=0.000000 exit=0.000000
+WARNING: Нет сделок — fill-модель или данные не дали входов.
+
+### сделки
+

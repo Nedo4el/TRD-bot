@@ -1,0 +1,51 @@
+=== robot_zakol HONEST BACKTEST ===
+symbol=ENAUSDT dates=2026-08-24 -> 2026-09-22 deposit=$100
+source: source=kline interval=1 bars=43200 fidelity=1S (synthetic ticks from OHLC, not publicTrade)
+
+## Сравнение режимов
+| mode | trades | WR | PF | maxDD% | avg$ | sum$ | equity$ | Sharpe | RF | trail% | sl% | partial% | PO_rej% | fidelity |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| ideal | 2 | 50.0% | 0.10 | 0.19 | -0.087 | -0.175 | 99.83 | -1.16 | -0.90 | 0.0% | 50.0% | 0.0% | 0.0% | 1S |
+| realistic | 1 | 0.0% | 0.00 | 0.20 | -0.199 | -0.199 | 99.80 | 0.00 | -1.00 | 0.0% | 100.0% | 0.0% | 0.0% | 1S |
+| pessimistic | 1 | 0.0% | 0.00 | 0.20 | -0.203 | -0.203 | 99.80 | 0.00 | -1.00 | 0.0% | 100.0% | 0.0% | 0.0% | 1S |
+
+## mode=ideal fidelity=1S
+source: source=kline interval=1 bars=43200 fidelity=1S (synthetic ticks from OHLC, not publicTrade)
+trades=2 wins=1 WR=50.0% PF=0.10
+pnl=-0.1746$ (-0.175% депо) equity=$99.83 kills=0
+maxDD=0.194% / 0.1940$ Sharpe=-1.16 Recovery=-0.90
+avg_pnl=-0.0873$ avg%=-0.900 avg_hold=30.5s
+exits: trail=0.0% sl=50.0% be=50.0% end=0.0%
+fill: partial=0.0% post_only_rej=0.0% false_fill=0.0% ttl_cancels=129594 re_places=3964 queue_rej=0 po_rej=0
+slippage: entry=0.000000 exit=0.000000
+
+### сделки
+  #001 entry_ts=1788525018000 entry=0.1649 exit_ts=1788525029000 exit=0.161602 reason=sl pnl=-0.1940 (-2.000%) slip=0.000000 partial=False hold_ms=11000
+  #002 entry_ts=1788525069000 entry=0.1627 exit_ts=1788525119000 exit=0.1630254 reason=be pnl=0.0194 (+0.200%) slip=0.000000 partial=False hold_ms=50000
+
+## mode=realistic fidelity=1S
+source: source=kline interval=1 bars=43200 fidelity=1S (synthetic ticks from OHLC, not publicTrade)
+trades=1 wins=0 WR=0.0% PF=0.00
+pnl=-0.1987$ (-0.199% депо) equity=$99.80 kills=0
+maxDD=0.199% / 0.1987$ Sharpe=0.00 Recovery=-1.00
+avg_pnl=-0.1987$ avg%=-2.049 avg_hold=11.0s
+exits: trail=0.0% sl=100.0% be=0.0% end=0.0%
+fill: partial=0.0% post_only_rej=0.0% false_fill=0.0% ttl_cancels=129598 re_places=8881 queue_rej=2 po_rej=0
+slippage: entry=0.000000 exit=0.000081
+
+### сделки
+  #001 entry_ts=1788525018000 entry=0.1649 exit_ts=1788525029000 exit=0.1615212 reason=sl pnl=-0.1987 (-2.049%) slip=0.000081 partial=False hold_ms=11000
+
+## mode=pessimistic fidelity=1S
+source: source=kline interval=1 bars=43200 fidelity=1S (synthetic ticks from OHLC, not publicTrade)
+trades=1 wins=0 WR=0.0% PF=0.00
+pnl=-0.2035$ (-0.203% депо) equity=$99.80 kills=0
+maxDD=0.203% / 0.2035$ Sharpe=0.00 Recovery=-1.00
+avg_pnl=-0.2035$ avg%=-2.098 avg_hold=11.0s
+exits: trail=0.0% sl=100.0% be=0.0% end=0.0%
+fill: partial=0.0% post_only_rej=0.0% false_fill=0.0% ttl_cancels=129598 re_places=8881 queue_rej=2 po_rej=0
+slippage: entry=0.000000 exit=0.000162
+
+### сделки
+  #001 entry_ts=1788525018000 entry=0.1649 exit_ts=1788525029000 exit=0.1614404 reason=sl pnl=-0.2035 (-2.098%) slip=0.000162 partial=False hold_ms=11000
+

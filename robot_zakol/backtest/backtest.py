@@ -214,10 +214,7 @@ def _close(
     pnl = (exit_price - pos.entry_price) * pos.qty
     pnl_pct = (exit_price / pos.entry_price - 1.0) * 100.0 if pos.entry_price else 0.0
     st.session_pnl += pnl
-    if pnl < 0:
-        st.consecutive_losses += 1
-    else:
-        st.consecutive_losses = 0
+    st.peak_session_pnl = max(st.peak_session_pnl, st.session_pnl)
     entry_slip = st.counters.entry_slippage_sum / max(st.counters.fills, 1)
     trade = TradeLog(
         entry_ts=pos.opened_ts,

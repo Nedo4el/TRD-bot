@@ -87,7 +87,7 @@ class StrategyState:
         self.pending: PendingLimit | None = None
         self.position: Position | None = None
         self.session_pnl = 0.0
-        self.consecutive_losses = 0
+        self.peak_session_pnl = 0.0
         self.killed = False
         self.counters = Counters()
         self.trades: list[TradeLog] = []
@@ -106,7 +106,8 @@ class StrategyState:
 def should_kill(st: StrategyState, cfg: StrategyConfig) -> bool:
     if st.session_pnl <= -abs(cfg.max_loss_usd):
         return True
-    return st.consecutive_losses >= cfg.max_consecutive_losses
+    drawdown = st.peak_session_pnl - st.session_pnl
+    return drawdown >= st.deposit * abs(cfg.max_drawdown_pct)
 
 
 def update_position_risk(
@@ -120,12 +121,16 @@ def update_position_risk(
         pos.be_active = True
     trail = pos.peak * (1.0 - cfg.trail_pct)
     pos.trail_stop = trail
-    base = pos.entry_price if pos.be_active else pos.entry_price * (1.0 - cfg.stop_pct)
+    if pos.be_active:
+        base = pos.entry_price * (1.0 + cfg.be_offset_pct)
+    else:
+        base = pos.entry_price * (1.0 - cfg.stop_pct)
     new_stop = max(pos.stop, base, trail)
     need = abs(new_stop - pos.stop) > 0
     pos.stop = new_stop
     if price <= pos.stop:
-        if pos.be_active and abs(pos.stop - pos.entry_price) < 1e-12:
+        be_level = pos.entry_price * (1.0 + cfg.be_offset_pct)
+        if pos.be_active and abs(pos.stop - be_level) < 1e-12:
             return need, "be"
         if pos.stop > pos.entry_price * (1.0 - cfg.stop_pct) + 1e-12:
             if abs(pos.stop - trail) < 1e-12 and pos.be_active:
