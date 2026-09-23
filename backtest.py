@@ -33,7 +33,6 @@ from robot_flat.strategy import FlatStrategy
 
 # from robot_yrovni_D.strategy import YrovniDStrategy
 from robot_trend.strategy import TrendStrategy
-from robot_zakol.strategy import ZakolStrategy
 
 # from robot_impulse.strategy import ImpulseStrategy
 # from robot_krugloe.strategy import KrugloeStrategy
@@ -43,7 +42,7 @@ def make_strategy(name: str) -> BaseStrategy:
     """Создать стратегию по имени (параметры — из .env корня, если есть).
 
     Args:
-        name: flat | trend | zakol | yrovni | impulse | zero.
+        name: flat | trend.
 
     Returns:
         Готовый объект стратегии с настройками по умолчанию/.env.
@@ -52,11 +51,9 @@ def make_strategy(name: str) -> BaseStrategy:
         return TrendStrategy()
     if name == "flat":
         return FlatStrategy()
-    if name == "zakol":
-        return ZakolStrategy()
     raise ValueError(
         f"Стратегия '{name}' ещё не реализована. "
-        f"Доступны: trend, flat, zakol"
+        f"Доступны: trend, flat"
     )
 
 
@@ -571,7 +568,7 @@ def main() -> None:
     parser.add_argument(
         "--strategy",
         required=True,
-        choices=["trend", "flat", "zakol", "yrovni", "impulse", "zero"],
+        choices=["trend", "flat", "yrovni", "impulse", "zero"],
         help="какую стратегию тестировать",
     )
     parser.add_argument(

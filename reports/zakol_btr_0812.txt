@@ -1,0 +1,18 @@
+symbol=BTRUSDT interval=1 bars=20160
+dates=2026-08-12 -> 2026-08-25
+deposit=$100 notional/trade=$10 (10.0% ) fixed_qty=0.0
+offset=0.03 ttl=20.0s min_d=0.003 sl=0.02 tp=0.04 trail=0.02 be=0.01
+trades=11 win%=100.0
+pnl_usdt=2.2232 pnl%=2.223 equity=$102.22 avg_trade%=2.021 sum_trade%=22.232 kills=0
+replaces=1818 extends=16778 expires=1542
+  entry=0.0269272 exit=0.0272244 qty=371.372 pnl=0.1104 +1.104% trail
+  entry=0.0305065 exit=0.03087 qty=327.799 pnl=0.1192 +1.192% trail
+  entry=0.0299342 exit=0.0302918 qty=334.066 pnl=0.1195 +1.195% trail
+  entry=0.0284016 exit=0.0287238 qty=352.093 pnl=0.1134 +1.134% trail
+  entry=0.0279457 exit=0.0282338 qty=357.837 pnl=0.1031 +1.031% trail
+  entry=0.0244052 exit=0.026607 qty=409.749 pnl=0.9022 +9.022% trail
+  entry=0.0271503 exit=0.0274302 qty=368.32 pnl=0.1031 +1.031% trail
+  entry=0.0278099 exit=0.0281554 qty=359.584 pnl=0.1242 +1.242% trail
+  entry=0.0315929 exit=0.0320068 qty=316.527 pnl=0.1310 +1.310% trail
+  entry=0.0339888 exit=0.0349664 qty=294.215 pnl=0.2876 +2.876% trail
+  entry=0.0307005 exit=0.0310366 qty=325.728 pnl=0.1095 +1.095% trail

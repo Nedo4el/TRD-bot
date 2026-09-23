@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import threading
 import time
@@ -100,22 +101,22 @@ class BybitClient:
 
     # ========================== Rate limiting ==========================
 
-    def _rate_limit(self) -> None:
-        """Выдержать паузу, если запросы идут слишком часто.
+    async def _rate_limit(self) -> None:
+        """Ограничить частоту REST-вызовов скользящим окном 5 секунд.
 
-        Поддерживаем скользящее окно последних N вызовов и спим,
-        если следующий запрос «рванёт» лимит.
+        Максимум за окно: requests_per_second * 5 (по умолчанию 10*5=50).
+        Ждём через asyncio.sleep, чтобы не блокировать event loop.
         """
+        window = 5.0
+        max_in_window = max(int(self.config.requests_per_second * window), 1)
         now = time.monotonic()
-        # Убираем из окна записи старше 1 секунды
-        while self._last_call_times and now - self._last_call_times[0] > 1.0:
+        while self._last_call_times and now - self._last_call_times[0] > window:
             self._last_call_times.popleft()
-        # Если окно заполнено — спим до истечения старейшего вызова
-        if len(self._last_call_times) >= self.config.requests_per_second:
-            sleep_for = self._last_call_times[0] + 1.0 - now
+        if len(self._last_call_times) >= max_in_window:
+            sleep_for = self._last_call_times[0] + window - now
             if sleep_for > 0:
                 logger.debug("Rate limit: пауза %.3fс", sleep_for)
-                time.sleep(sleep_for)
+                await asyncio.sleep(sleep_for)
         self._last_call_times.append(time.monotonic())
 
     # ============================ REST API =============================
@@ -133,7 +134,7 @@ class BybitClient:
             Ответ API в виде dict (сырой ответ pybit).
         """
         method = getattr(self._http, method_name)
-        self._rate_limit()
+        await self._rate_limit()
 
         @retry(max_retries=3, base_delay=1.0)
         def _sync_call() -> Any:
@@ -234,6 +235,7 @@ class BybitClient:
         post_only: bool = False,
         reduce_only: bool = False,
         position_idx: int | None = None,
+        order_link_id: str | None = None,
     ) -> dict[str, Any]:
         """Выставить ордер (рыночный или лимитный).
 
@@ -246,6 +248,7 @@ class BybitClient:
             post_only: True — PostOnly (отклоняется, если исполнится как taker).
             reduce_only: True — ордер только уменьшает позицию (фьючерсы).
             position_idx: 1/2 — хедж-режим (long/short); None — one-way.
+            order_link_id: клиентский id (orderLinkId) для идемпотентности.
 
         Returns:
             Ответ API с данными созданного ордера.
@@ -267,6 +270,8 @@ class BybitClient:
             params["reduceOnly"] = True
         if position_idx is not None:
             params["positionIdx"] = position_idx
+        if order_link_id:
+            params["orderLinkId"] = order_link_id
         return cast(dict[str, Any], await self._call("place_order", **params))
 
     async def cancel_order(self, symbol: str, order_id: str) -> dict[str, Any]:
@@ -404,7 +409,9 @@ class BybitClient:
         min_qty: float
         min_notional: float
 
-    async def get_instrument_filters(self, symbol: str) -> BybitClient.InstrumentFilters:
+    async def get_instrument_filters(
+        self, symbol: str
+    ) -> BybitClient.InstrumentFilters:
         """Получить фильтры инструмента (с кэшем): tickSize, qtyStep, минимумы."""
         row = await self._get_instrument(symbol)
         price_filter = row.get("priceFilter", {})
@@ -453,24 +460,25 @@ class BybitClient:
         self,
         symbol: str,
         stop_loss: float,
-        take_profit: float,
+        take_profit: float | None = None,
     ) -> dict[str, Any]:
-        """Установить стоп-лосс и тейк-профит для открытой позиции.
+        """Установить стоп-лосс (и опционально TP) для открытой позиции.
 
         Работает для производных инструментов (linear/inverse).
         Для спота Bybit не поддерживает серверные SL/TP — вернёт ошибку,
         которую вызывающий код обрабатывает отдельно.
         """
+        params: dict[str, Any] = {
+            "category": self.config.category,
+            "symbol": symbol,
+            "stopLoss": str(stop_loss),
+            "positionIdx": 0,
+        }
+        if take_profit is not None:
+            params["takeProfit"] = str(take_profit)
         return cast(
             dict[str, Any],
-            await self._call(
-                "set_trading_stop",
-                category=self.config.category,
-                symbol=symbol,
-                stopLoss=str(stop_loss),
-                takeProfit=str(take_profit),
-                positionIdx=0,
-            ),
+            await self._call("set_trading_stop", **params),
         )
 
     async def get_position(self, symbol: str) -> Position | None:
@@ -497,7 +505,9 @@ class BybitClient:
                     avg_price=float(row["avgPrice"]),
                     unrealised_pnl=float(row["unrealisedPnl"]),
                     stop_loss=float(row["stopLoss"]) if row.get("stopLoss") else None,
-                    take_profit=float(row["takeProfit"]) if row.get("takeProfit") else None,
+                    take_profit=float(row["takeProfit"])
+                    if row.get("takeProfit")
+                    else None,
                     position_idx=int(row.get("positionIdx") or 0),
                 ),
             )
