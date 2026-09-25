@@ -28,10 +28,12 @@ class Metrics:
     exit_sl: float
     exit_trail: float
     exit_be: float
+    exit_tp: float
     exit_end: float
     exit_sl_pct: float
     exit_trail_pct: float
     exit_be_pct: float
+    exit_tp_pct: float
     exit_end_pct: float
     false_fill_pct: float
     partial_fill_pct: float
@@ -84,7 +86,7 @@ def build_metrics(st: StrategyState, deposit: float, series: Series) -> Metrics:
     sharpe = (mean_r / std * math.sqrt(len(rets))) if std > 1e-12 else 0.0
     recovery = (eq - deposit) / max_dd_usd if max_dd_usd > 0 else 0.0
 
-    reasons = {"sl": 0, "trail": 0, "be": 0, "end": 0, "max_loss": 0}
+    reasons = {"sl": 0, "trail": 0, "be": 0, "tp": 0, "end": 0, "max_loss": 0}
     for t in trades:
         key = t.reason if t.reason in reasons else "end"
         reasons[key] = reasons.get(key, 0) + 1
@@ -114,10 +116,12 @@ def build_metrics(st: StrategyState, deposit: float, series: Series) -> Metrics:
         exit_sl=reasons["sl"],
         exit_trail=reasons["trail"],
         exit_be=reasons["be"],
+        exit_tp=reasons["tp"],
         exit_end=reasons["end"],
         exit_sl_pct=reasons["sl"] / total,
         exit_trail_pct=reasons["trail"] / total,
         exit_be_pct=reasons["be"] / total,
+        exit_tp_pct=reasons["tp"] / total,
         exit_end_pct=reasons["end"] / total,
         false_fill_pct=st.counters.false_fills / total,
         partial_fill_pct=partials / total,

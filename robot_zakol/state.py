@@ -26,16 +26,18 @@ class PendingOrder:
     qty: float
     placed_at: float
     filled_qty: float = 0.0
+    side: str = "Buy"  # Buy = вход в лонг, Sell = вход в шорт
 
 
 @dataclass
 class OpenPosition:
-    """Открытая лонг-позиция."""
+    """Открытая позиция (long или short)."""
 
     entry_price: float
     qty: float
     peak_price: float
     stop_loss: float
+    side: str = "long"
     be_active: bool = False
     trail_stop: float | None = None
     opened_at: float = 0.0
@@ -46,7 +48,8 @@ class ZakolState:
     """Полное состояние бота для JSON."""
 
     phase: str = PHASE_IDLE
-    pending: PendingOrder | None = None
+    pending_buy: PendingOrder | None = None
+    pending_sell: PendingOrder | None = None
     position: OpenPosition | None = None
     session_pnl: float = 0.0
     peak_session_pnl: float = 0.0
@@ -68,11 +71,13 @@ class StateStore:
             return
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-            pending = raw.get("pending")
+            pending_buy = raw.get("pending_buy")
+            pending_sell = raw.get("pending_sell")
             position = raw.get("position")
             self.state = ZakolState(
                 phase=raw.get("phase", PHASE_IDLE),
-                pending=PendingOrder(**pending) if pending else None,
+                pending_buy=PendingOrder(**pending_buy) if pending_buy else None,
+                pending_sell=PendingOrder(**pending_sell) if pending_sell else None,
                 position=OpenPosition(**position) if position else None,
                 session_pnl=float(raw.get("session_pnl", 0.0)),
                 peak_session_pnl=float(raw.get("peak_session_pnl", 0.0)),

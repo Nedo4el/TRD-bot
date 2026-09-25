@@ -9,6 +9,7 @@ from core.bybit_client import BybitClient
 from core.config import Config
 from core.logger import setup_logging
 from robot_zakol.backtest.backtest import run_modes
+from robot_zakol.backtest.config import strategy_from_zakol
 from robot_zakol.backtest.data_loader import (
     bars_for_range,
     end_of_day_ms,
@@ -65,7 +66,13 @@ async def _amain(argv: list[str] | None = None) -> None:
             end_ms,
         )
         modes = tuple(m.strip() for m in args.modes.split(",") if m.strip())
-        results = run_modes(series, deposit=args.deposit, modes=modes)
+        strat = strategy_from_zakol(zakol)
+        results = run_modes(
+            series,
+            deposit=args.deposit,
+            modes=modes,
+            strat=strat,
+        )
         text = build_report(
             symbol=symbol,
             start=args.start_date,

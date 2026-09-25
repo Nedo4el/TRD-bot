@@ -52,6 +52,7 @@ class ZakolConfig(BaseModel):
         default_factory=lambda: _env_float("MIN_PRICE_CHANGE", 0.003),
     )
     stop_pct: float = Field(default_factory=lambda: _env_float("STOP_PCT", 0.02))
+    take_pct: float = Field(default_factory=lambda: _env_float("TAKE_PCT", 0.05))
     trail_pct: float = Field(default_factory=lambda: _env_float("TRAIL_PCT", 0.02))
     be_trigger_pct: float = Field(
         default_factory=lambda: _env_float("BE_TRIGGER", 0.005)

@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+from robot_zakol.config import ZakolConfig
 
 
 @dataclass(frozen=True)
 class StrategyConfig:
-    """Параметры «Плавающие лимитки с коротким TTL»."""
+    """Параметры «Плавающие лимитки ±offset с коротким TTL»."""
 
     offset_pct: float = 0.03
     ttl_sec: float = 20.0
     min_price_change: float = 0.003
     stop_pct: float = 0.02
+    take_pct: float = 0.05
     trail_pct: float = 0.02
     be_trigger_pct: float = 0.005
     be_offset_pct: float = 0.002
@@ -20,6 +23,7 @@ class StrategyConfig:
     max_drawdown_pct: float = 0.05
     deposit_usd: float = 100.0
     position_pct: float = 10.0
+    partial_fill_pct: float = 0.80
     tick_size: float = 0.0001
 
 
@@ -37,14 +41,38 @@ class FillConfig:
     seed: int = 42
 
 
+def strategy_from_zakol(z: ZakolConfig) -> StrategyConfig:
+    """Собрать параметры бэктеста из .env robot_zakol (единый источник)."""
+    return StrategyConfig(
+        offset_pct=z.offset_pct,
+        ttl_sec=z.ttl_sec,
+        min_price_change=z.min_price_change,
+        stop_pct=z.stop_pct,
+        take_pct=z.take_pct,
+        trail_pct=z.trail_pct,
+        be_trigger_pct=z.be_trigger_pct,
+        be_offset_pct=z.be_offset_pct,
+        max_loss_usd=z.max_loss_usd,
+        max_drawdown_pct=z.max_drawdown_pct,
+        deposit_usd=z.deposit_usd,
+        position_pct=z.position_pct,
+        partial_fill_pct=z.partial_fill_pct,
+    )
+
+
 def mode_presets(
     deposit: float = 100.0,
+    strat: StrategyConfig | None = None,
 ) -> dict[str, tuple[StrategyConfig, FillConfig]]:
     """Три режима сравнения: ideal / realistic / pessimistic."""
-    strat = StrategyConfig(deposit_usd=deposit)
+    base = (
+        replace(strat, deposit_usd=deposit)
+        if strat
+        else StrategyConfig(deposit_usd=deposit)
+    )
     return {
         "ideal": (
-            strat,
+            base,
             FillConfig(
                 name="ideal",
                 ideal=True,
@@ -56,7 +84,7 @@ def mode_presets(
             ),
         ),
         "realistic": (
-            strat,
+            base,
             FillConfig(
                 name="realistic",
                 ideal=False,
@@ -68,7 +96,7 @@ def mode_presets(
             ),
         ),
         "pessimistic": (
-            strat,
+            base,
             FillConfig(
                 name="pessimistic",
                 ideal=False,

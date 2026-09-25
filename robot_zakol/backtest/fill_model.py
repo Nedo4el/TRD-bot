@@ -13,12 +13,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PendingLimit:
-    """Активная PostOnly buy-лимитка в бэктесте."""
+    """Активная PostOnly-лимитка в бэктесте (Buy = вход в лонг)."""
 
     target: float
     qty: float
     placed_ts_ms: int
     deadline_ts_ms: int
+    side: str = "Buy"
     filled_qty: float = 0.0
     active: bool = True
     arrived: bool = False
@@ -53,11 +54,11 @@ class FillModel:
         prev_price: float | None,
         ts_ms: int,
     ) -> FillOutcome:
-        """Проверить один тик против лимитки.
+        """Проверить один тик против лимитки (Buy — снизу, Sell — сверху).
 
         PostOnly reject: уровень прошли, пока ордер был в пути (latency).
-        После arrival: price <= target → queue fill (частичный возможен).
-        ideal: price <= target → полный fill без очереди/latency.
+        После arrival: Buy fill при price <= target, Sell при price >= target.
+        ideal: цена достигла уровня → полный fill без очереди/latency.
         """
         if not order.active:
             return FillOutcome()
@@ -65,9 +66,11 @@ class FillModel:
             return FillOutcome()
         target = order.target
         latency = self.cfg.latency_ms
+        buy = order.side != "Sell"
 
         if self.cfg.ideal:
-            if tick_price <= target:
+            hit = tick_price <= target if buy else tick_price >= target
+            if hit:
                 return FillOutcome(
                     filled_qty=order.qty - order.filled_qty,
                     fill_price=target,
@@ -78,7 +81,12 @@ class FillModel:
             if ts_ms < order.placed_ts_ms + latency:
                 return FillOutcome(in_flight=True)
             order.arrived = True
-            if self.cfg.post_only_strict and tick_price < target - self.tick_size:
+            crossed = (
+                tick_price < target - self.tick_size
+                if buy
+                else tick_price > target + self.tick_size
+            )
+            if self.cfg.post_only_strict and crossed:
                 logger.debug(
                     "PostOnly reject on arrive: price=%.8g target=%.8g",
                     tick_price,
@@ -86,14 +94,20 @@ class FillModel:
                 )
                 return FillOutcome(post_only_reject=True)
 
-        if tick_price > target:
+        reached = tick_price <= target if buy else tick_price >= target
+        if not reached:
             return FillOutcome()
 
         order.touched = True
         need = order.qty - order.filled_qty
         if need <= 0:
             return FillOutcome()
-        if tick_price < target - self.tick_size:
+        deeper = (
+            tick_price < target - self.tick_size
+            if buy
+            else tick_price > target + self.tick_size
+        )
+        if deeper:
             return FillOutcome(filled_qty=need, fill_price=target)
         ref_vol = max(tick_size_vol, 1e-12)
         queue_ahead = self.cfg.queue_factor * ref_vol

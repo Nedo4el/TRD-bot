@@ -74,11 +74,17 @@ class Fetcher:
                     delay = self._retry_delay * (2**attempt)
                     logger.warning(
                         "get_tickers attempt %d failed, retrying in %.1fs: %s",
-                        attempt + 1, delay, e,
+                        attempt + 1,
+                        delay,
+                        e,
                     )
                     await asyncio.sleep(delay)
                 else:
-                    logger.error("get_tickers exception after %d attempts: %s", self._max_retries, e)
+                    logger.error(
+                        "get_tickers exception after %d attempts: %s",
+                        self._max_retries,
+                        e,
+                    )
                     return []
         return []
 
@@ -130,11 +136,19 @@ class Fetcher:
                     delay = self._retry_delay * (2**attempt)
                     logger.warning(
                         "get_klines %s attempt %d failed, retrying in %.1fs: %s",
-                        symbol, attempt + 1, delay, e,
+                        symbol,
+                        attempt + 1,
+                        delay,
+                        e,
                     )
                     await asyncio.sleep(delay)
                 else:
-                    logger.error("get_klines %s exception after %d attempts: %s", symbol, self._max_retries, e)
+                    logger.error(
+                        "get_klines %s exception after %d attempts: %s",
+                        symbol,
+                        self._max_retries,
+                        e,
+                    )
                     return []
         return []
 
@@ -158,19 +172,21 @@ class Fetcher:
             for attempt in range(self._max_retries):
                 await asyncio.sleep(self._min_delay * (attempt + 1))
 
-                def _fetch() -> dict:
+                def _fetch(end: int = current_end) -> dict:
                     return self._http.get_kline(  # type: ignore[no-any-return]
                         category="linear",
                         symbol=symbol,
                         interval=interval,
                         limit=limit,
-                        end=current_end,
+                        end=end,
                         start=start_ms,
                     )
 
                 try:
                     with (
-                        ScreenerMetricsTimer(self.metrics) if self.metrics else _noop_ctx()
+                        ScreenerMetricsTimer(self.metrics)
+                        if self.metrics
+                        else _noop_ctx()
                     ):
                         resp = await asyncio.to_thread(_fetch)
                     if resp["retCode"] == 0:
@@ -179,15 +195,17 @@ class Fetcher:
                             return all_candles
 
                         for c in raw:
-                            all_candles.append({
-                                "open_time": int(c[0]),
-                                "open": float(c[1]),
-                                "high": float(c[2]),
-                                "low": float(c[3]),
-                                "close": float(c[4]),
-                                "volume": float(c[5]),
-                                "turnover": float(c[6]) if len(c) > 6 else 0.0,
-                            })
+                            all_candles.append(
+                                {
+                                    "open_time": int(c[0]),
+                                    "open": float(c[1]),
+                                    "high": float(c[2]),
+                                    "low": float(c[3]),
+                                    "close": float(c[4]),
+                                    "volume": float(c[5]),
+                                    "turnover": float(c[6]) if len(c) > 6 else 0.0,
+                                }
+                            )
 
                         # oldest candle в батче — двигаем end_ms
                         oldest_time = int(raw[-1][0])
@@ -196,7 +214,9 @@ class Fetcher:
                         current_end = oldest_time - 1
                         break
                     else:
-                        logger.error("get_klines_range %s error: %s", symbol, resp["retMsg"])
+                        logger.error(
+                            "get_klines_range %s error: %s", symbol, resp["retMsg"]
+                        )
                         if self.metrics:
                             self.metrics.record_api_error()
                         return all_candles
@@ -207,7 +227,9 @@ class Fetcher:
                         delay = self._retry_delay * (2**attempt)
                         logger.warning(
                             "get_klines_range %s attempt %d failed: %s",
-                            symbol, attempt + 1, e,
+                            symbol,
+                            attempt + 1,
+                            e,
                         )
                         await asyncio.sleep(delay)
                     else:
@@ -221,7 +243,9 @@ class Fetcher:
     async def get_all_linear_symbols(self) -> list[str]:
         """Получить список всех USDT-M фьючерсных символов."""
         tickers = await self.get_linear_tickers()
-        return [t.get("symbol", "") for t in tickers if t.get("symbol", "").endswith("USDT")]
+        return [
+            t.get("symbol", "") for t in tickers if t.get("symbol", "").endswith("USDT")
+        ]
 
     async def get_filtered_symbols(
         self,

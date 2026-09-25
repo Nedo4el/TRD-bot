@@ -1,0 +1,378 @@
+=== robot_zakol HONEST BACKTEST ===
+symbol=SAGAUSDT dates=2026-08-26 -> 2026-09-25 deposit=$100
+source: source=kline interval=1 bars=44105 fidelity=1S (synthetic ticks from OHLC, not publicTrade)
+
+## Сравнение режимов
+| mode | trades | WR | PF | maxDD% | avg$ | sum$ | equity$ | Sharpe | RF | trail% | sl% | partial% | PO_rej% | fidelity |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| ideal | 118 | 44.9% | 1.69 | 2.33 | 0.074 | 8.692 | 108.69 | 2.24 | 3.45 | 41.5% | 55.1% | 0.0% | 0.0% | 1S |
+| realistic | 107 | 43.0% | 1.46 | 2.43 | 0.052 | 5.604 | 105.60 | 1.56 | 2.17 | 40.2% | 57.0% | 0.0% | 0.0% | 1S |
+| pessimistic | 106 | 41.5% | 1.38 | 2.50 | 0.045 | 4.779 | 104.78 | 1.33 | 1.81 | 38.7% | 58.5% | 0.0% | 0.0% | 1S |
+
+## mode=ideal fidelity=1S
+source: source=kline interval=1 bars=44105 fidelity=1S (synthetic ticks from OHLC, not publicTrade)
+trades=118 wins=53 WR=44.9% PF=1.69
+pnl=8.6922$ (8.692% депо) equity=$108.69 kills=0
+maxDD=2.332% / 2.5221$ Sharpe=2.24 Recovery=3.45
+avg_pnl=0.0737$ avg%=0.759 avg_hold=24.9s
+exits: trail=41.5% sl=55.1% be=3.4% end=0.0%
+fill: partial=0.0% post_only_rej=0.0% false_fill=0.0% ttl_cancels=132081 re_places=15411 queue_rej=0 po_rej=0
+slippage: entry=0.000000 exit=0.000000
+
+### сделки
+  #001 entry_ts=1788991696000 entry=0.0139 exit_ts=1788991706000 exit=0.013622 reason=sl pnl=-0.1942 (-2.000%) slip=0.000000 partial=False hold_ms=10000
+  #002 entry_ts=1788991739000 entry=0.0136 exit_ts=1788991776000 exit=0.01373862 reason=trail pnl=0.0989 (+1.019%) slip=0.000000 partial=False hold_ms=37000
+  #003 entry_ts=1788991787000 entry=0.0133 exit_ts=1788991793000 exit=0.013034 reason=sl pnl=-0.1944 (-2.000%) slip=0.000000 partial=False hold_ms=6000
+  #004 entry_ts=1789062429000 entry=0.0174 exit_ts=1789062490000 exit=0.01712844 reason=sl pnl=-0.1518 (-1.561%) slip=0.000000 partial=False hold_ms=61000
+  #005 entry_ts=1789064410000 entry=0.017 exit_ts=1789064425000 exit=0.01666 reason=sl pnl=-0.1944 (-2.000%) slip=0.000000 partial=False hold_ms=15000
+  #006 entry_ts=1789077442000 entry=0.0181 exit_ts=1789077479000 exit=0.01843772 reason=trail pnl=0.1814 (+1.866%) slip=0.000000 partial=False hold_ms=37000
+  #007 entry_ts=1789273460000 entry=0.0194 exit_ts=1789273499000 exit=0.01962646 reason=trail pnl=0.1132 (+1.167%) slip=0.000000 partial=False hold_ms=39000
+  #008 entry_ts=1789465155000 entry=0.02 exit_ts=1789465164000 exit=0.0196 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=9000
+  #009 entry_ts=1789467923000 entry=0.0201 exit_ts=1789467959000 exit=0.02053492 reason=trail pnl=0.2097 (+2.164%) slip=0.000000 partial=False hold_ms=36000
+  #010 entry_ts=1789523113000 entry=0.0224 exit_ts=1789523121000 exit=0.021952 reason=sl pnl=-0.1943 (-2.000%) slip=0.000000 partial=False hold_ms=8000
+  #011 entry_ts=1789568417000 entry=0.02 exit_ts=1789568425000 exit=0.0196 reason=sl pnl=-0.1936 (-2.000%) slip=0.000000 partial=False hold_ms=8000
+  #012 entry_ts=1789751961000 entry=0.0281 exit_ts=1789751999000 exit=0.0289345 reason=trail pnl=0.2877 (+2.970%) slip=0.000000 partial=False hold_ms=38000
+  #013 entry_ts=1789752258000 entry=0.0269 exit_ts=1789752299000 exit=0.02721166 reason=trail pnl=0.1125 (+1.159%) slip=0.000000 partial=False hold_ms=41000
+  #014 entry_ts=1789753391000 entry=0.0258 exit_ts=1789753398000 exit=0.025284 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=7000
+  #015 entry_ts=1789753409000 entry=0.0244 exit_ts=1789753439000 exit=0.02622774 reason=trail pnl=0.7264 (+7.491%) slip=0.000000 partial=False hold_ms=30000
+  #016 entry_ts=1789916273000 entry=0.0294 exit_ts=1789916417000 exit=0.0294588 reason=be pnl=0.0194 (+0.200%) slip=0.000000 partial=False hold_ms=144000
+  #017 entry_ts=1789916814000 entry=0.0296 exit_ts=1789916868000 exit=0.03095036 reason=trail pnl=0.4432 (+4.562%) slip=0.000000 partial=False hold_ms=54000
+  #018 entry_ts=1789923163000 entry=0.0325 exit_ts=1789923172000 exit=0.03185 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=9000
+  #019 entry_ts=1789923228000 entry=0.034 exit_ts=1789923238000 exit=0.03332 reason=sl pnl=-0.1942 (-2.000%) slip=0.000000 partial=False hold_ms=10000
+  #020 entry_ts=1789923250000 entry=0.0339 exit_ts=1789923257000 exit=0.033222 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=7000
+  #021 entry_ts=1789923268000 entry=0.032 exit_ts=1789923299000 exit=0.03493994 reason=trail pnl=0.8902 (+9.187%) slip=0.000000 partial=False hold_ms=31000
+  #022 entry_ts=1789923557000 entry=0.034 exit_ts=1789923568000 exit=0.03332 reason=sl pnl=-0.1942 (-2.000%) slip=0.000000 partial=False hold_ms=11000
+  #023 entry_ts=1789925842000 entry=0.0366 exit_ts=1789925879000 exit=0.03785152 reason=trail pnl=0.3316 (+3.419%) slip=0.000000 partial=False hold_ms=37000
+  #024 entry_ts=1789948914000 entry=0.0383 exit_ts=1789949020000 exit=0.04069842 reason=trail pnl=0.6073 (+6.262%) slip=0.000000 partial=False hold_ms=106000
+  #025 entry_ts=1789949037000 entry=0.0393 exit_ts=1789949059000 exit=0.04012218 reason=trail pnl=0.2027 (+2.092%) slip=0.000000 partial=False hold_ms=22000
+  #026 entry_ts=1790006212000 entry=0.0332 exit_ts=1790006258000 exit=0.03645698 reason=trail pnl=0.9529 (+9.810%) slip=0.000000 partial=False hold_ms=46000
+  #027 entry_ts=1790006273000 entry=0.0352 exit_ts=1790006323000 exit=0.03751342 reason=trail pnl=0.6367 (+6.572%) slip=0.000000 partial=False hold_ms=50000
+  #028 entry_ts=1790006475000 entry=0.038 exit_ts=1790006481000 exit=0.03724 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=6000
+  #029 entry_ts=1790006519000 entry=0.0368 exit_ts=1790006534000 exit=0.036064 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=15000
+  #030 entry_ts=1790014499000 entry=0.0394 exit_ts=1790014524000 exit=0.038612 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=25000
+  #031 entry_ts=1790014583000 entry=0.0372 exit_ts=1790014619000 exit=0.03794462 reason=trail pnl=0.1943 (+2.002%) slip=0.000000 partial=False hold_ms=36000
+  #032 entry_ts=1790014736000 entry=0.0364 exit_ts=1790014787000 exit=0.03856986 reason=trail pnl=0.5787 (+5.961%) slip=0.000000 partial=False hold_ms=51000
+  #033 entry_ts=1790094040000 entry=0.0393 exit_ts=1790094047000 exit=0.038514 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=7000
+  #034 entry_ts=1790094058000 entry=0.0372 exit_ts=1790094113000 exit=0.04031622 reason=trail pnl=0.8136 (+8.377%) slip=0.000000 partial=False hold_ms=55000
+  #035 entry_ts=1790152213000 entry=0.0445 exit_ts=1790152225000 exit=0.04361 reason=sl pnl=-0.1942 (-2.000%) slip=0.000000 partial=False hold_ms=12000
+  #036 entry_ts=1790284662000 entry=0.044 exit_ts=1790284668000 exit=0.04312 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=6000
+  #037 entry_ts=1790284678000 entry=0.0417 exit_ts=1790284717000 exit=0.04613546 reason=trail pnl=1.0324 (+10.637%) slip=0.000000 partial=False hold_ms=39000
+  #038 entry_ts=1790284731000 entry=0.0446 exit_ts=1790284738000 exit=0.043708 reason=sl pnl=-0.1938 (-2.000%) slip=0.000000 partial=False hold_ms=7000
+  #039 entry_ts=1790284796000 entry=0.0461 exit_ts=1790284810000 exit=0.0472899 reason=trail pnl=0.2504 (+2.581%) slip=0.000000 partial=False hold_ms=14000
+  #040 entry_ts=1790284825000 entry=0.0457 exit_ts=1790284900000 exit=0.04954488 reason=trail pnl=0.8165 (+8.413%) slip=0.000000 partial=False hold_ms=75000
+  #041 entry_ts=1790284916000 entry=0.0479 exit_ts=1790284959000 exit=0.050617 reason=trail pnl=0.5506 (+5.672%) slip=0.000000 partial=False hold_ms=43000
+  #042 entry_ts=1790284975000 entry=0.0489 exit_ts=1790285036000 exit=0.05136572 reason=trail pnl=0.4887 (+5.042%) slip=0.000000 partial=False hold_ms=61000
+  #043 entry_ts=1790285215000 entry=0.0526 exit_ts=1790285264000 exit=0.0546448 reason=trail pnl=0.3771 (+3.887%) slip=0.000000 partial=False hold_ms=49000
+  #044 entry_ts=1790285474000 entry=0.0549 exit_ts=1790285480000 exit=0.053802 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=6000
+  #045 entry_ts=1790285575000 entry=0.0524 exit_ts=1790285629000 exit=0.05497016 reason=trail pnl=0.4760 (+4.905%) slip=0.000000 partial=False hold_ms=54000
+  #046 entry_ts=1790285867000 entry=0.0605 exit_ts=1790285878000 exit=0.05929 reason=sl pnl=-0.1940 (-2.000%) slip=0.000000 partial=False hold_ms=11000
+  #047 entry_ts=1790285895000 entry=0.0603 exit_ts=1790285904000 exit=0.059094 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=9000
+  #048 entry_ts=1790285939000 entry=0.0592 exit_ts=1790285944000 exit=0.058016 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=5000
+  #049 entry_ts=1790285963000 entry=0.0562 exit_ts=1790285999000 exit=0.05758382 reason=trail pnl=0.2390 (+2.462%) slip=0.000000 partial=False hold_ms=36000
+  #050 entry_ts=1790286230000 entry=0.0573 exit_ts=1790286236000 exit=0.056154 reason=sl pnl=-0.1940 (-2.000%) slip=0.000000 partial=False hold_ms=6000
+  #051 entry_ts=1790286596000 entry=0.0617 exit_ts=1790286626000 exit=0.06216336 reason=trail pnl=0.0729 (+0.751%) slip=0.000000 partial=False hold_ms=30000
+  #052 entry_ts=1790288604000 entry=0.0642 exit_ts=1790288639000 exit=0.0657286 reason=trail pnl=0.2310 (+2.381%) slip=0.000000 partial=False hold_ms=35000
+  #053 entry_ts=1790288813000 entry=0.0673 exit_ts=1790288844000 exit=0.06909588 reason=trail pnl=0.2588 (+2.668%) slip=0.000000 partial=False hold_ms=31000
+  #054 entry_ts=1790291518000 entry=0.0685 exit_ts=1790291532000 exit=0.07037576 reason=trail pnl=0.2658 (+2.738%) slip=0.000000 partial=False hold_ms=14000
+  #055 entry_ts=1790291579000 entry=0.0693 exit_ts=1790291690000 exit=0.067914 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=111000
+  #056 entry_ts=1790291869000 entry=0.0705 exit_ts=1790291902000 exit=0.070641 reason=be pnl=0.0194 (+0.200%) slip=0.000000 partial=False hold_ms=33000
+  #057 entry_ts=1790294398000 entry=0.072 exit_ts=1790294446000 exit=0.07541198 reason=trail pnl=0.4599 (+4.739%) slip=0.000000 partial=False hold_ms=48000
+  #058 entry_ts=1790294502000 entry=0.0803 exit_ts=1790294510000 exit=0.078694 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=8000
+  #059 entry_ts=1790294619000 entry=0.0889 exit_ts=1790294624000 exit=0.087122 reason=sl pnl=-0.1940 (-2.000%) slip=0.000000 partial=False hold_ms=5000
+  #060 entry_ts=1790294633000 entry=0.0839 exit_ts=1790294637000 exit=0.082222 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=4000
+  #061 entry_ts=1790294705000 entry=0.0854 exit_ts=1790294710000 exit=0.083692 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=5000
+  #062 entry_ts=1790294720000 entry=0.0808 exit_ts=1790294725000 exit=0.079184 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=5000
+  #063 entry_ts=1790294759000 entry=0.0808 exit_ts=1790294760000 exit=0.079184 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=1000
+  #064 entry_ts=1790296998000 entry=0.0746 exit_ts=1790297009000 exit=0.073108 reason=sl pnl=-0.1940 (-2.000%) slip=0.000000 partial=False hold_ms=11000
+  #065 entry_ts=1790297041000 entry=0.0737 exit_ts=1790297047000 exit=0.072226 reason=sl pnl=-0.1940 (-2.000%) slip=0.000000 partial=False hold_ms=6000
+  #066 entry_ts=1790297057000 entry=0.0696 exit_ts=1790297062000 exit=0.068208 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=5000
+  #067 entry_ts=1790297099000 entry=0.0678 exit_ts=1790297105000 exit=0.066444 reason=sl pnl=-0.1940 (-2.000%) slip=0.000000 partial=False hold_ms=6000
+  #068 entry_ts=1790297117000 entry=0.0641 exit_ts=1790297124000 exit=0.062818 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=7000
+  #069 entry_ts=1790297161000 entry=0.0629 exit_ts=1790297169000 exit=0.061642 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=8000
+  #070 entry_ts=1790297182000 entry=0.0595 exit_ts=1790297189000 exit=0.05831 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=7000
+  #071 entry_ts=1790297219000 entry=0.0598 exit_ts=1790297256000 exit=0.0599196 reason=be pnl=0.0194 (+0.200%) slip=0.000000 partial=False hold_ms=37000
+  #072 entry_ts=1790297271000 entry=0.058 exit_ts=1790297328000 exit=0.0598976 reason=trail pnl=0.3176 (+3.272%) slip=0.000000 partial=False hold_ms=57000
+  #073 entry_ts=1790297362000 entry=0.057 exit_ts=1790297399000 exit=0.05919984 reason=trail pnl=0.3743 (+3.859%) slip=0.000000 partial=False hold_ms=37000
+  #074 entry_ts=1790297754000 entry=0.0558 exit_ts=1790297794000 exit=0.06560708 reason=trail pnl=1.7051 (+17.575%) slip=0.000000 partial=False hold_ms=40000
+  #075 entry_ts=1790297802000 entry=0.0632 exit_ts=1790297806000 exit=0.061936 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=4000
+  #076 entry_ts=1790297814000 entry=0.0596 exit_ts=1790297818000 exit=0.058408 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=4000
+  #077 entry_ts=1790297894000 entry=0.0633 exit_ts=1790297903000 exit=0.062034 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=9000
+  #078 entry_ts=1790297998000 entry=0.0635 exit_ts=1790298043000 exit=0.0672378 reason=trail pnl=0.5713 (+5.886%) slip=0.000000 partial=False hold_ms=45000
+  #079 entry_ts=1790298137000 entry=0.067 exit_ts=1790298145000 exit=0.06566 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=8000
+  #080 entry_ts=1790300142000 entry=0.0732 exit_ts=1790300149000 exit=0.071736 reason=sl pnl=-0.1940 (-2.000%) slip=0.000000 partial=False hold_ms=7000
+  #081 entry_ts=1790301744000 entry=0.0685 exit_ts=1790301779000 exit=0.07082656 reason=trail pnl=0.3293 (+3.396%) slip=0.000000 partial=False hold_ms=35000
+  #082 entry_ts=1790301793000 entry=0.0662 exit_ts=1790301802000 exit=0.064876 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=9000
+  #083 entry_ts=1790301920000 entry=0.0619 exit_ts=1790301959000 exit=0.06282192 reason=trail pnl=0.1446 (+1.489%) slip=0.000000 partial=False hold_ms=39000
+  #084 entry_ts=1790302214000 entry=0.063 exit_ts=1790302223000 exit=0.06174 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=9000
+  #085 entry_ts=1790302263000 entry=0.0612 exit_ts=1790302272000 exit=0.059976 reason=sl pnl=-0.1940 (-2.000%) slip=0.000000 partial=False hold_ms=9000
+  #086 entry_ts=1790302288000 entry=0.058 exit_ts=1790302319000 exit=0.0602602 reason=trail pnl=0.3779 (+3.897%) slip=0.000000 partial=False hold_ms=31000
+  #087 entry_ts=1790302857000 entry=0.0581 exit_ts=1790302882000 exit=0.05944484 reason=trail pnl=0.2247 (+2.315%) slip=0.000000 partial=False hold_ms=25000
+  #088 entry_ts=1790303115000 entry=0.0584 exit_ts=1790303122000 exit=0.057232 reason=sl pnl=-0.1938 (-2.000%) slip=0.000000 partial=False hold_ms=7000
+  #089 entry_ts=1790303421000 entry=0.0545 exit_ts=1790303510000 exit=0.05570908 reason=trail pnl=0.2154 (+2.218%) slip=0.000000 partial=False hold_ms=89000
+  #090 entry_ts=1790303847000 entry=0.0523 exit_ts=1790303879000 exit=0.05470262 reason=trail pnl=0.4460 (+4.594%) slip=0.000000 partial=False hold_ms=32000
+  #091 entry_ts=1790303895000 entry=0.0507 exit_ts=1790303903000 exit=0.049686 reason=sl pnl=-0.1938 (-2.000%) slip=0.000000 partial=False hold_ms=8000
+  #092 entry_ts=1790304013000 entry=0.048 exit_ts=1790304018000 exit=0.04704 reason=sl pnl=-0.1940 (-2.000%) slip=0.000000 partial=False hold_ms=5000
+  #093 entry_ts=1790304027000 entry=0.0453 exit_ts=1790304059000 exit=0.04920776 reason=trail pnl=0.8361 (+8.626%) slip=0.000000 partial=False hold_ms=32000
+  #094 entry_ts=1790304115000 entry=0.0444 exit_ts=1790304172000 exit=0.04686262 reason=trail pnl=0.5375 (+5.546%) slip=0.000000 partial=False hold_ms=57000
+  #095 entry_ts=1790304790000 entry=0.0453 exit_ts=1790304806000 exit=0.044394 reason=sl pnl=-0.1940 (-2.000%) slip=0.000000 partial=False hold_ms=16000
+  #096 entry_ts=1790305517000 entry=0.0404 exit_ts=1790305523000 exit=0.039592 reason=sl pnl=-0.1938 (-2.000%) slip=0.000000 partial=False hold_ms=6000
+  #097 entry_ts=1790305559000 entry=0.0395 exit_ts=1790305568000 exit=0.03871 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=9000
+  #098 entry_ts=1790305588000 entry=0.0375 exit_ts=1790305619000 exit=0.03844638 reason=trail pnl=0.2450 (+2.524%) slip=0.000000 partial=False hold_ms=31000
+  #099 entry_ts=1790305699000 entry=0.0356 exit_ts=1790305739000 exit=0.03598952 reason=trail pnl=0.1061 (+1.094%) slip=0.000000 partial=False hold_ms=40000
+  #100 entry_ts=1790305755000 entry=0.0342 exit_ts=1790305765000 exit=0.033516 reason=sl pnl=-0.1942 (-2.000%) slip=0.000000 partial=False hold_ms=10000
+  #101 entry_ts=1790305884000 entry=0.0338 exit_ts=1790305919000 exit=0.03478314 reason=trail pnl=0.2817 (+2.909%) slip=0.000000 partial=False hold_ms=35000
+  #102 entry_ts=1790305929000 entry=0.0335 exit_ts=1790305934000 exit=0.03283 reason=sl pnl=-0.1938 (-2.000%) slip=0.000000 partial=False hold_ms=5000
+  #103 entry_ts=1790305943000 entry=0.0316 exit_ts=1790305948000 exit=0.030968 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=5000
+  #104 entry_ts=1790305979000 entry=0.0326 exit_ts=1790305980000 exit=0.031948 reason=sl pnl=-0.1942 (-2.000%) slip=0.000000 partial=False hold_ms=1000
+  #105 entry_ts=1790306028000 entry=0.0321 exit_ts=1790306032000 exit=0.031458 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=4000
+  #106 entry_ts=1790306081000 entry=0.0337 exit_ts=1790306087000 exit=0.033026 reason=sl pnl=-0.1939 (-2.000%) slip=0.000000 partial=False hold_ms=6000
+  #107 entry_ts=1790306096000 entry=0.0318 exit_ts=1790306114000 exit=0.03431764 reason=trail pnl=0.7684 (+7.917%) slip=0.000000 partial=False hold_ms=18000
+  #108 entry_ts=1790306285000 entry=0.0345 exit_ts=1790306291000 exit=0.03381 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=6000
+  #109 entry_ts=1790306301000 entry=0.0326 exit_ts=1790306306000 exit=0.031948 reason=sl pnl=-0.1941 (-2.000%) slip=0.000000 partial=False hold_ms=5000
+  #110 entry_ts=1790306339000 entry=0.0331 exit_ts=1790306342000 exit=0.032438 reason=sl pnl=-0.1938 (-2.000%) slip=0.000000 partial=False hold_ms=3000
+  #111 entry_ts=1790306360000 entry=0.0314 exit_ts=1790306399000 exit=0.0322322 reason=trail pnl=0.2574 (+2.650%) slip=0.000000 partial=False hold_ms=39000
+  #112 entry_ts=1790306414000 entry=0.0301 exit_ts=1790306423000 exit=0.029498 reason=sl pnl=-0.1940 (-2.000%) slip=0.000000 partial=False hold_ms=9000
+  #113 entry_ts=1790306518000 entry=0.0296 exit_ts=1790306570000 exit=0.0307622 reason=trail pnl=0.3811 (+3.926%) slip=0.000000 partial=False hold_ms=52000
+  #114 entry_ts=1790307049000 entry=0.0317 exit_ts=1790307073000 exit=0.0317634 reason=be pnl=0.0194 (+0.200%) slip=0.000000 partial=False hold_ms=24000
+  #115 entry_ts=1790307192000 entry=0.0313 exit_ts=1790307203000 exit=0.030674 reason=sl pnl=-0.1943 (-2.000%) slip=0.000000 partial=False hold_ms=11000
+  #116 entry_ts=1790307382000 entry=0.0301 exit_ts=1790307423000 exit=0.03060932 reason=trail pnl=0.1643 (+1.692%) slip=0.000000 partial=False hold_ms=41000
+  #117 entry_ts=1790307497000 entry=0.0285 exit_ts=1790307505000 exit=0.02793 reason=sl pnl=-0.1938 (-2.000%) slip=0.000000 partial=False hold_ms=8000
+  #118 entry_ts=1790307539000 entry=0.0284 exit_ts=1790307545000 exit=0.027832 reason=sl pnl=-0.1938 (-2.000%) slip=0.000000 partial=False hold_ms=6000
+
+## mode=realistic fidelity=1S
+source: source=kline interval=1 bars=44105 fidelity=1S (synthetic ticks from OHLC, not publicTrade)
+trades=107 wins=46 WR=43.0% PF=1.46
+pnl=5.6041$ (5.604% депо) equity=$105.60 kills=0
+maxDD=2.429% / 2.5839$ Sharpe=1.56 Recovery=2.17
+avg_pnl=0.0524$ avg%=0.540 avg_hold=24.6s
+exits: trail=40.2% sl=57.0% be=2.8% end=0.0%
+fill: partial=0.0% post_only_rej=0.0% false_fill=0.0% ttl_cancels=132100 re_places=16394 queue_rej=126 po_rej=0
+slippage: entry=0.000000 exit=0.000024
+
+### сделки
+  #001 entry_ts=1788991697000 entry=0.0139 exit_ts=1788991706000 exit=0.013615189 reason=sl pnl=-0.1990 (-2.049%) slip=0.000007 partial=False hold_ms=9000
+  #002 entry_ts=1788991782000 entry=0.0136 exit_ts=1788991786000 exit=0.013321336 reason=sl pnl=-0.1992 (-2.049%) slip=0.000007 partial=False hold_ms=4000
+  #003 entry_ts=1789273467000 entry=0.0192 exit_ts=1789273499000 exit=0.019616647 reason=trail pnl=0.2106 (+2.170%) slip=0.000010 partial=False hold_ms=32000
+  #004 entry_ts=1789465157000 entry=0.02 exit_ts=1789465164000 exit=0.0195902 reason=sl pnl=-0.1988 (-2.049%) slip=0.000010 partial=False hold_ms=7000
+  #005 entry_ts=1789467925000 entry=0.0201 exit_ts=1789467959000 exit=0.020524653 reason=trail pnl=0.2047 (+2.113%) slip=0.000010 partial=False hold_ms=34000
+  #006 entry_ts=1789523115000 entry=0.0224 exit_ts=1789523121000 exit=0.021941024 reason=sl pnl=-0.1991 (-2.049%) slip=0.000011 partial=False hold_ms=6000
+  #007 entry_ts=1789568419000 entry=0.02 exit_ts=1789568425000 exit=0.0195902 reason=sl pnl=-0.1983 (-2.049%) slip=0.000010 partial=False hold_ms=6000
+  #008 entry_ts=1789751962000 entry=0.0281 exit_ts=1789751999000 exit=0.028920033 reason=trail pnl=0.2827 (+2.918%) slip=0.000014 partial=False hold_ms=37000
+  #009 entry_ts=1789752260000 entry=0.0269 exit_ts=1789752299000 exit=0.027198054 reason=trail pnl=0.1076 (+1.108%) slip=0.000014 partial=False hold_ms=39000
+  #010 entry_ts=1789753392000 entry=0.0258 exit_ts=1789753398000 exit=0.025271358 reason=sl pnl=-0.1986 (-2.049%) slip=0.000013 partial=False hold_ms=6000
+  #011 entry_ts=1789916273000 entry=0.0295 exit_ts=1789916412000 exit=0.029544221 reason=be pnl=0.0146 (+0.150%) slip=0.000015 partial=False hold_ms=139000
+  #012 entry_ts=1789916812000 entry=0.0298 exit_ts=1789916868000 exit=0.030934885 reason=trail pnl=0.3691 (+3.808%) slip=0.000015 partial=False hold_ms=56000
+  #013 entry_ts=1789923164000 entry=0.0325 exit_ts=1789923172000 exit=0.031834075 reason=sl pnl=-0.1986 (-2.049%) slip=0.000016 partial=False hold_ms=8000
+  #014 entry_ts=1789923230000 entry=0.034 exit_ts=1789923238000 exit=0.03330334 reason=sl pnl=-0.1990 (-2.049%) slip=0.000017 partial=False hold_ms=8000
+  #015 entry_ts=1789923251000 entry=0.0339 exit_ts=1789923257000 exit=0.033205389 reason=sl pnl=-0.1989 (-2.049%) slip=0.000017 partial=False hold_ms=6000
+  #016 entry_ts=1789923269000 entry=0.032 exit_ts=1789923299000 exit=0.03492247 reason=trail pnl=0.8850 (+9.133%) slip=0.000017 partial=False hold_ms=30000
+  #017 entry_ts=1789923558000 entry=0.034 exit_ts=1789923568000 exit=0.03330334 reason=sl pnl=-0.1990 (-2.049%) slip=0.000017 partial=False hold_ms=10000
+  #018 entry_ts=1789925843000 entry=0.0366 exit_ts=1789925879000 exit=0.037832594 reason=trail pnl=0.3266 (+3.368%) slip=0.000019 partial=False hold_ms=36000
+  #019 entry_ts=1789948915000 entry=0.0383 exit_ts=1789949020000 exit=0.040678071 reason=trail pnl=0.6021 (+6.209%) slip=0.000020 partial=False hold_ms=105000
+  #020 entry_ts=1789949038000 entry=0.0393 exit_ts=1789949059000 exit=0.040102119 reason=trail pnl=0.1978 (+2.041%) slip=0.000020 partial=False hold_ms=21000
+  #021 entry_ts=1790006213000 entry=0.0332 exit_ts=1790006258000 exit=0.036438752 reason=trail pnl=0.9476 (+9.755%) slip=0.000018 partial=False hold_ms=45000
+  #022 entry_ts=1790006274000 entry=0.0352 exit_ts=1790006323000 exit=0.037494663 reason=trail pnl=0.6316 (+6.519%) slip=0.000019 partial=False hold_ms=49000
+  #023 entry_ts=1790006475000 entry=0.038 exit_ts=1790006481000 exit=0.03722138 reason=sl pnl=-0.1988 (-2.049%) slip=0.000019 partial=False hold_ms=6000
+  #024 entry_ts=1790006519000 entry=0.0368 exit_ts=1790006534000 exit=0.036045968 reason=sl pnl=-0.1988 (-2.049%) slip=0.000018 partial=False hold_ms=15000
+  #025 entry_ts=1790014499000 entry=0.0394 exit_ts=1790014524000 exit=0.038592694 reason=sl pnl=-0.1987 (-2.049%) slip=0.000019 partial=False hold_ms=25000
+  #026 entry_ts=1790014585000 entry=0.0372 exit_ts=1790014619000 exit=0.037925648 reason=trail pnl=0.1893 (+1.951%) slip=0.000019 partial=False hold_ms=34000
+  #027 entry_ts=1790014738000 entry=0.0364 exit_ts=1790014787000 exit=0.038550575 reason=trail pnl=0.5735 (+5.908%) slip=0.000019 partial=False hold_ms=49000
+  #028 entry_ts=1790094041000 entry=0.0393 exit_ts=1790094047000 exit=0.038494743 reason=sl pnl=-0.1989 (-2.049%) slip=0.000019 partial=False hold_ms=6000
+  #029 entry_ts=1790094058000 entry=0.0372 exit_ts=1790094113000 exit=0.040296062 reason=trail pnl=0.8084 (+8.323%) slip=0.000020 partial=False hold_ms=55000
+  #030 entry_ts=1790175950000 entry=0.0508 exit_ts=1790176185000 exit=0.050876149 reason=be pnl=0.0145 (+0.150%) slip=0.000025 partial=False hold_ms=235000
+  #031 entry_ts=1790284663000 entry=0.044 exit_ts=1790284668000 exit=0.04309844 reason=sl pnl=-0.1987 (-2.049%) slip=0.000022 partial=False hold_ms=5000
+  #032 entry_ts=1790284722000 entry=0.0457 exit_ts=1790284729000 exit=0.044763607 reason=sl pnl=-0.1989 (-2.049%) slip=0.000022 partial=False hold_ms=7000
+  #033 entry_ts=1790284789000 entry=0.0468 exit_ts=1790284810000 exit=0.047266255 reason=trail pnl=0.0966 (+0.996%) slip=0.000024 partial=False hold_ms=21000
+  #034 entry_ts=1790284826000 entry=0.0457 exit_ts=1790284900000 exit=0.049520108 reason=trail pnl=0.8113 (+8.359%) slip=0.000025 partial=False hold_ms=74000
+  #035 entry_ts=1790284917000 entry=0.0479 exit_ts=1790284959000 exit=0.050591692 reason=trail pnl=0.5455 (+5.619%) slip=0.000025 partial=False hold_ms=42000
+  #036 entry_ts=1790284976000 entry=0.0489 exit_ts=1790285036000 exit=0.051340037 reason=trail pnl=0.4836 (+4.990%) slip=0.000026 partial=False hold_ms=60000
+  #037 entry_ts=1790285216000 entry=0.0526 exit_ts=1790285264000 exit=0.054617478 reason=trail pnl=0.3721 (+3.836%) slip=0.000027 partial=False hold_ms=48000
+  #038 entry_ts=1790285475000 entry=0.0549 exit_ts=1790285480000 exit=0.053775099 reason=sl pnl=-0.1989 (-2.049%) slip=0.000027 partial=False hold_ms=5000
+  #039 entry_ts=1790285575000 entry=0.0524 exit_ts=1790285629000 exit=0.054942675 reason=trail pnl=0.4709 (+4.852%) slip=0.000027 partial=False hold_ms=54000
+  #040 entry_ts=1790285868000 entry=0.0605 exit_ts=1790285878000 exit=0.059260355 reason=sl pnl=-0.1987 (-2.049%) slip=0.000030 partial=False hold_ms=10000
+  #041 entry_ts=1790285896000 entry=0.0603 exit_ts=1790285904000 exit=0.059064453 reason=sl pnl=-0.1986 (-2.049%) slip=0.000030 partial=False hold_ms=8000
+  #042 entry_ts=1790285939000 entry=0.0592 exit_ts=1790285944000 exit=0.057986992 reason=sl pnl=-0.1988 (-2.049%) slip=0.000029 partial=False hold_ms=5000
+  #043 entry_ts=1790285964000 entry=0.0562 exit_ts=1790285999000 exit=0.057555028 reason=trail pnl=0.2340 (+2.411%) slip=0.000029 partial=False hold_ms=35000
+  #044 entry_ts=1790286230000 entry=0.0573 exit_ts=1790286236000 exit=0.056125923 reason=sl pnl=-0.1988 (-2.049%) slip=0.000028 partial=False hold_ms=6000
+  #045 entry_ts=1790286597000 entry=0.0617 exit_ts=1790286626000 exit=0.062132278 reason=trail pnl=0.0680 (+0.701%) slip=0.000031 partial=False hold_ms=29000
+  #046 entry_ts=1790288605000 entry=0.0642 exit_ts=1790288639000 exit=0.065695736 reason=trail pnl=0.2261 (+2.330%) slip=0.000033 partial=False hold_ms=34000
+  #047 entry_ts=1790288813000 entry=0.0673 exit_ts=1790288844000 exit=0.069061332 reason=trail pnl=0.2538 (+2.617%) slip=0.000035 partial=False hold_ms=31000
+  #048 entry_ts=1790291544000 entry=0.069 exit_ts=1790291579000 exit=0.070702011 reason=trail pnl=0.2391 (+2.467%) slip=0.000035 partial=False hold_ms=35000
+  #049 entry_ts=1790294396000 entry=0.0724 exit_ts=1790294446000 exit=0.075374274 reason=trail pnl=0.3985 (+4.108%) slip=0.000038 partial=False hold_ms=50000
+  #050 entry_ts=1790294503000 entry=0.0803 exit_ts=1790294510000 exit=0.078654653 reason=sl pnl=-0.1989 (-2.049%) slip=0.000039 partial=False hold_ms=7000
+  #051 entry_ts=1790294619000 entry=0.0889 exit_ts=1790294624000 exit=0.087078439 reason=sl pnl=-0.1987 (-2.049%) slip=0.000044 partial=False hold_ms=5000
+  #052 entry_ts=1790294633000 entry=0.0839 exit_ts=1790294637000 exit=0.082180889 reason=sl pnl=-0.1987 (-2.049%) slip=0.000041 partial=False hold_ms=4000
+  #053 entry_ts=1790294705000 entry=0.0854 exit_ts=1790294710000 exit=0.083650154 reason=sl pnl=-0.1986 (-2.049%) slip=0.000042 partial=False hold_ms=5000
+  #054 entry_ts=1790294720000 entry=0.0808 exit_ts=1790294725000 exit=0.079144408 reason=sl pnl=-0.1987 (-2.049%) slip=0.000040 partial=False hold_ms=5000
+  #055 entry_ts=1790294759000 entry=0.0808 exit_ts=1790294760000 exit=0.079144408 reason=sl pnl=-0.1989 (-2.049%) slip=0.000040 partial=False hold_ms=1000
+  #056 entry_ts=1790296999000 entry=0.0746 exit_ts=1790297009000 exit=0.073071446 reason=sl pnl=-0.1988 (-2.049%) slip=0.000037 partial=False hold_ms=10000
+  #057 entry_ts=1790297041000 entry=0.0737 exit_ts=1790297047000 exit=0.072189887 reason=sl pnl=-0.1988 (-2.049%) slip=0.000036 partial=False hold_ms=6000
+  #058 entry_ts=1790297057000 entry=0.0696 exit_ts=1790297062000 exit=0.068173896 reason=sl pnl=-0.1989 (-2.049%) slip=0.000034 partial=False hold_ms=5000
+  #059 entry_ts=1790297099000 entry=0.0678 exit_ts=1790297105000 exit=0.066410778 reason=sl pnl=-0.1988 (-2.049%) slip=0.000033 partial=False hold_ms=6000
+  #060 entry_ts=1790297118000 entry=0.0641 exit_ts=1790297124000 exit=0.062786591 reason=sl pnl=-0.1987 (-2.049%) slip=0.000031 partial=False hold_ms=6000
+  #061 entry_ts=1790297162000 entry=0.0629 exit_ts=1790297169000 exit=0.061611179 reason=sl pnl=-0.1989 (-2.049%) slip=0.000031 partial=False hold_ms=7000
+  #062 entry_ts=1790297182000 entry=0.0595 exit_ts=1790297189000 exit=0.058280845 reason=sl pnl=-0.1987 (-2.049%) slip=0.000029 partial=False hold_ms=7000
+  #063 entry_ts=1790297219000 entry=0.0598 exit_ts=1790297256000 exit=0.05988964 reason=be pnl=0.0145 (+0.150%) slip=0.000030 partial=False hold_ms=37000
+  #064 entry_ts=1790297272000 entry=0.058 exit_ts=1790297328000 exit=0.059867651 reason=trail pnl=0.3125 (+3.220%) slip=0.000030 partial=False hold_ms=56000
+  #065 entry_ts=1790297363000 entry=0.057 exit_ts=1790297399000 exit=0.05917024 reason=trail pnl=0.3692 (+3.807%) slip=0.000030 partial=False hold_ms=36000
+  #066 entry_ts=1790297754000 entry=0.0558 exit_ts=1790297794000 exit=0.065574276 reason=trail pnl=1.6994 (+17.517%) slip=0.000033 partial=False hold_ms=40000
+  #067 entry_ts=1790297802000 entry=0.0632 exit_ts=1790297806000 exit=0.061905032 reason=sl pnl=-0.1988 (-2.049%) slip=0.000031 partial=False hold_ms=4000
+  #068 entry_ts=1790297814000 entry=0.0596 exit_ts=1790297818000 exit=0.058378796 reason=sl pnl=-0.1986 (-2.049%) slip=0.000029 partial=False hold_ms=4000
+  #069 entry_ts=1790297895000 entry=0.0633 exit_ts=1790297903000 exit=0.062002983 reason=sl pnl=-0.1989 (-2.049%) slip=0.000031 partial=False hold_ms=8000
+  #070 entry_ts=1790298137000 entry=0.067 exit_ts=1790298145000 exit=0.06562717 reason=sl pnl=-0.1989 (-2.049%) slip=0.000033 partial=False hold_ms=8000
+  #071 entry_ts=1790300143000 entry=0.0732 exit_ts=1790300149000 exit=0.071700132 reason=sl pnl=-0.1988 (-2.049%) slip=0.000036 partial=False hold_ms=6000
+  #072 entry_ts=1790301745000 entry=0.0685 exit_ts=1790301779000 exit=0.070791147 reason=trail pnl=0.3243 (+3.345%) slip=0.000035 partial=False hold_ms=34000
+  #073 entry_ts=1790301794000 entry=0.0662 exit_ts=1790301802000 exit=0.064843562 reason=sl pnl=-0.1989 (-2.049%) slip=0.000032 partial=False hold_ms=8000
+  #074 entry_ts=1790301921000 entry=0.0619 exit_ts=1790301959000 exit=0.062790509 reason=trail pnl=0.1397 (+1.439%) slip=0.000031 partial=False hold_ms=38000
+  #075 entry_ts=1790302215000 entry=0.063 exit_ts=1790302223000 exit=0.06170913 reason=sl pnl=-0.1989 (-2.049%) slip=0.000031 partial=False hold_ms=8000
+  #076 entry_ts=1790302263000 entry=0.0612 exit_ts=1790302272000 exit=0.059946012 reason=sl pnl=-0.1988 (-2.049%) slip=0.000030 partial=False hold_ms=9000
+  #077 entry_ts=1790302289000 entry=0.058 exit_ts=1790302319000 exit=0.06023007 reason=trail pnl=0.3728 (+3.845%) slip=0.000030 partial=False hold_ms=30000
+  #078 entry_ts=1790302858000 entry=0.0581 exit_ts=1790302882000 exit=0.059415118 reason=trail pnl=0.2197 (+2.264%) slip=0.000030 partial=False hold_ms=24000
+  #079 entry_ts=1790303116000 entry=0.0584 exit_ts=1790303122000 exit=0.057203384 reason=sl pnl=-0.1986 (-2.049%) slip=0.000029 partial=False hold_ms=6000
+  #080 entry_ts=1790303422000 entry=0.0545 exit_ts=1790303510000 exit=0.055681225 reason=trail pnl=0.2104 (+2.167%) slip=0.000028 partial=False hold_ms=88000
+  #081 entry_ts=1790303848000 entry=0.0523 exit_ts=1790303879000 exit=0.054675269 reason=trail pnl=0.4409 (+4.542%) slip=0.000027 partial=False hold_ms=31000
+  #082 entry_ts=1790303895000 entry=0.0507 exit_ts=1790303903000 exit=0.049661157 reason=sl pnl=-0.1986 (-2.049%) slip=0.000025 partial=False hold_ms=8000
+  #083 entry_ts=1790304013000 entry=0.048 exit_ts=1790304018000 exit=0.04701648 reason=sl pnl=-0.1988 (-2.049%) slip=0.000024 partial=False hold_ms=5000
+  #084 entry_ts=1790304028000 entry=0.0453 exit_ts=1790304059000 exit=0.049183156 reason=trail pnl=0.8308 (+8.572%) slip=0.000025 partial=False hold_ms=31000
+  #085 entry_ts=1790304116000 entry=0.0444 exit_ts=1790304172000 exit=0.046839189 reason=trail pnl=0.5323 (+5.494%) slip=0.000023 partial=False hold_ms=56000
+  #086 entry_ts=1790304792000 entry=0.0453 exit_ts=1790304806000 exit=0.044371803 reason=sl pnl=-0.1987 (-2.049%) slip=0.000022 partial=False hold_ms=14000
+  #087 entry_ts=1790305518000 entry=0.0404 exit_ts=1790305523000 exit=0.039572204 reason=sl pnl=-0.1986 (-2.049%) slip=0.000020 partial=False hold_ms=5000
+  #088 entry_ts=1790305559000 entry=0.0395 exit_ts=1790305568000 exit=0.038690645 reason=sl pnl=-0.1987 (-2.049%) slip=0.000019 partial=False hold_ms=9000
+  #089 entry_ts=1790305627000 entry=0.0375 exit_ts=1790305639000 exit=0.036731625 reason=sl pnl=-0.1987 (-2.049%) slip=0.000018 partial=False hold_ms=12000
+  #090 entry_ts=1790305700000 entry=0.0356 exit_ts=1790305739000 exit=0.035971525 reason=trail pnl=0.1012 (+1.044%) slip=0.000018 partial=False hold_ms=39000
+  #091 entry_ts=1790305756000 entry=0.0342 exit_ts=1790305765000 exit=0.033499242 reason=sl pnl=-0.1990 (-2.049%) slip=0.000017 partial=False hold_ms=9000
+  #092 entry_ts=1790305886000 entry=0.0338 exit_ts=1790305919000 exit=0.034765748 reason=trail pnl=0.2768 (+2.857%) slip=0.000017 partial=False hold_ms=33000
+  #093 entry_ts=1790305929000 entry=0.0335 exit_ts=1790305934000 exit=0.032813585 reason=sl pnl=-0.1986 (-2.049%) slip=0.000016 partial=False hold_ms=5000
+  #094 entry_ts=1790305944000 entry=0.0316 exit_ts=1790305948000 exit=0.030952516 reason=sl pnl=-0.1986 (-2.049%) slip=0.000015 partial=False hold_ms=4000
+  #095 entry_ts=1790305979000 entry=0.0326 exit_ts=1790305980000 exit=0.031932026 reason=sl pnl=-0.1990 (-2.049%) slip=0.000016 partial=False hold_ms=1000
+  #096 entry_ts=1790306029000 entry=0.0321 exit_ts=1790306032000 exit=0.031442271 reason=sl pnl=-0.1988 (-2.049%) slip=0.000016 partial=False hold_ms=3000
+  #097 entry_ts=1790306082000 entry=0.0337 exit_ts=1790306087000 exit=0.033009487 reason=sl pnl=-0.1987 (-2.049%) slip=0.000017 partial=False hold_ms=5000
+  #098 entry_ts=1790306097000 entry=0.0318 exit_ts=1790306114000 exit=0.034300481 reason=trail pnl=0.7631 (+7.863%) slip=0.000017 partial=False hold_ms=17000
+  #099 entry_ts=1790306286000 entry=0.0345 exit_ts=1790306291000 exit=0.033793095 reason=sl pnl=-0.1989 (-2.049%) slip=0.000017 partial=False hold_ms=5000
+  #100 entry_ts=1790306301000 entry=0.0326 exit_ts=1790306306000 exit=0.031932026 reason=sl pnl=-0.1988 (-2.049%) slip=0.000016 partial=False hold_ms=5000
+  #101 entry_ts=1790306339000 entry=0.0331 exit_ts=1790306342000 exit=0.032421781 reason=sl pnl=-0.1985 (-2.049%) slip=0.000016 partial=False hold_ms=3000
+  #102 entry_ts=1790306361000 entry=0.0314 exit_ts=1790306399000 exit=0.032216084 reason=trail pnl=0.2524 (+2.599%) slip=0.000016 partial=False hold_ms=38000
+  #103 entry_ts=1790306415000 entry=0.0301 exit_ts=1790306423000 exit=0.029483251 reason=sl pnl=-0.1987 (-2.049%) slip=0.000015 partial=False hold_ms=8000
+  #104 entry_ts=1790307201000 entry=0.0308 exit_ts=1790307239000 exit=0.0314648 reason=trail pnl=0.2095 (+2.158%) slip=0.000016 partial=False hold_ms=38000
+  #105 entry_ts=1790307380000 entry=0.0303 exit_ts=1790307423000 exit=0.030594015 reason=trail pnl=0.0942 (+0.970%) slip=0.000015 partial=False hold_ms=43000
+  #106 entry_ts=1790307499000 entry=0.0285 exit_ts=1790307505000 exit=0.027916035 reason=sl pnl=-0.1985 (-2.049%) slip=0.000014 partial=False hold_ms=6000
+  #107 entry_ts=1790307539000 entry=0.0284 exit_ts=1790307545000 exit=0.027818084 reason=sl pnl=-0.1985 (-2.049%) slip=0.000014 partial=False hold_ms=6000
+
+## mode=pessimistic fidelity=1S
+source: source=kline interval=1 bars=44105 fidelity=1S (synthetic ticks from OHLC, not publicTrade)
+trades=106 wins=44 WR=41.5% PF=1.38
+pnl=4.7788$ (4.779% депо) equity=$104.78 kills=0
+maxDD=2.500% / 2.6456$ Sharpe=1.33 Recovery=1.81
+avg_pnl=0.0451$ avg%=0.465 avg_hold=23.2s
+exits: trail=38.7% sl=58.5% be=2.8% end=0.0%
+fill: partial=0.0% post_only_rej=0.0% false_fill=0.0% ttl_cancels=132110 re_places=19471 queue_rej=134 po_rej=0
+slippage: entry=0.000000 exit=0.000048
+
+### сделки
+  #001 entry_ts=1788991700000 entry=0.0139 exit_ts=1788991706000 exit=0.013608378 reason=sl pnl=-0.2037 (-2.098%) slip=0.000014 partial=False hold_ms=6000
+  #002 entry_ts=1788991782000 entry=0.0136 exit_ts=1788991786000 exit=0.013314672 reason=sl pnl=-0.2040 (-2.098%) slip=0.000013 partial=False hold_ms=4000
+  #003 entry_ts=1789465164000 entry=0.0197 exit_ts=1789465199000 exit=0.020177602 reason=trail pnl=0.2352 (+2.424%) slip=0.000020 partial=False hold_ms=35000
+  #004 entry_ts=1789467920000 entry=0.0203 exit_ts=1789467928000 exit=0.019874106 reason=sl pnl=-0.2035 (-2.098%) slip=0.000020 partial=False hold_ms=8000
+  #005 entry_ts=1789523124000 entry=0.0219 exit_ts=1789523159000 exit=0.022764173 reason=trail pnl=0.3829 (+3.946%) slip=0.000023 partial=False hold_ms=35000
+  #006 entry_ts=1789568417000 entry=0.0201 exit_ts=1789568423000 exit=0.019678302 reason=sl pnl=-0.2031 (-2.098%) slip=0.000020 partial=False hold_ms=6000
+  #007 entry_ts=1789751959000 entry=0.0283 exit_ts=1789751967000 exit=0.027706266 reason=sl pnl=-0.2038 (-2.098%) slip=0.000028 partial=False hold_ms=8000
+  #008 entry_ts=1789753400000 entry=0.0252 exit_ts=1789753406000 exit=0.024671304 reason=sl pnl=-0.2033 (-2.098%) slip=0.000025 partial=False hold_ms=6000
+  #009 entry_ts=1789753439000 entry=0.0251 exit_ts=1789753474000 exit=0.02512505 reason=be pnl=0.0097 (+0.100%) slip=0.000025 partial=False hold_ms=35000
+  #010 entry_ts=1789916269000 entry=0.0298 exit_ts=1789916276000 exit=0.029174796 reason=sl pnl=-0.2038 (-2.098%) slip=0.000029 partial=False hold_ms=7000
+  #011 entry_ts=1789916815000 entry=0.0296 exit_ts=1789916868000 exit=0.03091941 reason=trail pnl=0.4323 (+4.457%) slip=0.000031 partial=False hold_ms=53000
+  #012 entry_ts=1789923164000 entry=0.0325 exit_ts=1789923172000 exit=0.03181815 reason=sl pnl=-0.2034 (-2.098%) slip=0.000032 partial=False hold_ms=8000
+  #013 entry_ts=1789923230000 entry=0.034 exit_ts=1789923238000 exit=0.03328668 reason=sl pnl=-0.2038 (-2.098%) slip=0.000033 partial=False hold_ms=8000
+  #014 entry_ts=1789923251000 entry=0.0339 exit_ts=1789923257000 exit=0.033188778 reason=sl pnl=-0.2036 (-2.098%) slip=0.000033 partial=False hold_ms=6000
+  #015 entry_ts=1789923269000 entry=0.032 exit_ts=1789923299000 exit=0.034905 reason=trail pnl=0.8797 (+9.078%) slip=0.000035 partial=False hold_ms=30000
+  #016 entry_ts=1789923558000 entry=0.034 exit_ts=1789923568000 exit=0.03328668 reason=sl pnl=-0.2037 (-2.098%) slip=0.000033 partial=False hold_ms=10000
+  #017 entry_ts=1789925843000 entry=0.0366 exit_ts=1789925879000 exit=0.037813668 reason=trail pnl=0.3216 (+3.316%) slip=0.000038 partial=False hold_ms=36000
+  #018 entry_ts=1789948915000 entry=0.0383 exit_ts=1789949020000 exit=0.040657722 reason=trail pnl=0.5970 (+6.156%) slip=0.000041 partial=False hold_ms=105000
+  #019 entry_ts=1789949038000 entry=0.0393 exit_ts=1789949059000 exit=0.040082058 reason=trail pnl=0.1928 (+1.990%) slip=0.000040 partial=False hold_ms=21000
+  #020 entry_ts=1790006213000 entry=0.0332 exit_ts=1790006258000 exit=0.036420523 reason=trail pnl=0.9422 (+9.700%) slip=0.000036 partial=False hold_ms=45000
+  #021 entry_ts=1790006274000 entry=0.0352 exit_ts=1790006323000 exit=0.037475907 reason=trail pnl=0.6264 (+6.466%) slip=0.000038 partial=False hold_ms=49000
+  #022 entry_ts=1790006475000 entry=0.038 exit_ts=1790006481000 exit=0.03720276 reason=sl pnl=-0.2036 (-2.098%) slip=0.000037 partial=False hold_ms=6000
+  #023 entry_ts=1790006519000 entry=0.0368 exit_ts=1790006534000 exit=0.036027936 reason=sl pnl=-0.2036 (-2.098%) slip=0.000036 partial=False hold_ms=15000
+  #024 entry_ts=1790014499000 entry=0.0394 exit_ts=1790014524000 exit=0.038573388 reason=sl pnl=-0.2034 (-2.098%) slip=0.000039 partial=False hold_ms=25000
+  #025 entry_ts=1790014585000 entry=0.0372 exit_ts=1790014619000 exit=0.037906675 reason=trail pnl=0.1844 (+1.900%) slip=0.000038 partial=False hold_ms=34000
+  #026 entry_ts=1790014738000 entry=0.0364 exit_ts=1790014787000 exit=0.03853129 reason=trail pnl=0.5684 (+5.855%) slip=0.000039 partial=False hold_ms=49000
+  #027 entry_ts=1790094041000 entry=0.0393 exit_ts=1790094047000 exit=0.038475486 reason=sl pnl=-0.2036 (-2.098%) slip=0.000039 partial=False hold_ms=6000
+  #028 entry_ts=1790094058000 entry=0.0372 exit_ts=1790094113000 exit=0.040275904 reason=trail pnl=0.8031 (+8.269%) slip=0.000040 partial=False hold_ms=55000
+  #029 entry_ts=1790175950000 entry=0.0508 exit_ts=1790176185000 exit=0.050850698 reason=be pnl=0.0097 (+0.100%) slip=0.000051 partial=False hold_ms=235000
+  #030 entry_ts=1790284663000 entry=0.044 exit_ts=1790284668000 exit=0.04307688 reason=sl pnl=-0.2034 (-2.098%) slip=0.000043 partial=False hold_ms=5000
+  #031 entry_ts=1790284722000 entry=0.0457 exit_ts=1790284729000 exit=0.044741214 reason=sl pnl=-0.2037 (-2.098%) slip=0.000045 partial=False hold_ms=7000
+  #032 entry_ts=1790284789000 entry=0.0468 exit_ts=1790284810000 exit=0.04724261 reason=trail pnl=0.0917 (+0.946%) slip=0.000047 partial=False hold_ms=21000
+  #033 entry_ts=1790284826000 entry=0.0457 exit_ts=1790284900000 exit=0.049495335 reason=trail pnl=0.8060 (+8.305%) slip=0.000050 partial=False hold_ms=74000
+  #034 entry_ts=1790284917000 entry=0.0479 exit_ts=1790284959000 exit=0.050566383 reason=trail pnl=0.5403 (+5.567%) slip=0.000051 partial=False hold_ms=42000
+  #035 entry_ts=1790284976000 entry=0.0489 exit_ts=1790285036000 exit=0.051314354 reason=trail pnl=0.4785 (+4.937%) slip=0.000051 partial=False hold_ms=60000
+  #036 entry_ts=1790285216000 entry=0.0526 exit_ts=1790285264000 exit=0.054590155 reason=trail pnl=0.3670 (+3.784%) slip=0.000055 partial=False hold_ms=48000
+  #037 entry_ts=1790285475000 entry=0.0549 exit_ts=1790285480000 exit=0.053748198 reason=sl pnl=-0.2036 (-2.098%) slip=0.000054 partial=False hold_ms=5000
+  #038 entry_ts=1790285575000 entry=0.0524 exit_ts=1790285629000 exit=0.05491519 reason=trail pnl=0.4658 (+4.800%) slip=0.000055 partial=False hold_ms=54000
+  #039 entry_ts=1790285868000 entry=0.0605 exit_ts=1790285878000 exit=0.05923071 reason=sl pnl=-0.2035 (-2.098%) slip=0.000059 partial=False hold_ms=10000
+  #040 entry_ts=1790285896000 entry=0.0603 exit_ts=1790285904000 exit=0.059034906 reason=sl pnl=-0.2034 (-2.098%) slip=0.000059 partial=False hold_ms=8000
+  #041 entry_ts=1790285939000 entry=0.0592 exit_ts=1790285944000 exit=0.057957984 reason=sl pnl=-0.2036 (-2.098%) slip=0.000058 partial=False hold_ms=5000
+  #042 entry_ts=1790285964000 entry=0.0562 exit_ts=1790285999000 exit=0.057526236 reason=trail pnl=0.2291 (+2.360%) slip=0.000058 partial=False hold_ms=35000
+  #043 entry_ts=1790286230000 entry=0.0573 exit_ts=1790286236000 exit=0.056097846 reason=sl pnl=-0.2035 (-2.098%) slip=0.000056 partial=False hold_ms=6000
+  #044 entry_ts=1790286597000 entry=0.0617 exit_ts=1790286626000 exit=0.062101197 reason=trail pnl=0.0631 (+0.650%) slip=0.000062 partial=False hold_ms=29000
+  #045 entry_ts=1790288605000 entry=0.0642 exit_ts=1790288639000 exit=0.065662871 reason=trail pnl=0.2211 (+2.279%) slip=0.000066 partial=False hold_ms=34000
+  #046 entry_ts=1790288813000 entry=0.0673 exit_ts=1790288844000 exit=0.069026784 reason=trail pnl=0.2489 (+2.566%) slip=0.000069 partial=False hold_ms=31000
+  #047 entry_ts=1790291544000 entry=0.069 exit_ts=1790291579000 exit=0.070666643 reason=trail pnl=0.2341 (+2.415%) slip=0.000071 partial=False hold_ms=35000
+  #048 entry_ts=1790294396000 entry=0.0724 exit_ts=1790294446000 exit=0.075336568 reason=trail pnl=0.3935 (+4.056%) slip=0.000075 partial=False hold_ms=50000
+  #049 entry_ts=1790294503000 entry=0.0803 exit_ts=1790294510000 exit=0.078615306 reason=sl pnl=-0.2036 (-2.098%) slip=0.000079 partial=False hold_ms=7000
+  #050 entry_ts=1790294619000 entry=0.0889 exit_ts=1790294624000 exit=0.087034878 reason=sl pnl=-0.2035 (-2.098%) slip=0.000087 partial=False hold_ms=5000
+  #051 entry_ts=1790294633000 entry=0.0839 exit_ts=1790294637000 exit=0.082139778 reason=sl pnl=-0.2034 (-2.098%) slip=0.000082 partial=False hold_ms=4000
+  #052 entry_ts=1790294705000 entry=0.0854 exit_ts=1790294710000 exit=0.083608308 reason=sl pnl=-0.2034 (-2.098%) slip=0.000084 partial=False hold_ms=5000
+  #053 entry_ts=1790294720000 entry=0.0808 exit_ts=1790294725000 exit=0.079104816 reason=sl pnl=-0.2034 (-2.098%) slip=0.000079 partial=False hold_ms=5000
+  #054 entry_ts=1790294759000 entry=0.0808 exit_ts=1790294760000 exit=0.079104816 reason=sl pnl=-0.2036 (-2.098%) slip=0.000079 partial=False hold_ms=1000
+  #055 entry_ts=1790296999000 entry=0.0746 exit_ts=1790297009000 exit=0.073034892 reason=sl pnl=-0.2035 (-2.098%) slip=0.000073 partial=False hold_ms=10000
+  #056 entry_ts=1790297041000 entry=0.0737 exit_ts=1790297047000 exit=0.072153774 reason=sl pnl=-0.2035 (-2.098%) slip=0.000072 partial=False hold_ms=6000
+  #057 entry_ts=1790297057000 entry=0.0696 exit_ts=1790297062000 exit=0.068139792 reason=sl pnl=-0.2036 (-2.098%) slip=0.000068 partial=False hold_ms=5000
+  #058 entry_ts=1790297099000 entry=0.0678 exit_ts=1790297105000 exit=0.066377556 reason=sl pnl=-0.2035 (-2.098%) slip=0.000066 partial=False hold_ms=6000
+  #059 entry_ts=1790297118000 entry=0.0641 exit_ts=1790297124000 exit=0.062755182 reason=sl pnl=-0.2034 (-2.098%) slip=0.000063 partial=False hold_ms=6000
+  #060 entry_ts=1790297162000 entry=0.0629 exit_ts=1790297169000 exit=0.061580358 reason=sl pnl=-0.2036 (-2.098%) slip=0.000062 partial=False hold_ms=7000
+  #061 entry_ts=1790297182000 entry=0.0595 exit_ts=1790297189000 exit=0.05825169 reason=sl pnl=-0.2034 (-2.098%) slip=0.000058 partial=False hold_ms=7000
+  #062 entry_ts=1790297219000 entry=0.0598 exit_ts=1790297256000 exit=0.05985968 reason=be pnl=0.0097 (+0.100%) slip=0.000060 partial=False hold_ms=37000
+  #063 entry_ts=1790297272000 entry=0.058 exit_ts=1790297328000 exit=0.059837702 reason=trail pnl=0.3075 (+3.168%) slip=0.000060 partial=False hold_ms=56000
+  #064 entry_ts=1790297363000 entry=0.057 exit_ts=1790297399000 exit=0.05914064 reason=trail pnl=0.3642 (+3.756%) slip=0.000059 partial=False hold_ms=36000
+  #065 entry_ts=1790297754000 entry=0.0558 exit_ts=1790297794000 exit=0.065541473 reason=trail pnl=1.6937 (+17.458%) slip=0.000066 partial=False hold_ms=40000
+  #066 entry_ts=1790297802000 entry=0.0632 exit_ts=1790297806000 exit=0.061874064 reason=sl pnl=-0.2036 (-2.098%) slip=0.000062 partial=False hold_ms=4000
+  #067 entry_ts=1790297814000 entry=0.0596 exit_ts=1790297818000 exit=0.058349592 reason=sl pnl=-0.2034 (-2.098%) slip=0.000058 partial=False hold_ms=4000
+  #068 entry_ts=1790297895000 entry=0.0633 exit_ts=1790297903000 exit=0.061971966 reason=sl pnl=-0.2036 (-2.098%) slip=0.000062 partial=False hold_ms=8000
+  #069 entry_ts=1790298137000 entry=0.067 exit_ts=1790298145000 exit=0.06559434 reason=sl pnl=-0.2037 (-2.098%) slip=0.000066 partial=False hold_ms=8000
+  #070 entry_ts=1790300143000 entry=0.0732 exit_ts=1790300149000 exit=0.071664264 reason=sl pnl=-0.2035 (-2.098%) slip=0.000072 partial=False hold_ms=6000
+  #071 entry_ts=1790301745000 entry=0.0685 exit_ts=1790301779000 exit=0.070755733 reason=trail pnl=0.3193 (+3.293%) slip=0.000071 partial=False hold_ms=34000
+  #072 entry_ts=1790301794000 entry=0.0662 exit_ts=1790301802000 exit=0.064811124 reason=sl pnl=-0.2037 (-2.098%) slip=0.000065 partial=False hold_ms=8000
+  #073 entry_ts=1790301921000 entry=0.0619 exit_ts=1790301959000 exit=0.062759098 reason=trail pnl=0.1347 (+1.388%) slip=0.000063 partial=False hold_ms=38000
+  #074 entry_ts=1790302215000 entry=0.063 exit_ts=1790302223000 exit=0.06167826 reason=sl pnl=-0.2036 (-2.098%) slip=0.000062 partial=False hold_ms=8000
+  #075 entry_ts=1790302263000 entry=0.0612 exit_ts=1790302272000 exit=0.059916024 reason=sl pnl=-0.2035 (-2.098%) slip=0.000060 partial=False hold_ms=9000
+  #076 entry_ts=1790302289000 entry=0.058 exit_ts=1790302319000 exit=0.06019994 reason=trail pnl=0.3678 (+3.793%) slip=0.000060 partial=False hold_ms=30000
+  #077 entry_ts=1790302858000 entry=0.0581 exit_ts=1790302882000 exit=0.059385395 reason=trail pnl=0.2147 (+2.212%) slip=0.000059 partial=False hold_ms=24000
+  #078 entry_ts=1790303116000 entry=0.0584 exit_ts=1790303122000 exit=0.057174768 reason=sl pnl=-0.2033 (-2.098%) slip=0.000057 partial=False hold_ms=6000
+  #079 entry_ts=1790303422000 entry=0.0545 exit_ts=1790303510000 exit=0.055653371 reason=trail pnl=0.2054 (+2.116%) slip=0.000056 partial=False hold_ms=88000
+  #080 entry_ts=1790303848000 entry=0.0523 exit_ts=1790303879000 exit=0.054647917 reason=trail pnl=0.4359 (+4.489%) slip=0.000055 partial=False hold_ms=31000
+  #081 entry_ts=1790303895000 entry=0.0507 exit_ts=1790303903000 exit=0.049636314 reason=sl pnl=-0.2033 (-2.098%) slip=0.000050 partial=False hold_ms=8000
+  #082 entry_ts=1790304013000 entry=0.048 exit_ts=1790304018000 exit=0.04699296 reason=sl pnl=-0.2035 (-2.098%) slip=0.000047 partial=False hold_ms=5000
+  #083 entry_ts=1790304028000 entry=0.0453 exit_ts=1790304059000 exit=0.049158552 reason=trail pnl=0.8256 (+8.518%) slip=0.000049 partial=False hold_ms=31000
+  #084 entry_ts=1790304116000 entry=0.0444 exit_ts=1790304172000 exit=0.046815757 reason=trail pnl=0.5272 (+5.441%) slip=0.000047 partial=False hold_ms=56000
+  #085 entry_ts=1790304792000 entry=0.0453 exit_ts=1790304806000 exit=0.044349606 reason=sl pnl=-0.2035 (-2.098%) slip=0.000044 partial=False hold_ms=14000
+  #086 entry_ts=1790305518000 entry=0.0404 exit_ts=1790305523000 exit=0.039552408 reason=sl pnl=-0.2033 (-2.098%) slip=0.000040 partial=False hold_ms=5000
+  #087 entry_ts=1790305559000 entry=0.0395 exit_ts=1790305568000 exit=0.03867129 reason=sl pnl=-0.2034 (-2.098%) slip=0.000039 partial=False hold_ms=9000
+  #088 entry_ts=1790305627000 entry=0.0375 exit_ts=1790305639000 exit=0.03671325 reason=sl pnl=-0.2035 (-2.098%) slip=0.000037 partial=False hold_ms=12000
+  #089 entry_ts=1790305700000 entry=0.0356 exit_ts=1790305739000 exit=0.03595353 reason=trail pnl=0.0963 (+0.993%) slip=0.000036 partial=False hold_ms=39000
+  #090 entry_ts=1790305756000 entry=0.0342 exit_ts=1790305765000 exit=0.033482484 reason=sl pnl=-0.2037 (-2.098%) slip=0.000034 partial=False hold_ms=9000
+  #091 entry_ts=1790305886000 entry=0.0338 exit_ts=1790305919000 exit=0.034748357 reason=trail pnl=0.2718 (+2.806%) slip=0.000035 partial=False hold_ms=33000
+  #092 entry_ts=1790305929000 entry=0.0335 exit_ts=1790305934000 exit=0.03279717 reason=sl pnl=-0.2033 (-2.098%) slip=0.000033 partial=False hold_ms=5000
+  #093 entry_ts=1790305944000 entry=0.0316 exit_ts=1790305948000 exit=0.030937032 reason=sl pnl=-0.2034 (-2.098%) slip=0.000031 partial=False hold_ms=4000
+  #094 entry_ts=1790305979000 entry=0.0326 exit_ts=1790305980000 exit=0.031916052 reason=sl pnl=-0.2038 (-2.098%) slip=0.000032 partial=False hold_ms=1000
+  #095 entry_ts=1790306029000 entry=0.0321 exit_ts=1790306032000 exit=0.031426542 reason=sl pnl=-0.2036 (-2.098%) slip=0.000031 partial=False hold_ms=3000
+  #096 entry_ts=1790306082000 entry=0.0337 exit_ts=1790306087000 exit=0.032992974 reason=sl pnl=-0.2034 (-2.098%) slip=0.000033 partial=False hold_ms=5000
+  #097 entry_ts=1790306096000 entry=0.0318 exit_ts=1790306114000 exit=0.034283322 reason=trail pnl=0.7579 (+7.809%) slip=0.000034 partial=False hold_ms=18000
+  #098 entry_ts=1790306286000 entry=0.0345 exit_ts=1790306291000 exit=0.03377619 reason=sl pnl=-0.2036 (-2.098%) slip=0.000034 partial=False hold_ms=5000
+  #099 entry_ts=1790306301000 entry=0.0326 exit_ts=1790306306000 exit=0.031916052 reason=sl pnl=-0.2036 (-2.098%) slip=0.000032 partial=False hold_ms=5000
+  #100 entry_ts=1790306339000 entry=0.0331 exit_ts=1790306342000 exit=0.032405562 reason=sl pnl=-0.2033 (-2.098%) slip=0.000032 partial=False hold_ms=3000
+  #101 entry_ts=1790306361000 entry=0.0314 exit_ts=1790306399000 exit=0.032199968 reason=trail pnl=0.2475 (+2.548%) slip=0.000032 partial=False hold_ms=38000
+  #102 entry_ts=1790306415000 entry=0.0301 exit_ts=1790306423000 exit=0.029468502 reason=sl pnl=-0.2035 (-2.098%) slip=0.000029 partial=False hold_ms=8000
+  #103 entry_ts=1790307202000 entry=0.0308 exit_ts=1790307239000 exit=0.031449059 reason=trail pnl=0.2046 (+2.107%) slip=0.000031 partial=False hold_ms=37000
+  #104 entry_ts=1790307380000 entry=0.0303 exit_ts=1790307423000 exit=0.030578711 reason=trail pnl=0.0893 (+0.920%) slip=0.000031 partial=False hold_ms=43000
+  #105 entry_ts=1790307499000 entry=0.0285 exit_ts=1790307505000 exit=0.02790207 reason=sl pnl=-0.2033 (-2.098%) slip=0.000028 partial=False hold_ms=6000
+  #106 entry_ts=1790307539000 entry=0.0284 exit_ts=1790307545000 exit=0.027804168 reason=sl pnl=-0.2033 (-2.098%) slip=0.000028 partial=False hold_ms=6000
+

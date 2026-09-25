@@ -21,7 +21,7 @@ def trade_lines(res: BacktestResult) -> list[str]:
     lines = []
     for i, t in enumerate(res.trades, 1):
         lines.append(
-            f"  #{i:03d} entry_ts={t.entry_ts} entry={t.entry_price:.8g} "
+            f"  #{i:03d} {t.side} entry_ts={t.entry_ts} entry={t.entry_price:.8g} "
             f"exit_ts={t.exit_ts} exit={t.exit_price:.8g} "
             f"reason={t.reason} pnl={t.pnl:.4f} ({t.pnl_pct:+.3f}%) "
             f"slip={t.slippage:.6f} partial={t.was_partial} "
@@ -34,9 +34,12 @@ def comparison_table(results: dict[str, BacktestResult]) -> str:
     """Таблица сравнения режимов (markdown)."""
     header = (
         "| mode | trades | WR | PF | maxDD% | avg$ | sum$ | equity$ | "
-        "Sharpe | RF | trail% | sl% | partial% | PO_rej% | fidelity |"
+        "Sharpe | RF | tp% | trail% | sl% | partial% | PO_rej% | fidelity |"
     )
-    sep = "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
+    sep = (
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        "---:|---:|---|"
+    )
     rows = [header, sep]
     for name, res in results.items():
         m = res.metrics
@@ -45,6 +48,7 @@ def comparison_table(results: dict[str, BacktestResult]) -> str:
             f"| {_num(m.max_dd_pct)} | {_num(m.avg_pnl_usd, 3)} "
             f"| {_num(m.sum_pnl_usd, 3)} | {_num(m.final_equity)} "
             f"| {_num(m.sharpe)} | {_num(m.recovery_factor)} "
+            f"| {_pct(m.exit_tp_pct)} "
             f"| {_pct(m.exit_trail_pct)} | {_pct(m.exit_sl_pct)} "
             f"| {_pct(m.partial_fill_pct)} | {_pct(m.post_only_reject_pct)} "
             f"| {res.fidelity} |",
@@ -91,8 +95,9 @@ def build_report(
             f"avg_hold={m.avg_hold_ms / 1000:.1f}s",
         )
         lines.append(
-            f"exits: trail={_pct(m.exit_trail_pct)} sl={_pct(m.exit_sl_pct)} "
-            f"be={_pct(m.exit_be_pct)} end={_pct(m.exit_end_pct)}",
+            f"exits: tp={_pct(m.exit_tp_pct)} trail={_pct(m.exit_trail_pct)} "
+            f"sl={_pct(m.exit_sl_pct)} be={_pct(m.exit_be_pct)} "
+            f"end={_pct(m.exit_end_pct)}",
         )
         lines.append(
             f"fill: partial={_pct(m.partial_fill_pct)} "
