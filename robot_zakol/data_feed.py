@@ -1,4 +1,9 @@
-"""WS-потоки: публичный ticker + приватные order/execution → asyncio.Queue."""
+"""WS-потоки: публичный ticker + приватные order/execution/wallet/position.
+
+События складываются в asyncio.Queue главного цикла. После обрыва и
+успешного переподключения поднимается флаг `resync_needed` — OrderCycle
+в этом случае сверяет состояние с биржей через REST.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +11,7 @@ import asyncio
 import logging
 import threading
 import time
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from pybit.unified_trading import WebSocket
@@ -24,16 +30,23 @@ class DataFeed:
         config: Config,
         loop: asyncio.AbstractEventLoop,
         symbol: str,
+        on_alert: Callable[[str], Coroutine[Any, Any, None]] | None = None,
     ) -> None:
         self._config = config
         self._loop = loop
         self._symbol = symbol
+        self._on_alert = on_alert
         self.prices: asyncio.Queue[float] = asyncio.Queue()
         self.order_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.exec_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self.wallet_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self.position_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self.last_price: float = 0.0
+        self.last_balance: float = 0.0
+        # меняется только в потоке event loop (см. _mark_resync)
+        self.resync_needed: bool = False
 
     def start(self) -> None:
         self._stop.clear()
@@ -58,6 +71,33 @@ class DataFeed:
     def _push(self, queue: asyncio.Queue[Any], item: Any) -> None:
         self._loop.call_soon_threadsafe(queue.put_nowait, item)
 
+    def _mark_resync(self) -> None:
+        """Только в потоке event loop."""
+        if not self.resync_needed:
+            self.resync_needed = True
+            logger.warning("WS переподключён — нужен REST-ресинк")
+
+    def _request_resync(self) -> None:
+        """Попасть в поток event loop из WS-потока."""
+        try:
+            self._loop.call_soon_threadsafe(self._mark_resync)
+        except RuntimeError:
+            logger.debug("loop закрыт — ресинк пропущен")
+
+    def _alert(self, text: str) -> None:
+        """Критическое сообщение: лог + фоновый вызов on_alert."""
+        logger.error(text)
+        if self._on_alert is None:
+            return
+        try:
+            self._loop.call_soon_threadsafe(self._spawn_alert, text)
+        except RuntimeError:
+            logger.debug("loop закрыт — алерт пропущен: %s", text)
+
+    def _spawn_alert(self, text: str) -> None:
+        if self._on_alert is not None:
+            self._loop.create_task(self._on_alert(text))
+
     def _on_ticker(self, message: dict[str, Any]) -> None:
         data = message.get("data", {})
         if data.get("symbol") != self._symbol:
@@ -75,16 +115,41 @@ class DataFeed:
     def _on_execution(self, message: dict[str, Any]) -> None:
         self._push(self.exec_events, message)
 
+    def _on_position(self, message: dict[str, Any]) -> None:
+        self._push(self.position_events, message)
+
+    def _on_wallet(self, message: dict[str, Any]) -> None:
+        self._update_balance(message)
+        self._push(self.wallet_events, message)
+
+    def _update_balance(self, message: dict[str, Any]) -> None:
+        data = message.get("data", {})
+        rows = data if isinstance(data, list) else [data]
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            equity = row.get("totalEquity")
+            if equity in (None, ""):
+                continue
+            try:
+                self.last_balance = float(equity)
+            except (TypeError, ValueError):
+                continue
+            return
+
     def _public_worker(self) -> None:
         attempt = 0
         while not self._stop.is_set():
             ws: WebSocket | None = None
             try:
+                reconnected = attempt > 0
                 ws = WebSocket(
                     testnet=self._config.testnet, channel_type=self._config.category
                 )
                 ws.ticker_stream(self._symbol, self._on_ticker)
                 attempt = 0
+                if reconnected:
+                    self._request_resync()
                 while not self._stop.is_set():
                     if not ws.is_connected():
                         raise ConnectionError("public ws down")
@@ -105,12 +170,16 @@ class DataFeed:
 
     def _private_worker(self) -> None:
         if not self._config.api_key or not self._config.api_secret:
-            logger.warning("private WS пропущен: нет API-ключей")
+            self._alert(
+                "zakol: приватный WS отключён — нет API-ключей, "
+                "филлы приходить не будут",
+            )
             return
         attempt = 0
         while not self._stop.is_set():
             ws: WebSocket | None = None
             try:
+                reconnected = attempt > 0
                 ws = WebSocket(
                     testnet=self._config.testnet,
                     channel_type="private",
@@ -119,7 +188,11 @@ class DataFeed:
                 )
                 ws.order_stream(self._on_order)
                 ws.execution_stream(self._on_execution)
+                ws.wallet_stream(self._on_wallet)
+                ws.position_stream(self._on_position)
                 attempt = 0
+                if reconnected:
+                    self._request_resync()
                 while not self._stop.is_set():
                     if not ws.is_connected():
                         raise ConnectionError("private ws down")

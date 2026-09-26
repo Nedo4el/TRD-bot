@@ -5,16 +5,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from typing import Any
 
 from core.bybit_client import BybitClient
 from core.config import Config
 from core.logger import setup_logging
+from core.notifier import Notifier
 from robot_zakol.config import ZakolConfig, load_config
 from robot_zakol.data_feed import DataFeed
 from robot_zakol.order_cycle import OrderCycle
 from robot_zakol.state import StateStore
 
 logger = logging.getLogger(__name__)
+
+# сколько секунд ждать корректной остановки цикла после сигнала
+SHUTDOWN_TIMEOUT = 10.0
 
 
 def _core_config(zakol: ZakolConfig) -> Config:
@@ -37,48 +42,84 @@ def _core_config(zakol: ZakolConfig) -> Config:
     )
 
 
+async def _drain(task: asyncio.Task[Any]) -> None:
+    """Дождаться цикла после остановки, не скрывая его ошибки."""
+    try:
+        await asyncio.wait_for(task, SHUTDOWN_TIMEOUT)
+    except TimeoutError:
+        logger.warning("цикл не остановился за %.0fс — отмена", SHUTDOWN_TIMEOUT)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("цикл завершился с ошибкой: %s", exc)
+
+
 async def _amain() -> None:
     zakol = load_config()
     setup_logging(zakol.log_file, zakol.log_level)
     zakol.validate_for_live()
     cfg = _core_config(zakol)
     client = BybitClient(cfg)
-    filters = await client.get_instrument_filters(cfg.symbol)
     loop = asyncio.get_running_loop()
-    feed = DataFeed(cfg, loop, cfg.symbol)
+    notifier = Notifier(cfg)
+    feed = DataFeed(cfg, loop, cfg.symbol, notifier.notify)
     store = StateStore(cfg.state_path)
-    cycle = OrderCycle(
-        cfg=zakol,
-        client=client,
-        feed=feed,
-        store=store,
-        tick_size=filters.tick_size,
-    )
     stop_event = asyncio.Event()
+    cycle: OrderCycle | None = None
+    runner: asyncio.Task[Any] | None = None
+    stopper: asyncio.Task[Any] | None = None
 
-    def _signal_handler() -> None:
-        logger.info("signal: graceful shutdown")
-        stop_event.set()
+    try:
+        filters = await client.get_instrument_filters(cfg.symbol)
+        cycle = OrderCycle(
+            cfg=zakol,
+            client=client,
+            feed=feed,
+            store=store,
+            tick_size=filters.tick_size,
+            qty_step=filters.qty_step,
+            notifier=notifier,
+        )
+
+        def _signal_handler() -> None:
+            logger.info("signal: graceful shutdown")
+            stop_event.set()
+            cycle.request_stop()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _signal_handler)
+            except (NotImplementedError, RuntimeError):
+                signal.signal(sig, lambda *_: _signal_handler())
+
+        await cycle.recover()
+        if zakol.ws_enabled:
+            feed.start()
+        logger.info(
+            "robot_zakol started symbol=%s testnet=%s",
+            cfg.symbol,
+            cfg.testnet,
+        )
+        runner = asyncio.create_task(cycle.run())
+        stopper = asyncio.create_task(stop_event.wait())
+        await asyncio.wait({runner, stopper}, return_when=asyncio.FIRST_COMPLETED)
+        # сначала цикл должен корректно завершиться (finally → _on_shutdown),
+        # и только потом закрываем фид/клиент/стейт
         cycle.request_stop()
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, _signal_handler)
-        except (NotImplementedError, RuntimeError):
-            signal.signal(sig, lambda *_: _signal_handler())
-
-    await cycle.recover()
-    if zakol.ws_enabled:
-        feed.start()
-    logger.info("robot_zakol started symbol=%s testnet=%s", cfg.symbol, cfg.testnet)
-    runner = asyncio.create_task(cycle.run())
-    stopper = asyncio.create_task(stop_event.wait())
-    await asyncio.wait({runner, stopper}, return_when=asyncio.FIRST_COMPLETED)
-    cycle.request_stop()
-    feed.stop()
-    client.close()
-    await store.save()
-    logger.info("robot_zakol stopped")
+        if stopper is not None:
+            stopper.cancel()
+        await _drain(runner)
+    finally:
+        if cycle is not None:
+            cycle.request_stop()
+        if stopper is not None and not stopper.done():
+            stopper.cancel()
+        if runner is not None and not runner.done():
+            await _drain(runner)
+        feed.stop()
+        client.close()
+        await store.save()
+        logger.info("robot_zakol stopped")
 
 
 def main() -> None:

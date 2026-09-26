@@ -331,6 +331,23 @@ class BybitClient:
         rows = resp["result"].get("list", [])
         return rows[0] if rows else None
 
+    async def get_last_closed_pnl(self, symbol: str) -> float | None:
+        """PnL последней закрытой сделки символа (None — данных нет).
+
+        Нужен, когда позицию закрыла биржа (SL/TP): текущая цена уже другая,
+        а фактический результат берётся из истории закрытий.
+        """
+        resp = await self._call(
+            "get_closed_pnl",
+            category=self.config.category,
+            symbol=symbol,
+            limit=1,
+        )
+        rows = resp["result"].get("list", [])
+        if not rows:
+            return None
+        return float(rows[0].get("closedPnl") or 0.0)
+
     async def get_orderbook(self, symbol: str, limit: int = 50) -> dict[str, Any]:
         """Стакан уровня symbol: {"b": [[price, qty], ...], "a": [...]}."""
         resp = await self._call(

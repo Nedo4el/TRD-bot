@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from core.config import Config
 from robot_zakol.backtest.backtest import run_single
 from robot_zakol.backtest.config import FillConfig, StrategyConfig, mode_presets
 from robot_zakol.backtest.data_loader import Candle, Series, Tick, candles_to_ticks
@@ -40,6 +44,7 @@ from robot_zakol.risk import (
 from robot_zakol.state import (
     PHASE_IDLE,
     PHASE_IN_POSITION,
+    PHASE_STOPPED,
     PHASE_WORKING,
     OpenPosition,
     PendingOrder,
@@ -210,12 +215,22 @@ class FakeClient:
         self.orders: list[dict[str, Any]] = []
         self.pos: Any = None
         self.price = 100.0
+        self.open_orders_calls = 0
+        self.order_reads = 0
+        self.closed_pnl: float | None = None
+        self.order_fills: dict[str, float] = {}
+        self.fail_cancel: set[str] = set()
+        self.fail_on_place: int | None = None  # номер вызова place_order (1-based)
 
     async def place_order(self, **kwargs: Any) -> dict[str, Any]:
+        if self.fail_on_place == len(self.placed) + 1:
+            raise RuntimeError("place rejected")
         self.placed.append(kwargs)
-        return {"result": {"orderId": "oid-1"}}
+        return {"result": {"orderId": f"oid-{len(self.placed)}"}}
 
     async def cancel_order(self, symbol: str, order_id: str) -> dict[str, Any]:
+        if order_id in self.fail_cancel:
+            raise RuntimeError("cancel rejected")
         self.cancelled.append(order_id)
         return {}
 
@@ -224,7 +239,21 @@ class FakeClient:
         return {}
 
     async def get_open_orders(self, symbol: str) -> list[dict[str, Any]]:
+        self.open_orders_calls += 1
         return self.orders
+
+    async def get_order(self, symbol: str, order_id: str) -> dict[str, Any] | None:
+        self.order_reads += 1
+        if order_id not in self.order_fills:
+            return None
+        return {
+            "orderId": order_id,
+            "cumExecQty": self.order_fills[order_id],
+            "orderStatus": "Filled",
+        }
+
+    async def get_last_closed_pnl(self, symbol: str) -> float | None:
+        return self.closed_pnl
 
     async def get_position(self, symbol: str) -> Any:
         return self.pos
@@ -245,15 +274,29 @@ class FakeFeed:
         self.order_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.exec_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.last_price = 100.0
+        self.resync_needed = False
 
 
-def _make_cycle(tmp_path: Path, client: FakeClient) -> Any:
+def _make_cycle(
+    tmp_path: Path,
+    client: FakeClient,
+    qty_step: float = 0.0,
+    notifier: Any = None,
+) -> Any:
     from robot_zakol.order_cycle import OrderCycle
 
     cfg = _cfg()
     store = StateStore(tmp_path / "st.json")
     feed = FakeFeed()
-    return OrderCycle(cfg=cfg, client=client, feed=feed, store=store, tick_size=0.5)
+    return OrderCycle(
+        cfg=cfg,
+        client=client,
+        feed=feed,
+        store=store,
+        tick_size=0.5,
+        qty_step=qty_step,
+        notifier=notifier,
+    )
 
 
 def test_place_bracket_sets_working(tmp_path: Path) -> None:
@@ -277,7 +320,8 @@ def test_place_bracket_sets_working(tmp_path: Path) -> None:
     assert all(o["order_link_id"] for o in client.placed)
 
 
-def test_on_filled_requires_partial_threshold(tmp_path: Path) -> None:
+def test_partial_fill_opens_position_with_sl(tmp_path: Path) -> None:
+    """Частичный филл ниже порога = позиция со SL (как в бэктесте)."""
     client = FakeClient()
     cycle = _make_cycle(tmp_path, client)
 
@@ -294,10 +338,12 @@ def test_on_filled_requires_partial_threshold(tmp_path: Path) -> None:
         await cycle._on_filled(cycle.store.state.pending_buy)
 
     asyncio.run(run())
-    assert cycle.store.state.phase == PHASE_IDLE
-    assert cycle.store.state.position is None
-    assert cycle.store.state.pending_buy is None
-    assert "oid-1" in client.cancelled
+    st = cycle.store.state
+    assert st.phase == PHASE_IN_POSITION
+    assert st.position is not None
+    assert st.position.qty == pytest.approx(0.0005)
+    assert st.position.stop_loss == pytest.approx(97.0 * 0.98)
+    assert client.sl_calls
 
 
 def test_on_filled_zero_fill_rejected(tmp_path: Path) -> None:
@@ -780,3 +826,721 @@ def test_backtest_long_stop_loss() -> None:
     t = res.trades[0]
     assert t.reason == "sl"
     assert t.pnl < 0
+
+
+# =========================================================================
+#  Live: блокеры и защита позиции (сессия 2026-09-26)
+# =========================================================================
+
+
+class FakeNotifier:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    async def notify(self, text: str) -> None:
+        self.messages.append(text)
+
+
+def _pending(
+    order_id: str, side: str, price: float, filled: float = 0.0
+) -> PendingOrder:
+    return PendingOrder(
+        order_id=order_id,
+        order_link_id=f"l-{order_id}",
+        price=price,
+        qty=0.001,
+        placed_at=time.monotonic(),
+        filled_qty=filled,
+        side=side,
+    )
+
+
+# --- а.1 MAX_CONCURRENT -------------------------------------------------
+
+
+def test_validate_for_live_max_concurrent_zero_raises() -> None:
+    cfg = _cfg(max_concurrent=0)
+    with pytest.raises(ValueError, match="MAX_CONCURRENT"):
+        cfg.validate_for_live()
+
+
+def test_validate_for_live_max_concurrent_one_ok() -> None:
+    cfg = _cfg(max_concurrent=1)
+    cfg.validate_for_live()
+
+
+# --- а.2 утечка waiter-задач WS -----------------------------------------
+
+
+def test_await_working_does_not_leak_tasks(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.store.state.phase = PHASE_WORKING
+        cycle.store.state.pending_buy = _pending("oid-1", "Buy", 97.0)
+        baseline = len(asyncio.all_tasks())
+        for _ in range(10):
+            deadline = time.monotonic() + 0.02
+            await asyncio.wait_for(
+                cycle._watch_until_fill_or_deadline(deadline),
+                timeout=1.0,
+            )
+        await asyncio.sleep(0)
+        assert len(asyncio.all_tasks()) == baseline
+
+    asyncio.run(run())
+
+
+def test_fill_after_idle_iteration_is_delivered(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> tuple[PendingOrder, Any]:
+        cycle.store.state.phase = PHASE_WORKING
+        pending = _pending("oid-1", "Buy", 97.0)
+        cycle.store.state.pending_buy = pending
+        watch = asyncio.create_task(
+            cycle._watch_until_fill_or_deadline(time.monotonic() + 3.0)
+        )
+        await asyncio.sleep(0.7)  # больше одной паузы 0.5с — старый waiter утек
+        cycle.feed.order_events.put_nowait(
+            {
+                "data": {
+                    "orderId": "oid-1",
+                    "orderStatus": "Filled",
+                    "cumExecQty": 0.001,
+                }
+            }
+        )
+        await asyncio.sleep(0.1)
+        watch.cancel()
+        await asyncio.gather(watch, return_exceptions=True)
+        await asyncio.sleep(0.05)
+        return pending, cycle.store.state
+
+    pending, state = asyncio.run(run())
+    assert pending.filled_qty == pytest.approx(0.001)
+    assert state.phase == PHASE_IN_POSITION
+    assert state.position is not None
+
+
+# --- а.5 try/finally + save после первого ордера ------------------------
+
+
+def test_run_calls_on_shutdown_on_exception(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.fail_on_place = 1
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.store.state.phase = PHASE_IDLE
+        cycle.store.state.pending_buy = _pending("oid-keep", "Buy", 97.0)
+        with pytest.raises(RuntimeError, match="place rejected"):
+            await cycle.run()
+        await asyncio.sleep(0.01)
+
+    asyncio.run(run())
+    assert "oid-keep" in client.cancelled
+    assert cycle.store.state.pending_buy is None
+    assert cycle.store.state.pending_sell is None
+
+
+def test_place_bracket_saves_state_after_first_order(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.fail_on_place = 2
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        with pytest.raises(RuntimeError, match="place rejected"):
+            await cycle._place_bracket()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert st.pending_buy is not None
+    assert st.pending_buy.order_id == "oid-1"
+    assert st.pending_sell is None
+    raw = json.loads((tmp_path / "st.json").read_text(encoding="utf-8"))
+    assert raw["pending_buy"]["order_id"] == "oid-1"
+
+
+# --- а.3 REST-фолбэк статуса ордера -------------------------------------
+
+
+def test_on_ttl_uses_rest_fallback_when_ws_silent(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.order_fills = {"oid-1": 0.001}
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.store.state.phase = PHASE_WORKING
+        cycle.store.state.pending_buy = _pending("oid-1", "Buy", 97.0)
+        await cycle._on_ttl()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert client.order_reads == 1
+    assert st.phase == PHASE_IN_POSITION
+    assert st.position is not None
+    assert st.position.qty == pytest.approx(0.001)
+    assert "oid-1" in client.cancelled
+
+
+def test_await_working_detects_fill_via_rest(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.order_fills = {"oid-1": 0.001}
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        pending = _pending("oid-1", "Buy", 97.0)
+        pending.placed_at = time.monotonic() - 100.0  # TTL уже истёк
+        cycle.store.state.phase = PHASE_WORKING
+        cycle.store.state.pending_buy = pending
+        await cycle._await_working()
+
+    asyncio.run(run())
+    assert cycle.store.state.phase == PHASE_IN_POSITION
+
+
+def test_ttl_replace_cancels_both_and_goes_idle(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.store.state.phase = PHASE_WORKING
+        cycle.store.state.pending_buy = _pending("oid-1", "Buy", 97.0)
+        cycle.store.state.pending_sell = _pending("oid-2", "Sell", 103.0)
+        await cycle._on_ttl()
+
+    asyncio.run(run())
+    assert client.order_reads == 2
+    assert set(client.cancelled) == {"oid-1", "oid-2"}
+    assert cycle.store.state.phase == PHASE_IDLE
+
+
+# --- б.3 reduceOnly на закрывающем ордере -------------------------------
+
+
+def _bracket_with_failed_cancel(tmp_path: Path, client: FakeClient) -> Any:
+    client.fail_cancel = {"oid-s"}
+    client.orders = [{"orderId": "oid-s"}]
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.store.state.phase = PHASE_WORKING
+        cycle.store.state.pending_buy = _pending("oid-b", "Buy", 97.0, filled=0.001)
+        cycle.store.state.pending_sell = _pending("oid-s", "Sell", 103.0)
+        await cycle._on_filled(cycle.store.state.pending_buy)
+
+    asyncio.run(run())
+    return cycle
+
+
+def test_closing_order_is_reduce_only(tmp_path: Path) -> None:
+    client = FakeClient()
+    _bracket_with_failed_cancel(tmp_path, client)
+    guards = [o for o in client.placed if o.get("reduce_only")]
+    assert len(guards) == 1
+    assert guards[0]["side"] == "Sell"
+    assert guards[0]["price"] == pytest.approx(103.0)
+
+
+def test_closing_order_does_not_flip_position(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _bracket_with_failed_cancel(tmp_path, client)
+    st = cycle.store.state
+    assert st.phase == PHASE_IN_POSITION
+    assert st.position is not None
+    assert st.position.side == "long"
+    # единственная новая лимитка — reduceOnly, открыть шорт она не может
+    assert all(o.get("reduce_only") for o in client.placed)
+    assert st.pending_buy is None and st.pending_sell is None
+
+
+# --- б.4 partial fill → позиция со SL -----------------------------------
+
+
+def test_ttl_partial_fill_opens_position_like_backtest(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        pending = _pending("oid-1", "Buy", 97.0, filled=0.0005)
+        pending.placed_at = time.monotonic() - 100.0
+        cycle.store.state.phase = PHASE_WORKING
+        cycle.store.state.pending_buy = pending
+        await cycle._await_working()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert st.phase == PHASE_IN_POSITION
+    assert st.position is not None
+    assert st.position.qty == pytest.approx(0.0005)
+    assert client.sl_calls
+
+
+# --- б.5/b.6 kill, SL/TP, recover ---------------------------------------
+
+
+def test_enter_stopped_keeps_sl_tp(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.store.state.kill = True
+        cycle.store.state.position = OpenPosition(
+            entry_price=97.0,
+            qty=0.001,
+            peak_price=97.0,
+            stop_loss=95.06,
+        )
+        cycle.store.state.pending_buy = _pending("oid-1", "Buy", 97.0)
+        await cycle._enter_stopped()
+
+    asyncio.run(run())
+    assert client.cancel_all == 0  # cancel_all_orders снял бы SL/TP
+    assert "oid-1" in client.cancelled
+    assert client.sl_calls  # стоп переустановлен
+    assert cycle.store.state.phase == PHASE_STOPPED
+
+
+def test_recover_respects_kill_flag(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.pos = SimpleNamespace(
+        size=0.001, side="Buy", avg_price=97.0, unrealised_pnl=0.0
+    )
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.store.state.kill = True
+        await cycle.recover()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert st.phase == PHASE_STOPPED
+    assert st.position is not None
+    assert client.sl_calls
+
+
+def test_kill_triggered_by_drawdown_in_background(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.pos = SimpleNamespace(
+        size=0.001, side="Buy", avg_price=97.0, unrealised_pnl=-6.0
+    )
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.store.state.position = OpenPosition(
+            entry_price=97.0, qty=0.001, peak_price=97.0, stop_loss=95.06
+        )
+        cycle.store.state.phase = PHASE_IN_POSITION
+        cycle.store.state.session_pnl = 0.0
+        cycle.store.state.peak_session_pnl = 0.0
+        cycle.feed.prices.put_nowait(96.0)
+        await cycle._manage_position()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert st.kill is True
+    assert st.position is not None  # позиция не закрыта, просто стоп торговать
+    assert st.phase == PHASE_IN_POSITION
+
+
+def test_recover_applies_server_sl_tp(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.pos = SimpleNamespace(
+        size=0.001, side="Buy", avg_price=97.0, unrealised_pnl=0.0
+    )
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.store.state.position = OpenPosition(
+            entry_price=97.0, qty=0.001, peak_price=97.0, stop_loss=95.06
+        )
+        cycle.store.state.phase = PHASE_IN_POSITION
+        await cycle.recover()
+
+    asyncio.run(run())
+    assert client.sl_calls
+    sl, take = client.sl_calls[0]
+    assert sl == pytest.approx(95.06)
+    assert take == pytest.approx(97.0 * 1.05)
+    assert cycle.store.state.phase == PHASE_IN_POSITION
+
+
+def test_recover_after_cancel_all_restores_sl(tmp_path: Path) -> None:
+    """После снятия всех ордеров (kill/рестарт) SL/TP ставятся заново."""
+    client = FakeClient()
+    client.pos = SimpleNamespace(
+        size=0.001, side="Sell", avg_price=103.0, unrealised_pnl=0.0
+    )
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        await cycle.recover()
+
+    asyncio.run(run())
+    assert client.sl_calls
+    assert cycle.store.state.position is not None
+    assert cycle.store.state.position.side == "short"
+
+
+# --- б.8 порог _position_gone + реальный pnl ----------------------------
+
+
+def test_size_gone_no_false_positive_on_rounding(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client, qty_step=0.0001)
+    assert not cycle._size_gone(0.001234, 0.0012)  # округление до шага
+    assert not cycle._size_gone(0.001, 0.001)
+    assert cycle._size_gone(0.001, 0.0)  # позицию закрыла биржа
+    assert cycle._size_gone(0.001, 0.0005)  # существенно меньше
+
+
+def test_manage_position_keeps_position_on_rounding(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.pos = SimpleNamespace(
+        size=0.0012, side="Buy", avg_price=97.0, unrealised_pnl=0.0
+    )
+    cycle = _make_cycle(tmp_path, client, qty_step=0.0001)
+
+    async def run() -> None:
+        cycle.store.state.position = OpenPosition(
+            entry_price=97.0, qty=0.001234, peak_price=97.0, stop_loss=95.06
+        )
+        cycle.store.state.phase = PHASE_IN_POSITION
+        cycle.feed.prices.put_nowait(96.0)
+        await cycle._manage_position()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert st.phase == PHASE_IN_POSITION
+    assert st.position is not None
+
+
+def test_exchange_exit_uses_realized_pnl(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.pos = None
+    client.closed_pnl = -1.25
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.store.state.position = OpenPosition(
+            entry_price=97.0, qty=0.001, peak_price=97.0, stop_loss=95.06
+        )
+        cycle.store.state.phase = PHASE_IN_POSITION
+        await cycle._manage_position()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert st.phase == PHASE_IDLE
+    assert st.session_pnl == pytest.approx(-1.25)
+
+
+def test_recover_uses_realized_pnl_for_closed_position(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.pos = None
+    client.closed_pnl = -2.5
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.store.state.phase = PHASE_IN_POSITION
+        cycle.store.state.position = OpenPosition(
+            entry_price=97.0, qty=0.001, peak_price=97.0, stop_loss=95.06
+        )
+        await cycle.recover()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert st.phase == PHASE_IDLE
+    assert st.position is None
+    assert st.session_pnl == pytest.approx(-2.5)
+    assert st.peak_session_pnl == 0.0  # peak растёт только вверх
+
+
+# --- в.1 ресинк после реконнекта WS -------------------------------------
+
+
+def test_data_feed_reconnect_sets_resync_flag() -> None:
+    from robot_zakol.data_feed import DataFeed
+
+    async def run() -> bool:
+        cfg = Config(api_key="", api_secret="", symbol="BTCUSDT")
+        feed = DataFeed(cfg, asyncio.get_running_loop(), "BTCUSDT")
+        feed._request_resync()
+        await asyncio.sleep(0)
+        return feed.resync_needed
+
+    assert asyncio.run(run()) is True
+
+
+def test_resync_after_reconnect_reconciles_state(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.store.state.phase = PHASE_WORKING
+        cycle.store.state.pending_buy = _pending("missing", "Buy", 97.0)
+        cycle.feed.resync_needed = True
+        await cycle._maybe_resync()
+
+    asyncio.run(run())
+    assert cycle.feed.resync_needed is False
+    assert client.open_orders_calls >= 1
+    assert cycle.store.state.pending_buy is None
+    assert cycle.store.state.phase == PHASE_IDLE
+
+
+def test_private_ws_without_keys_alerts() -> None:
+    from robot_zakol.data_feed import DataFeed
+
+    alerts: list[str] = []
+
+    async def on_alert(text: str) -> None:
+        alerts.append(text)
+
+    async def run() -> list[str]:
+        cfg = Config(api_key="", api_secret="", symbol="BTCUSDT")
+        feed = DataFeed(cfg, asyncio.get_running_loop(), "BTCUSDT", on_alert)
+        feed._private_worker()  # без ключей: выходит сразу, но громко
+        await asyncio.sleep(0.01)
+        return alerts
+
+    got = asyncio.run(run())
+    assert got and "API" in got[0]
+
+
+# --- в.2 wallet/position стримы -----------------------------------------
+
+
+def test_data_feed_subscribes_wallet_and_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import robot_zakol.data_feed as feed_mod
+
+    subs: list[str] = []
+    holder: dict[str, Any] = {}
+
+    class FakeWS:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def order_stream(self, callback: Any) -> None:
+            subs.append("order")
+
+        def execution_stream(self, callback: Any) -> None:
+            subs.append("execution")
+
+        def wallet_stream(self, callback: Any) -> None:
+            subs.append("wallet")
+
+        def position_stream(self, callback: Any) -> None:
+            subs.append("position")
+
+        def is_connected(self) -> bool:
+            return True
+
+        def exit(self) -> None:
+            return None
+
+    def fake_sleep(_seconds: float) -> None:
+        holder["feed"]._stop.set()
+
+    monkeypatch.setattr(feed_mod, "WebSocket", FakeWS)
+    monkeypatch.setattr(feed_mod, "time", SimpleNamespace(sleep=fake_sleep))
+
+    cfg = Config(api_key="k", api_secret="s", symbol="BTCUSDT")
+
+    async def run() -> list[str]:
+        loop = asyncio.get_running_loop()
+        holder["feed"] = feed_mod.DataFeed(cfg, loop, "BTCUSDT")
+        await loop.run_in_executor(None, holder["feed"]._private_worker)
+        return subs
+
+    got = asyncio.run(run())
+    assert {"order", "execution", "wallet", "position"} <= set(got)
+
+
+def test_balance_updated_from_wallet_stream() -> None:
+    from robot_zakol.data_feed import DataFeed
+
+    async def run() -> tuple[float, int]:
+        cfg = Config(api_key="k", api_secret="s", symbol="BTCUSDT")
+        feed = DataFeed(cfg, asyncio.get_running_loop(), "BTCUSDT")
+        feed._on_wallet({"data": [{"totalEquity": "123.45"}]})
+        await asyncio.sleep(0)  # _push кладёт в очередь через call_soon_threadsafe
+        return feed.last_balance, feed.wallet_events.qsize()
+
+    balance, queued = asyncio.run(run())
+    assert balance == pytest.approx(123.45)
+    assert queued == 1
+
+
+# --- в.4 notifier -------------------------------------------------------
+
+
+def test_notifier_called_on_fill(tmp_path: Path) -> None:
+    client = FakeClient()
+    notifier = FakeNotifier()
+    cycle = _make_cycle(tmp_path, client, notifier=notifier)
+
+    async def run() -> None:
+        cycle.store.state.pending_buy = _pending("oid-1", "Buy", 97.0, filled=0.001)
+        await cycle._on_filled(cycle.store.state.pending_buy)
+        await asyncio.sleep(0.01)
+
+    asyncio.run(run())
+    assert any("FILL" in m for m in notifier.messages)
+
+
+def test_notifier_called_on_kill(tmp_path: Path) -> None:
+    client = FakeClient()
+    notifier = FakeNotifier()
+    cycle = _make_cycle(tmp_path, client, notifier=notifier)
+
+    async def run() -> None:
+        cycle.store.state.position = OpenPosition(
+            entry_price=97.0, qty=0.001, peak_price=97.0, stop_loss=95.06
+        )
+        cycle.store.state.session_pnl = 0.0
+        cycle.store.state.peak_session_pnl = 5.0
+        client.price = 96.0
+        cycle.feed.last_price = 96.0
+        await cycle._close_position(reason="test")
+        await asyncio.sleep(0.01)
+
+    asyncio.run(run())
+    assert any("KILL" in m for m in notifier.messages)
+
+
+def test_notifier_called_on_run_exception(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.fail_on_place = 1
+    notifier = FakeNotifier()
+    cycle = _make_cycle(tmp_path, client, notifier=notifier)
+
+    async def run() -> None:
+        with pytest.raises(RuntimeError, match="place rejected"):
+            await cycle.run()
+        await asyncio.sleep(0.01)
+
+    asyncio.run(run())
+    assert any("исключение" in m for m in notifier.messages)
+
+
+# --- б.1 shutdown: main дожидается цикла --------------------------------
+
+
+def _patch_main(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> Any:
+    """Подменить все внешние зависимости robot_zakol.main."""
+    import signal as signal_mod
+
+    import robot_zakol.main as main_mod
+
+    class FakeFilters:
+        tick_size = 0.5
+        qty_step = 0.001
+
+    class FakeMainClient:
+        def __init__(self, cfg: Any) -> None:
+            pass
+
+        async def get_instrument_filters(self, symbol: str) -> Any:
+            return FakeFilters()
+
+        def close(self) -> None:
+            events.append("client-close")
+
+    class FakeMainFeed:
+        def __init__(self, cfg: Any, loop: Any, symbol: str, on_alert: Any = None):
+            self.resync_needed = False
+
+        def start(self) -> None:
+            events.append("feed-start")
+
+        def stop(self) -> None:
+            events.append("feed-stop")
+
+    class FakeMainStore:
+        def __init__(self, path: Any) -> None:
+            self.path = path
+
+        async def save(self) -> None:
+            events.append("store-save")
+
+    class FakeMainNotifier:
+        def __init__(self, cfg: Any) -> None:
+            pass
+
+        async def notify(self, text: str) -> None:
+            events.append(f"notify:{text}")
+
+    class FakeCycle:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def recover(self) -> None:
+            events.append("recover")
+
+        def request_stop(self) -> None:
+            events.append("request-stop")
+
+        async def run(self) -> None:
+            events.append("run-start")
+            await asyncio.sleep(0.01)
+            events.append("run-end")
+
+    monkeypatch.setattr(main_mod, "BybitClient", FakeMainClient)
+    monkeypatch.setattr(main_mod, "DataFeed", FakeMainFeed)
+    monkeypatch.setattr(main_mod, "StateStore", FakeMainStore)
+    monkeypatch.setattr(main_mod, "Notifier", FakeMainNotifier)
+    monkeypatch.setattr(main_mod, "OrderCycle", FakeCycle)
+    monkeypatch.setattr(main_mod, "load_config", lambda: _cfg())
+    monkeypatch.setattr(main_mod, "setup_logging", lambda *a, **k: None)
+    monkeypatch.setattr(
+        main_mod,
+        "signal",
+        SimpleNamespace(
+            SIGINT=signal_mod.SIGINT,
+            SIGTERM=signal_mod.SIGTERM,
+            signal=lambda *a, **k: None,
+        ),
+    )
+    return main_mod
+
+
+def test_shutdown_awaits_runner_before_closing_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    main_mod = _patch_main(monkeypatch, events)
+    asyncio.run(main_mod._amain())
+    assert events.index("run-end") < events.index("client-close")
+    assert events.index("run-end") < events.index("feed-stop")
+    assert "store-save" in events
+
+
+def test_amain_cleanup_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+    main_mod = _patch_main(monkeypatch, events)
+
+    class FailingCycle:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def recover(self) -> None:
+            raise RuntimeError("recover failed")
+
+        def request_stop(self) -> None:
+            events.append("request-stop")
+
+        async def run(self) -> None:
+            events.append("run-start")
+
+    monkeypatch.setattr(main_mod, "OrderCycle", FailingCycle)
+    with pytest.raises(RuntimeError, match="recover failed"):
+        asyncio.run(main_mod._amain())
+    assert "feed-stop" in events
+    assert "client-close" in events
+    assert "store-save" in events
+    assert "run-start" not in events

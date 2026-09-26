@@ -110,3 +110,37 @@
 - [ ] Решить: trail/BE/kill включить? POSITION_PCT=100% слишком агрессивно?
 - [ ] Прогнать новую стратегию на BRUSDT/AKE для сравнения со старой
 - [ ] Live-запуск: отбор монет по hit −3%/20s (SAGA — кандидат, 390 спайков/мес)
+
+---
+
+# Сессия 2026-09-26 — LIVE-БЛОКЕРЫ ЗАКРЫТЫ (без реальных ордеров)
+
+Ни одного реального ордера не выставлено — только код + тесты (113 passed, ruff/mypy зелёные).
+
+## Закрытые пункты аудита
+| # | Что | Где |
+|---|-----|-----|
+| а.1 | `MAX_CONCURRENT=1` в `.env` (валидация `< 1` оставлена строгой) | `.env` |
+| а.2 | Отмена невостребованных waiter'ов после `asyncio.wait` — события филла больше не теряются | `order_cycle._watch_until_fill_or_deadline` |
+| а.5 | `run()` в `try/finally` → `_on_shutdown`; `store.save()` после **первого** ордера; `main._amain` в `try/finally` + `_drain(runner)` | `order_cycle.run`, `main._amain/_drain` |
+| а.3 | REST-фолбэк `get_order` в `_on_ttl`; сверка `get_open_orders` перед брекетом (`_cancel_stray_orders`) | `order_cycle` |
+| б.3 | При неудачном снятии противоположной лимитки — перестановка с `reduceOnly=True` (не может перевернуть позицию) | `_guard_reduce_only` |
+| б.4 | Любой `filled_qty > 0` к TTL = позиция со SL (как в бэктесте); `.env.example: PARTIAL_FILL_PCT=0` | `_on_ttl`, `_on_filled` |
+| б.1 | Shutdown: cancel stopper → `_drain(runner)` → `feed.stop()` → `client.close()` → `store.save()` | `main._amain` |
+| б.5 | `_enter_stopped` больше **не** зовёт `cancel_all_orders` (спасает SL/TP) + переустановка SL/TP; `recover()` при `kill` → `STOPPED`; фоновый kill по equity/DD в `_manage_position` | `order_cycle` |
+| б.6 | `recover()` всегда заново ставит серверный SL/TP | `recover` |
+| б.8 | `_size_gone` с допуском `qty_step/2`; pnl `exchange_exit` и закрытия вне бота — из `get_closed_pnl` (REST), не по текущей цене | `_size_gone`, `_exit_pnl`, `recover` |
+| в.1 | Флаг `feed.resync_needed` после реконнекта WS → `_maybe_resync()` → `recover()`; нет ключей → алерт, не тихий skip | `data_feed`, `order_cycle` |
+| в.2 | Подписки `wallet_stream` + `position_stream`, `feed.last_balance`; `BybitClient.get_balance` уже был | `data_feed` |
+| в.4 | `Notifier` инжектится в `OrderCycle` + `DataFeed`; алерты на fill / kill / cancel-ошибку / исключение в `run()` | `main`, `order_cycle` |
+| в.6 | ~25 новых тестов на горячие пути (`_watch_*`, `_on_ttl`, TTL re-place, resync, shutdown, reduceOnly, partial) | `tests/test_robot_zakol.py` |
+
+## Новые параметры конструктора `OrderCycle`
+`qty_step` (допуск размера позиции) и `notifier` — передаются из `main.py` (фильтры инструмента уже запрашивались).
+
+## Что осталось (не входило в план)
+- [ ] `get_executions(since=...)` в ресинке (сейчас: `get_open_orders` + `get_position` + `get_closed_pnl`)
+- [ ] Хедж-режим: `positionIdx` в `set_stop_loss_take_profit` жёстко `0` (one-way)
+- [ ] Утечка `feed.prices` в IDLE/WORKING (очередь растёт) — из аудита, не в плане
+- [ ] Отбор монет по hit −3%/20s, OFFSET для liquid majors, отчёт по BRUSDT — TODO из 23–25.09
+- [ ] `bot_screener_yrovni/scanner.py:137` — **синтаксическая ошибка блокирует `mypy .`** (не трогал, не мой файл)
