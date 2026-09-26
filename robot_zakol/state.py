@@ -54,6 +54,9 @@ class ZakolState:
     session_pnl: float = 0.0
     peak_session_pnl: float = 0.0
     kill: bool = False
+    # базовый и пиковый баланс счёта — для kill-switch по equity
+    start_equity: float = 0.0
+    peak_equity: float = 0.0
 
 
 class StateStore:
@@ -82,6 +85,8 @@ class StateStore:
                 session_pnl=float(raw.get("session_pnl", 0.0)),
                 peak_session_pnl=float(raw.get("peak_session_pnl", 0.0)),
                 kill=bool(raw.get("kill", False)),
+                start_equity=float(raw.get("start_equity", 0.0)),
+                peak_equity=float(raw.get("peak_equity", 0.0)),
             )
             logger.info("state восстановлен: phase=%s", self.state.phase)
         except (json.JSONDecodeError, TypeError, ValueError) as exc:

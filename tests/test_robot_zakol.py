@@ -221,6 +221,12 @@ class FakeClient:
         self.order_fills: dict[str, float] = {}
         self.fail_cancel: set[str] = set()
         self.fail_on_place: int | None = None  # номер вызова place_order (1-based)
+        self.balance = 0.0
+        self.balance_calls = 0
+
+    async def get_balance(self) -> float:
+        self.balance_calls += 1
+        return self.balance
 
     async def place_order(self, **kwargs: Any) -> dict[str, Any]:
         if self.fail_on_place == len(self.placed) + 1:
@@ -274,6 +280,7 @@ class FakeFeed:
         self.order_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.exec_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.last_price = 100.0
+        self.last_balance = 0.0
         self.resync_needed = False
 
 
@@ -282,10 +289,11 @@ def _make_cycle(
     client: FakeClient,
     qty_step: float = 0.0,
     notifier: Any = None,
+    cfg: ZakolConfig | None = None,
 ) -> Any:
     from robot_zakol.order_cycle import OrderCycle
 
-    cfg = _cfg()
+    cfg = cfg or _cfg()
     store = StateStore(tmp_path / "st.json")
     feed = FakeFeed()
     return OrderCycle(
@@ -1374,6 +1382,71 @@ def test_balance_updated_from_wallet_stream() -> None:
     balance, queued = asyncio.run(run())
     assert balance == pytest.approx(123.45)
     assert queued == 1
+
+
+def test_equity_baseline_seeded_on_first_balance(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.feed.last_balance = 100.0
+        await cycle._maybe_equity_kill()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert st.start_equity == pytest.approx(100.0)
+    assert st.peak_equity == pytest.approx(100.0)
+    assert st.kill is False  # первая точка — не kill
+    assert client.balance_calls == 0  # есть stream — REST не нужен
+
+
+def test_equity_kill_on_drawdown_from_stream(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.feed.last_balance = 100.0
+        await cycle._maybe_equity_kill()
+        cycle.feed.last_balance = 94.0  # -6% < -5% DD
+        await cycle._maybe_equity_kill()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert st.start_equity == pytest.approx(100.0)
+    assert st.peak_equity == pytest.approx(100.0)
+    assert st.kill is True
+
+
+def test_equity_kill_disabled_when_limits_zero(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(
+        tmp_path, client, cfg=_cfg(max_loss_usd=0.0, max_drawdown_pct=0.0)
+    )
+
+    async def run() -> None:
+        cycle.feed.last_balance = 100.0
+        await cycle._maybe_equity_kill()
+        cycle.feed.last_balance = 50.0
+        await cycle._maybe_equity_kill()
+
+    asyncio.run(run())
+    assert cycle.store.state.kill is False
+    assert client.balance_calls == 0
+
+
+def test_equity_rest_fallback_when_no_stream(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.balance = 88.0
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        assert cycle.feed.last_balance == 0.0
+        await cycle._maybe_equity_kill()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert st.start_equity == pytest.approx(88.0)
+    assert client.balance_calls == 1
 
 
 # --- в.4 notifier -------------------------------------------------------

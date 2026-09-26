@@ -115,7 +115,7 @@
 
 # Сессия 2026-09-26 — LIVE-БЛОКЕРЫ ЗАКРЫТЫ (без реальных ордеров)
 
-Ни одного реального ордера не выставлено — только код + тесты (113 passed, ruff/mypy зелёные).
+Ни одного реального ордера не выставлено — только код + тесты (117 passed, ruff/mypy зелёные).
 
 ## Закрытые пункты аудита
 | # | Что | Где |
@@ -131,12 +131,21 @@
 | б.6 | `recover()` всегда заново ставит серверный SL/TP | `recover` |
 | б.8 | `_size_gone` с допуском `qty_step/2`; pnl `exchange_exit` и закрытия вне бота — из `get_closed_pnl` (REST), не по текущей цене | `_size_gone`, `_exit_pnl`, `recover` |
 | в.1 | Флаг `feed.resync_needed` после реконнекта WS → `_maybe_resync()` → `recover()`; нет ключей → алерт, не тихий skip | `data_feed`, `order_cycle` |
-| в.2 | Подписки `wallet_stream` + `position_stream`, `feed.last_balance`; `BybitClient.get_balance` уже был | `data_feed` |
+| в.2 | Подписки `wallet_stream` + `position_stream`, `feed.last_balance`; баланс реально используется: фоновый kill по equity (см. ниже) | `data_feed`, `order_cycle` |
 | в.4 | `Notifier` инжектится в `OrderCycle` + `DataFeed`; алерты на fill / kill / cancel-ошибку / исключение в `run()` | `main`, `order_cycle` |
 | в.6 | ~25 новых тестов на горячие пути (`_watch_*`, `_on_ttl`, TTL re-place, resync, shutdown, reduceOnly, partial) | `tests/test_robot_zakol.py` |
 
 ## Новые параметры конструктора `OrderCycle`
 `qty_step` (допуск размера позиции) и `notifier` — передаются из `main.py` (фильтры инструмента уже запрашивались).
+
+## Kill по балансу счёта (в.2, добивка)
+`_maybe_equity_kill()` в каждой итерации `run()`:
+- equity из `feed.last_balance` (wallet stream), фолбэк `get_balance()` не чаще раза в 30с;
+- `st.start_equity` / `st.peak_equity` сидируются при первом наблюдении (`state.py`, JSON-совместимо);
+- `should_kill(equity-start, peak-start, deposit=start)` → `_trigger_kill("equity")`;
+- выключен целиком, если `MAX_LOSS_USD=0` и `MAX_DRAWDOWN_PCT=0` (сейчас в `.env` так и есть).
+Позиция контролируется и раньше: REST-снапшот раз в секунду в `_manage_position`.
++4 теста: сидирование, kill по DD, выключенные лимиты, REST-фолбэк.
 
 ## Что осталось (не входило в план)
 - [ ] `get_executions(since=...)` в ресинке (сейчас: `get_open_orders` + `get_position` + `get_closed_pnl`)
@@ -144,3 +153,4 @@
 - [ ] Утечка `feed.prices` в IDLE/WORKING (очередь растёт) — из аудита, не в плане
 - [ ] Отбор монет по hit −3%/20s, OFFSET для liquid majors, отчёт по BRUSDT — TODO из 23–25.09
 - [ ] `bot_screener_yrovni/scanner.py:137` — **синтаксическая ошибка блокирует `mypy .`** (не трогал, не мой файл)
+- [ ] **Алерты не трогал по заказу:** в `robot_zakol/.env` нет `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` → только лог; уровень не везде ERROR (fill=INFO, cancel-fail=WARNING, kill/исключение=ERROR)

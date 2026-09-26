@@ -39,6 +39,7 @@ class FeedProtocol(Protocol):
     order_events: asyncio.Queue[dict[str, Any]]
     exec_events: asyncio.Queue[dict[str, Any]]
     last_price: float
+    last_balance: float
     resync_needed: bool
 
 
@@ -71,6 +72,7 @@ class OrderCycle:
         self.qty_step = qty_step
         self.notifier = notifier
         self._stop = asyncio.Event()
+        self._last_balance_poll = 0.0
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -100,6 +102,7 @@ class OrderCycle:
         try:
             while not self._stop.is_set():
                 await self._maybe_resync()
+                await self._maybe_equity_kill()
                 st = self.store.state
                 if st.kill or st.phase == PHASE_STOPPED:
                     await self._enter_stopped()
@@ -617,6 +620,54 @@ class OrderCycle:
         except Exception as exc:  # noqa: BLE001
             logger.warning("resync failed: %s", exc)
             self._notify(f"zakol: ресинк не удался — {exc}")
+
+    async def _rest_equity(self) -> float:
+        """Баланс счёта через REST, не чаще раза в 30с (фолбэк при мёртвом WS)."""
+        now = time.monotonic()
+        if now - self._last_balance_poll < 30.0:
+            return 0.0
+        self._last_balance_poll = now
+        try:
+            return float(await self.client.get_balance())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("get_balance: %s", exc)
+            return 0.0
+
+    def _kill_by_balance(self, equity: float) -> bool:
+        """Kill по балансу: падение от пика (DD) или от стартового (max loss)."""
+        st = self.store.state
+        if st.kill:
+            return True
+        return should_kill(
+            session_pnl=equity - st.start_equity,
+            peak_session_pnl=st.peak_equity - st.start_equity,
+            deposit_usd=st.start_equity,
+            max_loss_usd=self.cfg.max_loss_usd,
+            max_drawdown_pct=self.cfg.max_drawdown_pct,
+        )
+
+    async def _maybe_equity_kill(self) -> None:
+        """Фоновый контроль баланса: equity берём из wallet stream, иначе REST."""
+        if self.cfg.max_loss_usd <= 0 and self.cfg.max_drawdown_pct <= 0:
+            return
+        equity = self.feed.last_balance
+        if equity <= 0:
+            equity = await self._rest_equity()
+        if equity <= 0:
+            return
+        st = self.store.state
+        if st.start_equity <= 0:
+            st.start_equity = equity
+        st.peak_equity = max(st.peak_equity, st.start_equity, equity)
+        if not self._kill_by_balance(equity):
+            return
+        logger.error(
+            "equity kill: %.2f start=%.2f peak=%.2f",
+            equity,
+            st.start_equity,
+            st.peak_equity,
+        )
+        await self._trigger_kill("equity")
 
     async def _on_shutdown(self) -> None:
         for p in self._pendings():
