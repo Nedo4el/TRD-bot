@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 from core.config import load_bot_env
 
 BOT_DIR = Path(__file__).resolve().parent
+logger = logging.getLogger(__name__)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -109,13 +111,21 @@ class ZakolConfig(BaseModel):
         return v
 
     def validate_for_live(self) -> None:
-        """Проверить обязательные поля перед live-запуском."""
+        """Проверить обязательные поля перед live-запуском (A.2)."""
         if not self.api_key or not self.api_secret:
             raise ValueError("BYBIT_API_KEY и BYBIT_API_SECRET обязательны")
+        if self.category != "linear":
+            raise ValueError(
+                "CATEGORY должен быть linear (perpetual) — спот запрещён",
+            )
         if self.fixed_qty <= 0 and self.deposit_usd <= 0:
             raise ValueError("нужен QTY > 0 или DEPOSIT_USD > 0")
         if self.max_concurrent < 1:
             raise ValueError("MAX_CONCURRENT должен быть >= 1")
+        if not self.ws_enabled:
+            raise ValueError("WS_ENABLED должен быть true для live (филлы идут по WS)")
+        if self.testnet:
+            logger.warning("TESTNET=true — работа на тестнете")
 
     def order_notional(self) -> float:
         """Notional одной сделки в USDT (от депозита или фикс. QTY*цена не здесь)."""

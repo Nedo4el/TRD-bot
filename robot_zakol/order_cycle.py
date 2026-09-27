@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 import uuid
 from typing import Any, Protocol
@@ -134,12 +135,26 @@ class OrderCycle:
             await self._on_shutdown()
 
     async def _order_qty(self, price: float) -> float:
+        """Размер ордера в единицах инструмента, кратный qty_step биржи.
+
+        Клиент всё равно округляет вниз — считаем так сразу, чтобы лог,
+        state и фактический ордер на бирже совпадали.
+        """
         if self.cfg.fixed_qty > 0:
-            return self.cfg.fixed_qty
-        notional = self.cfg.order_notional()
-        if price <= 0 or notional <= 0:
-            raise ValueError("cannot size order: price/notional invalid")
-        return notional / price
+            qty = self.cfg.fixed_qty
+        else:
+            notional = self.cfg.order_notional()
+            if price <= 0 or notional <= 0:
+                raise ValueError("cannot size order: price/notional invalid")
+            qty = notional / price
+        if self.qty_step > 0:
+            qty = math.floor(qty / self.qty_step) * self.qty_step
+            if qty < self.qty_step:
+                raise ValueError(
+                    f"order qty {qty:g} < min step {self.qty_step:g} — "
+                    "увеличь POSITION_PCT",
+                )
+        return qty
 
     async def _place_bracket(self) -> None:
         """Поставить пару PostOnly-лимиток: buy -offset и sell +offset."""

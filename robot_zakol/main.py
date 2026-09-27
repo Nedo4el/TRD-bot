@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import time
 from typing import Any
 
 from core.bybit_client import BybitClient
@@ -20,6 +21,18 @@ logger = logging.getLogger(__name__)
 
 # сколько секунд ждать корректной остановки цикла после сигнала
 SHUTDOWN_TIMEOUT = 10.0
+# сколько секунд ждать поднятия WS перед стартом торговли (A.5)
+WS_CONNECT_TIMEOUT = 10.0
+
+
+async def _wait_ws_connected(feed: Any, timeout: float) -> bool:
+    """Не выходим из стартового блока, пока WS не поднялся."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if feed.is_connected():
+            return True
+        await asyncio.sleep(0.2)
+    return bool(feed.is_connected())
 
 
 def _core_config(zakol: ZakolConfig) -> Config:
@@ -71,6 +84,14 @@ async def _amain() -> None:
 
     try:
         filters = await client.get_instrument_filters(cfg.symbol)
+        # A.2: hedge-режим боту не подходит (positionIdx=0)
+        mode = await client.get_position_mode(cfg.symbol)
+        if mode == "hedge":
+            raise ValueError(
+                "аккаунт в HEDGE-режиме — переключи Position Mode на Single",
+            )
+        if mode == "unknown":
+            logger.warning("режим позиции не проверен — ожидается one-way")
         cycle = OrderCycle(
             cfg=zakol,
             client=client,
@@ -95,6 +116,10 @@ async def _amain() -> None:
         await cycle.recover()
         if zakol.ws_enabled:
             feed.start()
+            if not await _wait_ws_connected(feed, WS_CONNECT_TIMEOUT):
+                raise RuntimeError(
+                    f"WS не подключился за {WS_CONNECT_TIMEOUT:.0f}с — старт отменён",
+                )
         logger.info(
             "robot_zakol started symbol=%s testnet=%s",
             cfg.symbol,

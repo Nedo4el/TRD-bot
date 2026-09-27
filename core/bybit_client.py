@@ -543,6 +543,25 @@ class BybitClient:
             )
         return positions
 
+    async def get_position_mode(self, symbol: str) -> str:
+        """Режим позиции: "one-way" | "hedge" | "unknown" (best-effort).
+
+        Бот работает только в one-way (positionIdx=0). Если биржа вернёт
+        строки с индексами 1/2 — режим hedge, запускаться нельзя.
+        """
+        try:
+            resp = await self._call(
+                "get_positions",
+                category=self.config.category,
+                symbol=symbol,
+            )
+            rows = resp["result"]["list"]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("get_positions (режим): %s", exc)
+            return "unknown"
+        idx = {int(row.get("positionIdx") or 0) for row in rows}
+        return "one-way" if idx <= {0} else "hedge"
+
     async def close_position(
         self, symbol: str, qty: float, side: str
     ) -> dict[str, Any]:

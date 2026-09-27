@@ -329,6 +329,23 @@ def test_place_bracket_sets_working(tmp_path: Path) -> None:
     assert all(o["order_link_id"] for o in client.placed)
 
 
+def test_order_qty_floors_to_qty_step(tmp_path: Path) -> None:
+    """$6 по цене 100 = 0.06 → вниз до шага 0.05, как уйдёт на биржу."""
+    client = FakeClient()
+    cfg = _cfg(fixed_qty=0, position_pct=6, deposit_usd=100.0)
+    cycle = _make_cycle(tmp_path, client, qty_step=0.05, cfg=cfg)
+    qty = asyncio.run(cycle._order_qty(100.0))
+    assert qty == pytest.approx(0.05)
+    assert asyncio.run(cycle._order_qty(100.0)) == qty
+
+
+def test_order_qty_below_step_raises(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client, qty_step=1.0, cfg=_cfg(fixed_qty=0))
+    with pytest.raises(ValueError, match="POSITION_PCT"):
+        asyncio.run(cycle._order_qty(100.0))
+
+
 def test_partial_fill_opens_position_with_sl(tmp_path: Path) -> None:
     """Частичный филл ниже порога = позиция со SL (как в бэктесте)."""
     client = FakeClient()
@@ -1556,6 +1573,9 @@ def _patch_main(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> Any:
         async def get_instrument_filters(self, symbol: str) -> Any:
             return FakeFilters()
 
+        async def get_position_mode(self, symbol: str) -> str:
+            return "one-way"
+
         def close(self) -> None:
             events.append("client-close")
 
@@ -1568,6 +1588,9 @@ def _patch_main(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> Any:
 
         def stop(self) -> None:
             events.append("feed-stop")
+
+        def is_connected(self) -> bool:
+            return True
 
     class FakeMainStore:
         def __init__(self, path: Any, symbol: str = "") -> None:
@@ -1776,3 +1799,77 @@ def test_task_result_logged_on_failure(caplog: pytest.LogCaptureFixture) -> None
     with caplog.at_level(logging.ERROR):
         asyncio.run(run())
     assert any("boom-task" in r.message for r in caplog.records)
+
+
+# --- A.2/A.5 предполётные проверки ---------------------------------------
+
+
+def test_validate_for_live_requires_ws() -> None:
+    cfg = _cfg(ws_enabled=False)
+    with pytest.raises(ValueError, match="WS_ENABLED"):
+        cfg.validate_for_live()
+    _cfg(ws_enabled=True).validate_for_live()
+
+
+def test_validate_for_live_rejects_spot() -> None:
+    with pytest.raises(ValueError, match="спот"):
+        _cfg(category="spot").validate_for_live()
+    _cfg(category="linear").validate_for_live()
+
+
+def test_wait_ws_connected_returns_when_up() -> None:
+    from robot_zakol.main import _wait_ws_connected
+
+    class Feed:
+        def is_connected(self) -> bool:
+            return True
+
+    assert asyncio.run(_wait_ws_connected(Feed(), timeout=1.0)) is True
+
+
+def test_wait_ws_connected_times_out() -> None:
+    from robot_zakol.main import _wait_ws_connected
+
+    class Feed:
+        def is_connected(self) -> bool:
+            return False
+
+    assert asyncio.run(_wait_ws_connected(Feed(), timeout=0.5)) is False
+
+
+def test_amain_rejects_hedge_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+    main_mod = _patch_main(monkeypatch, events)
+
+    class HedgeClient:
+        def __init__(self, cfg: Any) -> None:
+            pass
+
+        async def get_instrument_filters(self, symbol: str) -> Any:
+            class F:
+                tick_size = 0.5
+                qty_step = 0.001
+
+            return F()
+
+        async def get_position_mode(self, symbol: str) -> str:
+            return "hedge"
+
+        def close(self) -> None:
+            events.append("client-close")
+
+    monkeypatch.setattr(main_mod, "BybitClient", HedgeClient)
+    with pytest.raises(ValueError, match="HEDGE"):
+        asyncio.run(main_mod._amain())
+    assert "client-close" in events
+
+
+def test_data_feed_is_connected_flags() -> None:
+    from robot_zakol.data_feed import DataFeed
+
+    cfg = Config(api_key="k", api_secret="s", symbol="BTCUSDT")
+    feed = DataFeed(cfg, asyncio.new_event_loop(), "BTCUSDT")
+    assert feed.is_connected() is False
+    feed._public_up = True
+    feed._private_up = True
+    assert feed.is_connected() is True

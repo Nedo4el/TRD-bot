@@ -47,6 +47,14 @@ class DataFeed:
         self.last_balance: float = 0.0
         # меняется только в потоке event loop (см. _mark_resync)
         self.resync_needed: bool = False
+        # A.5: подняты ли потоки WS (пишутся из WS-потоков)
+        self._public_up = False
+        self._private_up = False
+
+    def is_connected(self) -> bool:
+        """WS жив: пабличный + (приватный, если заданы ключи)."""
+        has_keys = bool(self._config.api_key and self._config.api_secret)
+        return self._public_up and (self._private_up or not has_keys)
 
     def start(self) -> None:
         self._stop.clear()
@@ -147,6 +155,7 @@ class DataFeed:
                     testnet=self._config.testnet, channel_type=self._config.category
                 )
                 ws.ticker_stream(self._symbol, self._on_ticker)
+                self._public_up = True
                 attempt = 0
                 if reconnected:
                     self._request_resync()
@@ -162,6 +171,7 @@ class DataFeed:
                 logger.warning("public WS: %s, retry %.1fs", exc, delay)
                 time.sleep(delay)
             finally:
+                self._public_up = False
                 if ws is not None:
                     try:
                         ws.exit()
@@ -190,6 +200,7 @@ class DataFeed:
                 ws.execution_stream(self._on_execution)
                 ws.wallet_stream(self._on_wallet)
                 ws.position_stream(self._on_position)
+                self._private_up = True
                 attempt = 0
                 if reconnected:
                     self._request_resync()
@@ -205,6 +216,7 @@ class DataFeed:
                 logger.warning("private WS: %s, retry %.1fs", exc, delay)
                 time.sleep(delay)
             finally:
+                self._private_up = False
                 if ws is not None:
                     try:
                         ws.exit()

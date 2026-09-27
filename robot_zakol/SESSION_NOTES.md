@@ -161,14 +161,33 @@
 | 0.3 | биржа: equity **142.47 USDT** ≥ депо 100 | (read-only вызов) |
 
 Биржевые фильтры BTCUSDT: tick 0.1, qty_step 0.001, **min_qty 0.001 BTC ≈ $84**, min_notional 5 USDT —
-ордер $1 на BTCUSDT невозможен (ждём символ).
+ордер $1 на BTCUSDT невозможен.
+
+## Третья волна — A.2, A.5, SYMBOL=QUSDT (2026-09-26)
+| # | Что сделано | Где |
+|---|-------------|-----|
+| 0.5 | `SYMBOL=QUSDT`; state хранит symbol и сверяет при старте | `.env`, `state.check_symbol` |
+| A.2 | `validate_for_live` теперь требует `WS_ENABLED=true` (тестнет — warning); на старте `client.get_position_mode()` → **hedge = старт отменяется**, unknown = warning | `config.py`, `bybit_client.get_position_mode`, `main._amain` |
+| A.5 | `feed.start()` → ждём `feed.is_connected()` до 10с (`WS_CONNECT_TIMEOUT`), иначе RuntimeError; флаги `_public_up/_private_up` в воркерах | `main._wait_ws_connected`, `data_feed` |
+| — | `POSITION_PCT=6` → ордер **$6** (для QUSDT минимум: qty_step 10 × 0.034 ≈ $5, min_notional 5) | `.env` |
+| — | Telegram/trail/BE — по решению пользователя **выключены** | `.env` |
+
+Фильтры QUSDT: tick 1e-05, qty_step **10**, min_qty 10, min_notional 5 USDT, цена ~0.034.
+
+## Live-проверка на QUSDT — тест-ордера и запуск (2026-09-27)
+- Тест-ордера (реальные, оба сняты/отклонены):
+  - «$1» = 30 QUSDT @ 0.03304 → **REJECTED `110094 minimum order value 5USDT`**: minNotionalValue=5 считается как `qty × цена лимитки`;
+  - 160 QUSDT @ 0.03304 = **$5.29 → ACCEPTED**, снят.
+  - В UI Bybit $1 «работает», потому что поле в USDT — это маржа: $1 × 10x = $10 номинала.
+- `validate_for_live`: `CATEGORY` должен быть `linear` — **спот запрещён** (+тест `test_validate_for_live_rejects_spot`).
+- Баг: цикл логировал/сохранял сырой qty (175.9), клиент же округлял вниз до `qtyStep` (170) → `_order_qty` теперь делает floor до `qty_step` и падает, если меньше шага (+2 теста).
+- Live-запуск (окно терминала): `robot_zakol started symbol=QUSDT`, бракет Buy/Sell 170 QUSDT (notional $5.66/$6.01), TTL extend ×3 → re-place при delta>0.3%, позиций нет.
+- Итог: **135 passed**, ruff/mypy чисто; в логе бота время UTC (06:46 UTC = 09:46 МСК).
 
 ## Что осталось (не входило в план)
 - [ ] `get_executions(since=...)` в ресинке (сейчас: `get_open_orders` + `get_position` + `get_closed_pnl`)
 - [ ] Хедж-режим: `positionIdx` в `set_stop_loss_take_profit` жёстко `0` (one-way)
 - [ ] Утечка `feed.prices` в IDLE/WORKING (очередь растёт) — из аудита, не в плане
-- [ ] A.2/A.5 по чеклисту — ждём решения (пояснения выданы)
-- [ ] POSITION_PCT — ждём символ ($1 на BTCUSDT невозможен)
 - [ ] Отбор монет по hit −3%/20s, отчёт по BRUSDT — TODO из 23–25.09
 - [ ] **Per-symbol OFFSET — не нужен:** решили «для всех один» (TODO закрыт)
 - [ ] `bot_screener_yrovni/scanner.py:137` — **синтаксическая ошибка блокирует `mypy .`** (не трогал, не мой файл)
