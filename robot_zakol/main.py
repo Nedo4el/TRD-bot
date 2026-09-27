@@ -63,7 +63,7 @@ async def _amain() -> None:
     loop = asyncio.get_running_loop()
     notifier = Notifier(cfg)
     feed = DataFeed(cfg, loop, cfg.symbol, notifier.notify)
-    store = StateStore(cfg.state_path)
+    store = StateStore(cfg.state_path, symbol=zakol.symbol)
     stop_event = asyncio.Event()
     cycle: OrderCycle | None = None
     runner: asyncio.Task[Any] | None = None

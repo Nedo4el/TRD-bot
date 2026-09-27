@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -877,6 +878,15 @@ def test_validate_for_live_max_concurrent_one_ok() -> None:
     cfg.validate_for_live()
 
 
+def test_position_pct_must_be_in_range() -> None:
+    with pytest.raises(ValueError, match="POSITION_PCT"):
+        _cfg(position_pct=0.0)
+    with pytest.raises(ValueError, match="POSITION_PCT"):
+        _cfg(position_pct=150.0)
+    assert _cfg(position_pct=1.0).position_pct == 1.0
+    assert _cfg(position_pct=100.0).position_pct == 100.0
+
+
 # --- а.2 утечка waiter-задач WS -----------------------------------------
 
 
@@ -1013,6 +1023,7 @@ def test_await_working_detects_fill_via_rest(tmp_path: Path) -> None:
 def test_ttl_replace_cancels_both_and_goes_idle(tmp_path: Path) -> None:
     client = FakeClient()
     cycle = _make_cycle(tmp_path, client)
+    cycle.feed.last_price = 105.0  # F.3: delta 5% >= MIN_PRICE_CHANGE -> re-place
 
     async def run() -> None:
         cycle.store.state.phase = PHASE_WORKING
@@ -1024,6 +1035,27 @@ def test_ttl_replace_cancels_both_and_goes_idle(tmp_path: Path) -> None:
     assert client.order_reads == 2
     assert set(client.cancelled) == {"oid-1", "oid-2"}
     assert cycle.store.state.phase == PHASE_IDLE
+
+
+def test_ttl_extends_when_price_quiet(tmp_path: Path) -> None:
+    """F.3: цена не сдвинулась -> лимитки живут, TTL продлевается."""
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        cycle.store.state.phase = PHASE_WORKING
+        buy = _pending("oid-1", "Buy", 97.0)
+        buy.placed_at = time.monotonic() - 100.0
+        cycle.store.state.pending_buy = buy
+        cycle.store.state.pending_sell = _pending("oid-2", "Sell", 103.0)
+        await cycle._on_ttl()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert st.phase == PHASE_WORKING
+    assert st.pending_buy is not None
+    assert st.pending_buy.placed_at > time.monotonic() - 5.0
+    assert client.cancelled == []
 
 
 # --- б.3 reduceOnly на закрывающем ордере -------------------------------
@@ -1062,7 +1094,10 @@ def test_closing_order_does_not_flip_position(tmp_path: Path) -> None:
     assert st.position.side == "long"
     # единственная новая лимитка — reduceOnly, открыть шорт она не может
     assert all(o.get("reduce_only") for o in client.placed)
-    assert st.pending_buy is None and st.pending_sell is None
+    assert st.pending_buy is None  # исполненная сторона
+    # D.4: неснятая сторона остаётся в state — recover/shutdown её снимут
+    assert st.pending_sell is not None
+    assert st.pending_sell.order_id == "oid-s"
 
 
 # --- б.4 partial fill → позиция со SL -----------------------------------
@@ -1535,8 +1570,9 @@ def _patch_main(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> Any:
             events.append("feed-stop")
 
     class FakeMainStore:
-        def __init__(self, path: Any) -> None:
+        def __init__(self, path: Any, symbol: str = "") -> None:
             self.path = path
+            self.symbol = symbol
 
         async def save(self) -> None:
             events.append("store-save")
@@ -1617,3 +1653,126 @@ def test_amain_cleanup_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "client-close" in events
     assert "store-save" in events
     assert "run-start" not in events
+
+
+# --- Доработки по чеклисту 2026-09-26 (B.5, D.4, D.5, E.1, E.3) ----------
+
+
+def test_cancel_failure_keeps_state_when_order_alive(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.fail_cancel = {"oid-1"}
+    client.orders = [{"orderId": "oid-1"}]  # ордер жив на бирже
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> bool:
+        cycle.store.state.phase = PHASE_WORKING
+        cycle.store.state.pending_buy = _pending("oid-1", "Buy", 97.0)
+        ok: bool = await cycle._cancel_pending(cycle.store.state.pending_buy)
+        return ok
+
+    ok = asyncio.run(run())
+    assert ok is False
+    assert cycle.store.state.pending_buy is not None
+
+
+def test_cancel_failure_clears_state_when_order_gone(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.fail_cancel = {"oid-1"}
+    client.orders = []  # на бирже ордера уже нет
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> bool:
+        cycle.store.state.phase = PHASE_WORKING
+        cycle.store.state.pending_buy = _pending("oid-1", "Buy", 97.0)
+        ok: bool = await cycle._cancel_pending(cycle.store.state.pending_buy)
+        return ok
+
+    ok = asyncio.run(run())
+    assert ok is True
+    assert cycle.store.state.pending_buy is None
+
+
+def test_ttl_cancel_failure_backoff_keeps_working(tmp_path: Path) -> None:
+    """E.3 + D.4: снять не вышло -> state цел, backoff, без смены фазы."""
+    client = FakeClient()
+    client.fail_cancel = {"oid-1", "oid-2"}
+    client.orders = [{"orderId": "oid-1"}, {"orderId": "oid-2"}]
+    cycle = _make_cycle(tmp_path, client)
+    cycle.feed.last_price = 105.0
+
+    async def run() -> None:
+        cycle.store.state.phase = PHASE_WORKING
+        cycle.store.state.pending_buy = _pending("oid-1", "Buy", 97.0)
+        cycle.store.state.pending_sell = _pending("oid-2", "Sell", 103.0)
+        await cycle._on_ttl()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert st.phase == PHASE_WORKING
+    assert st.pending_buy is not None and st.pending_sell is not None
+    assert cycle._ttl_backoff >= 1.0
+
+
+def test_state_refuses_other_symbol(tmp_path: Path) -> None:
+    path = tmp_path / "st.json"
+    path.write_text(json.dumps({"symbol": "ETHUSDT"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="инструмента"):
+        StateStore(path, symbol="BTCUSDT")
+
+
+def test_state_refuses_newer_schema(tmp_path: Path) -> None:
+    path = tmp_path / "st.json"
+    path.write_text(
+        json.dumps({"symbol": "BTCUSDT", "schema_version": 99}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="schema"):
+        StateStore(path, symbol="BTCUSDT")
+
+
+def test_state_writes_symbol_on_save(tmp_path: Path) -> None:
+    path = tmp_path / "st.json"
+    store = StateStore(path, symbol="BTCUSDT")
+    asyncio.run(store.save())
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["symbol"] == "BTCUSDT"
+    assert raw["schema_version"] == 1
+    # тот же state открывается без ошибок
+    StateStore(path, symbol="BTCUSDT")
+
+
+def test_apply_server_sl_tp_clears_take_when_disabled(tmp_path: Path) -> None:
+    """B.5: take_pct=0 -> отправляем 0, биржа снимает старый TP."""
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client, cfg=_cfg(take_pct=0.0))
+
+    async def run() -> None:
+        pos = OpenPosition(
+            entry_price=100.0,
+            qty=1.0,
+            peak_price=100.0,
+            stop_loss=97.0,
+            side="long",
+        )
+        await cycle._apply_server_sl_tp(pos)
+
+    asyncio.run(run())
+    assert client.sl_calls[-1] == (97.0, 0.0)
+
+
+def test_task_result_logged_on_failure(caplog: pytest.LogCaptureFixture) -> None:
+    """E.1: исключение фоновой задачи уходит в лог, а не в пустоту."""
+
+    async def run() -> None:
+        async def boom() -> None:
+            raise RuntimeError("boom-task")
+
+        task = asyncio.get_running_loop().create_task(boom())
+        await asyncio.sleep(0)
+        from robot_zakol.order_cycle import _log_task_result
+
+        _log_task_result(task)
+
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(run())
+    assert any("boom-task" in r.message for r in caplog.records)

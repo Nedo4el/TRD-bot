@@ -481,6 +481,9 @@ class BybitClient:
     ) -> dict[str, Any]:
         """Установить стоп-лосс (и опционально TP) для открытой позиции.
 
+        ``take_profit=0`` — снять существующий TP на бирже.
+        Если запрос со снятием TP отклонён, повторяем только со стопом
+        (стоп критичнее тейка и не должен пострадать).
         Работает для производных инструментов (linear/inverse).
         Для спота Bybit не поддерживает серверные SL/TP — вернёт ошибку,
         которую вызывающий код обрабатывает отдельно.
@@ -493,10 +496,20 @@ class BybitClient:
         }
         if take_profit is not None:
             params["takeProfit"] = str(take_profit)
-        return cast(
-            dict[str, Any],
-            await self._call("set_trading_stop", **params),
-        )
+        try:
+            return cast(
+                dict[str, Any],
+                await self._call("set_trading_stop", **params),
+            )
+        except Exception:
+            if take_profit != 0:
+                raise
+            logger.warning("set_trading_stop со снятием TP не прошёл — только SL")
+            params.pop("takeProfit", None)
+            return cast(
+                dict[str, Any],
+                await self._call("set_trading_stop", **params),
+            )
 
     async def get_position(self, symbol: str) -> Position | None:
         """Получить открытую позицию по инструменту (None если позиции нет)."""

@@ -143,14 +143,33 @@
 - equity из `feed.last_balance` (wallet stream), фолбэк `get_balance()` не чаще раза в 30с;
 - `st.start_equity` / `st.peak_equity` сидируются при первом наблюдении (`state.py`, JSON-совместимо);
 - `should_kill(equity-start, peak-start, deposit=start)` → `_trigger_kill("equity")`;
-- выключен целиком, если `MAX_LOSS_USD=0` и `MAX_DRAWDOWN_PCT=0` (сейчас в `.env` так и есть).
+- выключен целиком, если `MAX_LOSS_USD=0` и `MAX_DRAWDOWN_PCT=0`; **в `.env` теперь 10 / 0.05 — включён**.
 Позиция контролируется и раньше: REST-снапшот раз в секунду в `_manage_position`.
 +4 теста: сидирование, kill по DD, выключенные лимиты, REST-фолбэк.
+
+## Вторая волна — доработки по престарт-чеклисту (2026-09-26)
+| # | Что сделано | Где |
+|---|-------------|-----|
+| B.5 | `take_pct=0` → отправляем явный `takeProfit=0` (снятие TP); при отказе — повтор только со SL | `bybit_client.set_stop_loss_take_profit`, `_apply_server_sl_tp` |
+| D.4 | `_cancel_pending` **не чистит state** при неудаче; сверка `_order_is_open`; неснятая сторона остаётся в state после филла | `order_cycle._cancel_pending`, `_handle_filled` |
+| D.5 | `state.symbol` + `schema_version` + `check_symbol()` (другой символ / схема новее кода → ValueError); запись при `save()` | `state.py`, `main.py` |
+| E.1 | `_log_task_result` (done-callback) + лог исключений waiter'ов | `order_cycle` |
+| E.3 | backoff 1→60с при неудачном cancel на TTL, фаза остаётся WORKING | `_on_ttl` |
+| E.4 | `asyncio.Lock` на `_on_filled` (WS-таск vs `_on_ttl`) | `order_cycle` |
+| F.3 | `MIN_PRICE_CHANGE` реально влияет: цена молчит → **extend** (те же лимитки, TTL продлён); иначе re-place | `_on_ttl` |
+| A.3 | валидатор `POSITION_PCT ∈ (0, 100]` | `config.py` |
+| 0.3 | биржа: equity **142.47 USDT** ≥ депо 100 | (read-only вызов) |
+
+Биржевые фильтры BTCUSDT: tick 0.1, qty_step 0.001, **min_qty 0.001 BTC ≈ $84**, min_notional 5 USDT —
+ордер $1 на BTCUSDT невозможен (ждём символ).
 
 ## Что осталось (не входило в план)
 - [ ] `get_executions(since=...)` в ресинке (сейчас: `get_open_orders` + `get_position` + `get_closed_pnl`)
 - [ ] Хедж-режим: `positionIdx` в `set_stop_loss_take_profit` жёстко `0` (one-way)
 - [ ] Утечка `feed.prices` в IDLE/WORKING (очередь растёт) — из аудита, не в плане
-- [ ] Отбор монет по hit −3%/20s, OFFSET для liquid majors, отчёт по BRUSDT — TODO из 23–25.09
+- [ ] A.2/A.5 по чеклисту — ждём решения (пояснения выданы)
+- [ ] POSITION_PCT — ждём символ ($1 на BTCUSDT невозможен)
+- [ ] Отбор монет по hit −3%/20s, отчёт по BRUSDT — TODO из 23–25.09
+- [ ] **Per-symbol OFFSET — не нужен:** решили «для всех один» (TODO закрыт)
 - [ ] `bot_screener_yrovni/scanner.py:137` — **синтаксическая ошибка блокирует `mypy .`** (не трогал, не мой файл)
 - [ ] **Алерты не трогал по заказу:** в `robot_zakol/.env` нет `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` → только лог; уровень не везде ERROR (fill=INFO, cancel-fail=WARNING, kill/исключение=ERROR)

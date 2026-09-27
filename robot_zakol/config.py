@@ -101,6 +101,13 @@ class ZakolConfig(BaseModel):
             raise ValueError("TTL_SEC должен быть > 0")
         return v
 
+    @field_validator("position_pct")
+    @classmethod
+    def _position_pct_range(cls, v: float) -> float:
+        if not (0 < v <= 100):
+            raise ValueError("POSITION_PCT должен быть в (0, 100]")
+        return v
+
     def validate_for_live(self) -> None:
         """Проверить обязательные поля перед live-запуском."""
         if not self.api_key or not self.api_secret:

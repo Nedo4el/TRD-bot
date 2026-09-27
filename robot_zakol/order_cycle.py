@@ -51,6 +51,15 @@ def _order_id(resp: dict[str, Any]) -> str:
     return str(resp.get("result", {}).get("orderId", ""))
 
 
+def _log_task_result(task: asyncio.Task[Any]) -> None:
+    """E.1: залогировать упавшую фоновую задачу вместо 'never retrieved'."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("фоновая задача упала: %s", exc, exc_info=exc)
+
+
 class OrderCycle:
     """Цикл робота: брекет ±offset, fill любой стороны, SL/TP."""
 
@@ -73,6 +82,10 @@ class OrderCycle:
         self.notifier = notifier
         self._stop = asyncio.Event()
         self._last_balance_poll = 0.0
+        # E.4: не даём _on_filled выполняться параллельно с собой же
+        self._fill_lock = asyncio.Lock()
+        # E.3: экспоненциальный backoff при неудачном снятии лимитки на TTL
+        self._ttl_backoff = 0.0
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -246,8 +259,18 @@ class OrderCycle:
                         task.cancel()
                 results = await asyncio.gather(*waiters, return_exceptions=True)
                 for result in results:
+                    # E.1: исключения задач не должны уходить в молчаливый gather
+                    if isinstance(result, BaseException):
+                        if not isinstance(result, asyncio.CancelledError):
+                            logger.error("waiter упал: %s", result, exc_info=result)
+                        continue
                     if isinstance(result, dict):
                         self._handle_ws_fill(result)
+
+    def _spawn(self, coro: Any) -> None:
+        """Фоновая задача с логированием исключения (E.1)."""
+        task = asyncio.get_running_loop().create_task(coro)
+        task.add_done_callback(_log_task_result)
 
     def _handle_ws_fill(self, msg: dict[str, Any]) -> None:
         data = msg.get("data")
@@ -283,7 +306,7 @@ class OrderCycle:
             return
         filled = matched.filled_qty
         if filled > 0 and filled >= matched.qty * self.cfg.partial_fill_pct:
-            asyncio.get_running_loop().create_task(self._on_filled(matched))
+            self._spawn(self._on_filled(matched))
 
     async def _on_ttl(self) -> None:
         pendings = self._pendings()
@@ -302,10 +325,27 @@ class OrderCycle:
         ref = self._ref_price()
         price = await self._current_price()
         delta = abs(price - ref) / ref if ref else 1.0
-        kind = "extend" if delta < self.cfg.min_price_change else "re-place"
-        logger.info("ttl %s delta=%.4f%%", kind, delta * 100)
+        if delta < self.cfg.min_price_change:
+            # F.3: цена почти не сдвинулась — не мусорим cancel/replace,
+            # держим те же лимитки и просто продлеваем TTL
+            logger.info("ttl extend delta=%.4f%%", delta * 100)
+            for p in pendings:
+                p.placed_at = time.monotonic()
+            await self.store.save()
+            return
+        logger.info("ttl re-place delta=%.4f%%", delta * 100)
         for p in pendings:
-            await self._cancel_pending(p)
+            if not await self._cancel_pending(p):
+                # E.3: ордер мог остаться на бирже — state не трогаем,
+                # ретраим с растущей паузой, чтобы не долбить API
+                self._ttl_backoff = min(max(self._ttl_backoff * 2, 1.0), 60.0)
+                logger.error(
+                    "ttl cancel failed — retry через %.0fs",
+                    self._ttl_backoff,
+                )
+                await asyncio.sleep(self._ttl_backoff)
+                return
+        self._ttl_backoff = 0.0
         self.store.state.phase = PHASE_IDLE
         await self.store.save()
 
@@ -342,7 +382,7 @@ class OrderCycle:
     async def _cancel_pending(
         self, pending: PendingOrder, keep_partial: bool = False
     ) -> bool:
-        """Снять лимитку. False — биржа отказала (ордер может остаться)."""
+        """Снять лимитку. False — снять не удалось, state НЕ чистим."""
         ok = True
         try:
             await self.client.cancel_order(self.cfg.symbol, pending.order_id)
@@ -350,16 +390,28 @@ class OrderCycle:
             logger.warning("cancel failed: %s", exc)
             ok = False
             self._notify(f"zakol: cancel {pending.order_id} не прошёл — {exc}")
+        if not ok:
+            # биржа могла отказаться, потому что ордер уже снят/исполнен
+            ok = not await self._order_is_open(pending.order_id)
         if keep_partial and pending.filled_qty > 0:
             logger.info("partial kept qty=%.8g", pending.filled_qty)
+        if not ok:
+            # D.4: ордер жив на бирже — state обязан его помнить
+            logger.error("cancel %s не прошёл — state сохранён", pending.order_id)
+            return False
         st = self.store.state
         if st.pending_buy is pending:
             st.pending_buy = None
         if st.pending_sell is pending:
             st.pending_sell = None
-        return ok
+        return True
 
     async def _on_filled(self, pending: PendingOrder) -> None:
+        # E.4: только одна обработка филла за раз (WS-таск vs _on_ttl)
+        async with self._fill_lock:
+            await self._handle_filled(pending)
+
+    async def _handle_filled(self, pending: PendingOrder) -> None:
         filled = pending.filled_qty
         if filled <= 0:
             await self._cancel_pending(pending)
@@ -385,11 +437,15 @@ class OrderCycle:
         if other is not None:
             cancelled = await self._cancel_pending(other)
             if not cancelled:
+                # D.4: снять не вышло — other остаётся в state (recover снимет)
                 await self._guard_reduce_only(other, side)
-        self.store.state.pending_buy = None
-        self.store.state.pending_sell = None
-        self.store.state.position = pos
-        self.store.state.phase = PHASE_IN_POSITION
+        st = self.store.state
+        if st.pending_buy is pending:
+            st.pending_buy = None
+        if st.pending_sell is pending:
+            st.pending_sell = None
+        st.position = pos
+        st.phase = PHASE_IN_POSITION
         await self.store.save()
         await self._apply_server_sl_tp(pos)
         logger.info(
@@ -540,7 +596,8 @@ class OrderCycle:
         )
 
     async def _apply_server_sl_tp(self, pos: OpenPosition) -> None:
-        take = None
+        # B.5: take_pct=0 -> отправляем явный 0, чтобы биржа сняла старый TP
+        take: float | None = 0.0
         if self.cfg.take_pct > 0:
             take = take_level(pos.entry_price, self.cfg.take_pct, pos.side)
         try:
