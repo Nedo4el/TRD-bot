@@ -192,3 +192,10 @@
 - [ ] **Per-symbol OFFSET — не нужен:** решили «для всех один» (TODO закрыт)
 - [ ] `bot_screener_yrovni/scanner.py:137` — **синтаксическая ошибка блокирует `mypy .`** (не трогал, не мой файл)
 - [ ] **Алерты не трогал по заказу:** в `robot_zakol/.env` нет `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` → только лог; уровень не везде ERROR (fill=INFO, cancel-fail=WARNING, kill/исключение=ERROR)
+
+## Доработки по аудиту надёжности (2026-09-29) — ничего ещё не реализовано
+- [ ] `RECONNECT_SEC` / `HEARTBEAT_SEC` в `.env`: сейчас backoff захардкожен `base=2.0, cap=60.0` и health-check `sleep(1)` — `data_feed.py:165,169,210,214`
+- [ ] `RECV_WINDOW` в `.env` (сейчас хардкод 10000 мс — `core/bybit_client.py:80,690`) + `TIME_SYNC` (сверка часов с сервером Bybit, лечение retCode 10002)
+- [ ] `KILL_SWITCH` — файл-флаг ручной остановки (сейчас только `state.kill` от риск-логики + Ctrl+C)
+- [ ] `ORDER_LINK_ID_PREFIX` в `.env` (сейчас хардкод `zk-` — `order_cycle.py:47`)
+- [ ] `FUNDING_AWARE` — не открывать позицию за N сек до фандинга (есть read-only `get_funding_rate()` — `core/bybit_client.py:361`, в цикле не используется)
