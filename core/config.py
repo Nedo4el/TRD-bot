@@ -118,6 +118,14 @@ class Config:
         default_factory=lambda: get_env_float("TAKE_PROFIT_PCT", 4.0),
     )
 
+    # --- Подпись запросов Bybit ---
+    # Окно валидности подписи, мс (retCode 10002 = часы/окно не совпали)
+    recv_window: int = field(
+        default_factory=lambda: get_env_int("RECV_WINDOW", 10000),
+    )
+    # Сверять локальное время с сервером Bybit и применять сдвиг подписи
+    time_sync: bool = field(default_factory=lambda: get_env_bool("TIME_SYNC", True))
+
     # --- WebSocket ---
     ws_enabled: bool = field(default_factory=lambda: get_env_bool("WS_ENABLED", True))
 

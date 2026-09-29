@@ -59,6 +59,12 @@ class ZakolState:
     # базовый и пиковый баланс счёта — для kill-switch по equity
     start_equity: float = 0.0
     peak_equity: float = 0.0
+    # COOLDOWN_SEC: время последнего закрытия позиции (unix, с; 0 = не было)
+    last_close_at: float = 0.0
+    # дневной стоп-кран: счётчики текущих суток (UTC)
+    day: str = ""  # "YYYY-MM-DD" по UTC
+    day_pnl: float = 0.0
+    day_trades: int = 0
     symbol: str = ""  # инструмент, которому принадлежит state
     schema_version: int = SCHEMA_VERSION
 
@@ -92,6 +98,10 @@ class StateStore:
                 kill=bool(raw.get("kill", False)),
                 start_equity=float(raw.get("start_equity", 0.0)),
                 peak_equity=float(raw.get("peak_equity", 0.0)),
+                last_close_at=float(raw.get("last_close_at", 0.0)),
+                day=str(raw.get("day", "")),
+                day_pnl=float(raw.get("day_pnl", 0.0)),
+                day_trades=int(raw.get("day_trades", 0)),
                 symbol=str(raw.get("symbol", "")),
                 schema_version=int(raw.get("schema_version", SCHEMA_VERSION)),
             )

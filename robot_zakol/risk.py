@@ -160,3 +160,37 @@ def fill_ratio(filled_qty: float, order_qty: float) -> float:
     if order_qty <= 0:
         return 0.0
     return filled_qty / order_qty
+
+
+def slippage_ok(expected: float, actual: float, slippage_pct: float) -> bool:
+    """Фактическая цена уложилась в допуск SLIPPAGE_PCT (0 = проверка выкл.)."""
+    if slippage_pct <= 0:
+        return True
+    if expected <= 0 or actual <= 0:
+        return False
+    return abs(actual - expected) / expected <= slippage_pct
+
+
+def cooldown_remaining(last_close_at: float, now: float, cooldown_sec: float) -> float:
+    """Сколько секунд ещё действует пауза после закрытия (0 = паузы нет)."""
+    if cooldown_sec <= 0 or last_close_at <= 0:
+        return 0.0
+    return max(last_close_at + cooldown_sec - now, 0.0)
+
+
+def daily_stop_reason(
+    day_pnl: float,
+    day_trades: int,
+    daily_loss_limit: float,
+    max_trades_per_day: int,
+) -> str | None:
+    """Причина дневного стоп-крана (None — входы разрешены). 0 = лимит выкл.
+
+    Действует отдельно от сессионного kill-switch: блокирует новые входы,
+    но не останавливает бота и не трогает открытую позицию.
+    """
+    if daily_loss_limit > 0 and day_pnl <= -abs(daily_loss_limit):
+        return "daily_loss"
+    if max_trades_per_day > 0 and day_trades >= max_trades_per_day:
+        return "max_trades"
+    return None

@@ -193,9 +193,55 @@
 - [ ] `bot_screener_yrovni/scanner.py:137` — **синтаксическая ошибка блокирует `mypy .`** (не трогал, не мой файл)
 - [ ] **Алерты не трогал по заказу:** в `robot_zakol/.env` нет `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` → только лог; уровень не везде ERROR (fill=INFO, cancel-fail=WARNING, kill/исключение=ERROR)
 
-## Доработки по аудиту надёжности (2026-09-29) — ничего ещё не реализовано
-- [ ] `RECONNECT_SEC` / `HEARTBEAT_SEC` в `.env`: сейчас backoff захардкожен `base=2.0, cap=60.0` и health-check `sleep(1)` — `data_feed.py:165,169,210,214`
-- [ ] `RECV_WINDOW` в `.env` (сейчас хардкод 10000 мс — `core/bybit_client.py:80,690`) + `TIME_SYNC` (сверка часов с сервером Bybit, лечение retCode 10002)
-- [ ] `KILL_SWITCH` — файл-флаг ручной остановки (сейчас только `state.kill` от риск-логики + Ctrl+C)
-- [ ] `ORDER_LINK_ID_PREFIX` в `.env` (сейчас хардкод `zk-` — `order_cycle.py:47`)
-- [ ] `FUNDING_AWARE` — не открывать позицию за N сек до фандинга (есть read-only `get_funding_rate()` — `core/bybit_client.py:361`, в цикле не используется)
+## Доработки по аудиту надёжности (2026-09-29) — ✅ реализовано в тот же день
+См. раздел ниже «Сессия 2026-09-29»: RECONNECT/HEARTBEAT, RECV_WINDOW+TIME_SYNC,
+KILL_SWITCH, ORDER_LINK_ID_PREFIX, FUNDING_AWARE + новые SLIPPAGE/COOLDOWN/DAILY.
+
+---
+
+# Сессия 2026-09-29 — НАДЁЖНОСТЬ: 8 фич, все зелёные
+
+**Проверки:** `ruff check` + `ruff format --check` + `mypy robot_zakol core` чисто,
+**154 passed**. (`mypy .` по-прежнему блокируется `bot_screener_yrovni/scanner.py:137`
+— синтаксис, не наш файл.) Live-ордера не выставлялись.
+
+## Что добавлено (всё из `.env`, ничего не захардкожено)
+
+| Параметр | Как работает | Где |
+|----------|--------------|-----|
+| `SLIPPAGE_PCT=0.005` | после cancel-раунда сверяем тик фида с ценой расчёта: ушло дальше допуска → лимитки считаются по свежей цене (0 = выкл). Маркет-выхода в боте нет (выходы серверные) — `risk.slippage_ok()` готов для него | `order_cycle._fresh_price`, `risk.slippage_ok` |
+| `COOLDOWN_SEC=15` | после каждого закрытия (стоп/тейк/exchange) пауза перед новым брекетом; таймер `state.last_close_at` (unix, переживает рестарт) | `_entry_blocked`, `risk.cooldown_remaining` |
+| `DAILY_LOSS_LIMIT=0` / `MAX_TRADES_PER_DAY=0` | дневной стоп-кран: блокирует **входы**, бот не останавливает, позицию не трогает; счётчики `day/day_pnl/day_trades` (граница суток — **UTC**), сбрасываются в `_roll_day` | `_entry_blocked`, `risk.daily_stop_reason` |
+| `RECONNECT_SEC=2` | база экспоненциального backoff WS (потолок max(base,60)); `HEARTBEAT_SEC=1` — период проверки `is_connected()` (был хардкод 1с) | `data_feed` |
+| `RECV_WINDOW=10000` / `TIME_SYNC=true` | окно подписи в `.env` (был хардкод в 2 местах); сверка `/v5/market/time` на старте + при retCode 10002 → сдвиг применяется подменой `pybit._helpers.generate_timestamp` (лечит 10002, а не только репортит). Рекурсия защищена флагом `_syncing_time` | `core/bybit_client.sync_time/_is_time_error` |
+| `KILL_SWITCH=data/zakol.kill` | создать файл → `state.kill` → STOPPED (в любой фазе, проверка в начале итерации `run()`); позиция остаётся под серверным SL/TP. Пустое значение = выкл. | `order_cycle._kill_switch_hit` |
+| `ORDER_LINK_ID_PREFIX=zk-` | префикс `orderLinkId` (валидация длины 1..17: Bybit лимит 36 = префикс + 16 hex + "-ro") | `order_cycle._order_link_id` |
+| `FUNDING_AWARE=true` / `FUNDING_WINDOW_SEC=60` | перед входом — `get_tickers.nextFundingTime`; в окне ≤N сек до фандинга вход откладывается (проверка только в IDLE, открытую позицию не трогает) | `order_cycle._funding_left` |
+
+## Поведение гейта входа (порядок в `_entry_blocked`)
+`kill-switch файл` (в начале `run()`) → `день UTC` → `daily stop` → `cooldown` → `фандинг`.
+Каждый запрет логируется/уведомляется **один раз** (при смене причины), цикл спит ≤5с.
+
+## State (JSON) — новые поля, миграция не нужна (старые файлы читаются)
+`last_close_at`, `day`, `day_pnl`, `day_trades` (`state.py`, `SCHEMA_VERSION` не менялся:
+все поля с дефолтами).
+
+## Тесты (новые, ~20)
+slippage/cooldown/daily-стоп (математика + гейт), roll-day, close → счётчики дня,
+kill-switch через `run()` (STOPPED, ордеров нет), funding-окно, пересчёт лимиток по
+slippage + префикс link-id, `_is_time_error`, `sync_time` со сдвигом,
+`_amain` → time_sync + WS-параметры, `DataFeed` reconnect/heartbeat.
+
+## Решения/компромиссы
+- **Дневной кран считает закрытия, не открытия** (сделка = закрытая позиция).
+- **Дневная граница UTC** (в ответах/отчётах показывать МСК — правило AGENTS.md).
+- **Сдвиг часов патчит приватный helper pybit** — единственный способ лечить 10002
+  без своего REST-клиента; идемпотентно, включается только при `TIME_SYNC=true`.
+- Значения в `.env`: cooldown 15с включён; `DAILY_LOSS_LIMIT`/`MAX_TRADES_PER_DAY`
+  оставлены 0 (выкл) — числа должен выбрать владелец.
+- Маркет-выхода в боте нет → `SLIPPAGE_PCT` работает на re-place; при добавлении
+  маркет-выхода использовать `risk.slippage_ok()`.
+
+## Осталось (не входило в план)
+См. список «Что осталось (не входило в план)» в разделе от 27.09 — ничего не закрыто
+и ничего не добавлено.

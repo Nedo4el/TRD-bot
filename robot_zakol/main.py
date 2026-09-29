@@ -52,6 +52,8 @@ def _core_config(zakol: ZakolConfig) -> Config:
         take_profit_pct=0.0,
         position_pct=zakol.position_pct,
         fixed_qty=zakol.fixed_qty,
+        recv_window=zakol.recv_window,
+        time_sync=zakol.time_sync,
     )
 
 
@@ -75,7 +77,14 @@ async def _amain() -> None:
     client = BybitClient(cfg)
     loop = asyncio.get_running_loop()
     notifier = Notifier(cfg)
-    feed = DataFeed(cfg, loop, cfg.symbol, notifier.notify)
+    feed = DataFeed(
+        cfg,
+        loop,
+        cfg.symbol,
+        notifier.notify,
+        reconnect_sec=zakol.reconnect_sec,
+        heartbeat_sec=zakol.heartbeat_sec,
+    )
     store = StateStore(cfg.state_path, symbol=zakol.symbol)
     stop_event = asyncio.Event()
     cycle: OrderCycle | None = None
@@ -83,6 +92,9 @@ async def _amain() -> None:
     stopper: asyncio.Task[Any] | None = None
 
     try:
+        if zakol.time_sync:
+            # TIME_SYNC: сверка часов с биржей, лечение retCode 10002
+            await client.sync_time()
         filters = await client.get_instrument_filters(cfg.symbol)
         # A.2: hedge-режим боту не подходит (positionIdx=0)
         mode = await client.get_position_mode(cfg.symbol)

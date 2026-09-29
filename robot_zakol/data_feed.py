@@ -31,11 +31,17 @@ class DataFeed:
         loop: asyncio.AbstractEventLoop,
         symbol: str,
         on_alert: Callable[[str], Coroutine[Any, Any, None]] | None = None,
+        reconnect_sec: float = 2.0,
+        heartbeat_sec: float = 1.0,
     ) -> None:
         self._config = config
         self._loop = loop
         self._symbol = symbol
         self._on_alert = on_alert
+        # RECONNECT_SEC — база экспоненциального backoff (потолок 60с),
+        # HEARTBEAT_SEC — период проверки живости соединения
+        self._reconnect_sec = reconnect_sec
+        self._heartbeat_sec = heartbeat_sec
         self.prices: asyncio.Queue[float] = asyncio.Queue()
         self.order_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.exec_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -162,11 +168,15 @@ class DataFeed:
                 while not self._stop.is_set():
                     if not ws.is_connected():
                         raise ConnectionError("public ws down")
-                    time.sleep(1)
+                    time.sleep(self._heartbeat_sec)
             except Exception as exc:  # noqa: BLE001
                 if self._stop.is_set():
                     break
-                delay = exponential_backoff(attempt, base=2.0, cap=60.0)
+                delay = exponential_backoff(
+                    attempt,
+                    base=self._reconnect_sec,
+                    cap=max(self._reconnect_sec, 60.0),
+                )
                 attempt += 1
                 logger.warning("public WS: %s, retry %.1fs", exc, delay)
                 time.sleep(delay)
@@ -207,11 +217,15 @@ class DataFeed:
                 while not self._stop.is_set():
                     if not ws.is_connected():
                         raise ConnectionError("private ws down")
-                    time.sleep(1)
+                    time.sleep(self._heartbeat_sec)
             except Exception as exc:  # noqa: BLE001
                 if self._stop.is_set():
                     break
-                delay = exponential_backoff(attempt, base=2.0, cap=60.0)
+                delay = exponential_backoff(
+                    attempt,
+                    base=self._reconnect_sec,
+                    cap=max(self._reconnect_sec, 60.0),
+                )
                 attempt += 1
                 logger.warning("private WS: %s, retry %.1fs", exc, delay)
                 time.sleep(delay)

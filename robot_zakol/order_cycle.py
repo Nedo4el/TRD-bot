@@ -7,10 +7,15 @@ import logging
 import math
 import time
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Protocol
 
+from core.config import PROJECT_ROOT
 from robot_zakol.config import ZakolConfig
 from robot_zakol.risk import (
+    cooldown_remaining,
+    daily_stop_reason,
     fill_ratio,
     initial_stop,
     limit_buy_price,
@@ -18,6 +23,7 @@ from robot_zakol.risk import (
     on_price,
     position_pnl,
     should_kill,
+    slippage_ok,
     take_level,
 )
 from robot_zakol.state import (
@@ -44,8 +50,9 @@ class FeedProtocol(Protocol):
     resync_needed: bool
 
 
-def _order_link_id() -> str:
-    return f"zk-{uuid.uuid4().hex[:16]}"
+def _order_link_id(prefix: str) -> str:
+    """Уникальный orderLinkId с настраиваемым префиксом (идемпотентность)."""
+    return f"{prefix}{uuid.uuid4().hex[:16]}"
 
 
 def _order_id(resp: dict[str, Any]) -> str:
@@ -87,6 +94,8 @@ class OrderCycle:
         self._fill_lock = asyncio.Lock()
         # E.3: экспоненциальный backoff при неудачном снятии лимитки на TTL
         self._ttl_backoff = 0.0
+        # последняя причина запрета входа (чтобы не спамить лог каждый цикл)
+        self._gate_reason: str | None = None
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -117,6 +126,8 @@ class OrderCycle:
             while not self._stop.is_set():
                 await self._maybe_resync()
                 await self._maybe_equity_kill()
+                # файл-флаг → state.kill; дальше обработает стейт-машина
+                await self._kill_switch_hit()
                 st = self.store.state
                 if st.kill or st.phase == PHASE_STOPPED:
                     await self._enter_stopped()
@@ -125,6 +136,8 @@ class OrderCycle:
                     await self._manage_position()
                 elif st.phase == PHASE_WORKING:
                     await self._await_working()
+                elif await self._entry_blocked():
+                    continue  # вход запрещён: день/кулдаун/фандинг
                 else:
                     await self._place_bracket()
         except Exception as exc:
@@ -133,6 +146,107 @@ class OrderCycle:
             raise
         finally:
             await self._on_shutdown()
+
+    # --------------------------- Вход: разрешён? ---------------------------
+
+    async def _entry_blocked(self) -> bool:
+        """Проверки перед новым входом. True — вход запрещён, цикл ждёт.
+
+        Каждый запрет логируется один раз (при смене причины), а не каждый цикл.
+        Килл-файл проверяется отдельно, в начале каждой итерации run().
+        """
+        await self._roll_day()
+        st = self.store.state
+        reason: str | None = None
+        detail = ""
+        wait = 1.0
+        stop = daily_stop_reason(
+            st.day_pnl,
+            st.day_trades,
+            self.cfg.daily_loss_limit,
+            self.cfg.max_trades_per_day,
+        )
+        if stop is not None:
+            reason = stop
+            detail = (
+                f"дневной стоп-кран ({stop}): "
+                f"pnl дня {st.day_pnl:+.2f}, сделок {st.day_trades}"
+            )
+        else:
+            wait = cooldown_remaining(
+                st.last_close_at, time.time(), self.cfg.cooldown_sec
+            )
+            if wait > 0:
+                reason = "cooldown"
+                detail = f"кулдаун после закрытия: ещё {wait:.0f}с"
+            else:
+                left = await self._funding_left()
+                if left is not None:
+                    reason = "funding"
+                    detail = f"фандинг через {left:.0f}с — вход отложен"
+                    wait = left
+        if reason is None:
+            if self._gate_reason is not None:
+                logger.info("вход разрешён снова")
+                self._gate_reason = None
+            return False
+        if reason != self._gate_reason:
+            self._gate_reason = reason
+            logger.warning("вход запрещён: %s", detail)
+            self._notify(f"zakol: вход запрещён — {detail}")
+        await asyncio.sleep(max(min(wait, 5.0), 0.1))
+        return True
+
+    def _kill_switch_file(self) -> Path | None:
+        """Путь к файлу-флагу ручной остановки (None — KILL_SWITCH выкл.)."""
+        raw = self.cfg.kill_switch_file.strip()
+        if not raw:
+            return None
+        path = Path(raw)
+        return path if path.is_absolute() else PROJECT_ROOT / path
+
+    async def _kill_switch_hit(self) -> bool:
+        """Файл-флаг на диске — ручная остановка без правки .env."""
+        path = self._kill_switch_file()
+        if path is None or not path.exists() or self.store.state.kill:
+            return False
+        logger.error("KILL_SWITCH: найден файл %s — ручная остановка", path)
+        await self._trigger_kill("manual")
+        return True
+
+    async def _roll_day(self) -> None:
+        """Перевести дневные счётчики на новые сутки (граница — по UTC)."""
+        today = datetime.now(timezone.utc).date().isoformat()
+        st = self.store.state
+        if st.day == today:
+            return
+        if st.day and (st.day_pnl or st.day_trades):
+            logger.info(
+                "сутки %s закрыты: pnl=%+.2f сделок=%d",
+                st.day,
+                st.day_pnl,
+                st.day_trades,
+            )
+        st.day = today
+        st.day_pnl = 0.0
+        st.day_trades = 0
+        await self.store.save()
+
+    async def _funding_left(self) -> float | None:
+        """FUNDING_AWARE: секунд до фандинга, если сейчас входить нельзя."""
+        if not self.cfg.funding_aware:
+            return None
+        try:
+            next_funding = await self.client.get_next_funding_time(self.cfg.symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("get_next_funding_time: %s", exc)
+            return None
+        if next_funding is None:
+            return None
+        left = float(next_funding) - time.time()
+        if 0 <= left <= self.cfg.funding_window_sec:
+            return left
+        return None
 
     async def _order_qty(self, price: float) -> float:
         """Размер ордера в единицах инструмента, кратный qty_step биржи.
@@ -156,14 +270,31 @@ class OrderCycle:
                 )
         return qty
 
+    def _fresh_price(self, ref: float) -> float:
+        """SLIPPAGE_PCT: цена из фида ушла дальше допуска — берём свежую.
+
+        За время cancel-раунда тик мог обновиться; лимитки считаем по нему.
+        """
+        actual = self.feed.last_price
+        if actual > 0 and not slippage_ok(ref, actual, self.cfg.slippage_pct):
+            logger.info(
+                "slippage: цена %.8g → %.8g (допуск %.2f%%) — пересчёт",
+                ref,
+                actual,
+                self.cfg.slippage_pct * 100,
+            )
+            return actual
+        return ref
+
     async def _place_bracket(self) -> None:
         """Поставить пару PostOnly-лимиток: buy -offset и sell +offset."""
-        await self._cancel_stray_orders()
         price = await self._current_price()
+        await self._cancel_stray_orders()
+        price = self._fresh_price(price)
         qty = await self._order_qty(price)
         buy_price = limit_buy_price(price, self.cfg.offset_pct, self.tick_size)
         sell_price = limit_sell_price(price, self.cfg.offset_pct, self.tick_size)
-        buy_link = _order_link_id()
+        buy_link = _order_link_id(self.cfg.order_link_prefix)
         resp_buy = await self.client.place_order(
             symbol=self.cfg.symbol,
             side="Buy",
@@ -184,7 +315,7 @@ class OrderCycle:
         )
         # сохраняем сразу: если второй ордер упадёт — на диске уже есть первый
         await self.store.save()
-        sell_link = _order_link_id()
+        sell_link = _order_link_id(self.cfg.order_link_prefix)
         resp_sell = await self.client.place_order(
             symbol=self.cfg.symbol,
             side="Sell",
@@ -631,9 +762,14 @@ class OrderCycle:
             await self.store.save()
             return
         pnl = await self._exit_pnl(pos, reason)
+        await self._roll_day()
         st = self.store.state
         st.session_pnl += pnl
         st.peak_session_pnl = max(st.peak_session_pnl, st.session_pnl)
+        # дневной стоп-кран + кулдаун после закрытия
+        st.day_pnl += pnl
+        st.day_trades += 1
+        st.last_close_at = time.time()
         st.position = None
         st.phase = PHASE_IDLE
         if self._kill_by_equity():
@@ -801,9 +937,13 @@ class OrderCycle:
             )
         elif st.phase == PHASE_IN_POSITION:
             realized = await self._realized_pnl()
+            await self._roll_day()
             if realized is not None:
                 st.session_pnl += realized
                 st.peak_session_pnl = max(st.peak_session_pnl, st.session_pnl)
+                st.day_pnl += realized
+                st.day_trades += 1
+                st.last_close_at = time.time()
                 logger.warning(
                     "позиция закрыта вне бота: pnl=%.4f (closedPnl, REST)",
                     realized,

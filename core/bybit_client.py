@@ -23,6 +23,39 @@ from core.utils import exponential_backoff, retry, run_in_thread
 
 logger = get_logger(__name__)
 
+# --- Сдвиг локальных часов относительно сервера Bybit (TIME_SYNC) -----------
+# pybit подписывает запросы через pybit._helpers.generate_timestamp(): часы,
+# отстающие/опережающие биржу, дают retCode 10002 (окно подписи истекло).
+# После сверки через /v5/market/time сдвиг один раз подменяет генератор.
+_TIME_OFFSET_MS = 0
+_TIME_OFFSET_INSTALLED = False
+
+
+def _signed_timestamp() -> int:
+    """Метка времени для подписи: локальное время + сдвиг до сервера, мс."""
+    return int(time.time() * 1000) + _TIME_OFFSET_MS
+
+
+def _install_time_offset() -> None:
+    """Подменить генератор timestamp в pybit (идемпотентно)."""
+    global _TIME_OFFSET_INSTALLED
+    if _TIME_OFFSET_INSTALLED:
+        return
+    import pybit._helpers as pybit_helpers
+
+    pybit_helpers.generate_timestamp = _signed_timestamp  # type: ignore[attr-defined]
+    _TIME_OFFSET_INSTALLED = True
+
+
+def _is_time_error(exc: BaseException) -> bool:
+    """retCode 10002 (окно подписи) или ретраи pybit — лечим сверкой часов."""
+    if isinstance(exc, InvalidRequestError):
+        return bool(exc.status_code == 10002)
+    # pybit не отдаёт код ретраев — копаем в тексте сообщения
+    return (
+        isinstance(exc, FailedRequestError) and "retries exceeded" in str(exc).lower()
+    )
+
 
 @dataclass
 class Candle:
@@ -77,8 +110,10 @@ class BybitClient:
             testnet=config.testnet,
             api_key=config.api_key,
             api_secret=config.api_secret,
-            recv_window=10000,  # окно валидности подписи запроса, мс
+            recv_window=config.recv_window,  # окно валидности подписи, мс
         )
+        # защита от рекурсии: sync_time сам вызывается из обработчика 10002
+        self._syncing_time = False
 
         # --- Rate limiting ---
         # Минимальный интервал между запросами, чтобы не превысить лимиты API.
@@ -147,12 +182,54 @@ class BybitClient:
             # Ошибки API (неверные параметры, нехватка средств и т.п.)
             # логируются на уровне error, но НЕ считаются временными.
             logger.error("Bybit API ошибка в %s: %s", method_name, exc)
+            if self.config.time_sync and _is_time_error(exc):
+                await self.sync_time()
             raise
         except Exception as exc:
             # Временные сбои (сеть, таймауты) — retry уже отработал внутри.
             logger.error("Сбой вызова %s: %s", method_name, exc)
             raise
         return result
+
+    async def sync_time(self) -> int | None:
+        """Сверить локальные часы с сервером Bybit и применить сдвиг подписи.
+
+        Лечение retCode 10002: подпись считается от серверного времени,
+        локальное смещение часов больше не ломает запросы.
+
+        Returns:
+            Сдвиг в мс (сервер − локальное время) или None при сбое сверки.
+        """
+        if self._syncing_time:
+            return None  # уже внутри сверки — выходим, чтобы не рекурсировать
+        self._syncing_time = True
+        try:
+            resp = await self._call("get_server_time")
+            result = resp.get("result") or {}
+            server_ms = int(result.get("timeNano") or 0) // 1_000_000
+            if not server_ms:
+                server_ms = int(result.get("timeSecond") or 0) * 1000
+            if not server_ms:
+                logger.warning("time sync: пустой ответ /v5/market/time")
+                return None
+            offset = server_ms - int(time.time() * 1000)
+            global _TIME_OFFSET_MS
+            _TIME_OFFSET_MS = offset
+            _install_time_offset()
+            if abs(offset) > 1000:
+                logger.warning(
+                    "time sync: часы отстают/опережают биржу на %d мс — "
+                    "сдвиг применён, проверь NTP",
+                    offset,
+                )
+            else:
+                logger.info("time sync: сдвиг %+d мс", offset)
+            return offset
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("time sync failed: %s", exc)
+            return None
+        finally:
+            self._syncing_time = False
 
     async def get_price(self, symbol: str) -> float:
         """Получить текущую цену инструмента (REST)."""
@@ -375,6 +452,24 @@ class BybitClient:
             return None
         rate = rows[0].get("fundingRate")
         return float(rate) if rate is not None else None
+
+    async def get_next_funding_time(self, symbol: str) -> float | None:
+        """Время следующего фандинга инструмента (unix, с; None — нет данных).
+
+        Нужно FUNDING_AWARE: не открывать позицию в окне перед финансированием.
+        """
+        resp = await self._call(
+            "get_tickers",
+            category=self.config.category,
+            symbol=symbol,
+        )
+        rows = resp["result"].get("list", [])
+        if not rows:
+            return None
+        raw = rows[0].get("nextFundingTime")
+        if raw in (None, "", "0"):
+            return None
+        return int(raw) / 1000.0
 
     async def place_stop_market(
         self,
@@ -687,7 +782,7 @@ class BybitClient:
                 testnet=self.config.testnet,
                 api_key=self.config.api_key,
                 api_secret=self.config.api_secret,
-                recv_window=10000,
+                recv_window=self.config.recv_window,
             )
             logger.info("HTTP-сессия Bybit пересоздана")
         except Exception as exc:  # noqa: BLE001

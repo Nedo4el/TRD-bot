@@ -224,6 +224,10 @@ class FakeClient:
         self.fail_on_place: int | None = None  # номер вызова place_order (1-based)
         self.balance = 0.0
         self.balance_calls = 0
+        self.next_funding: float | None = None
+
+    async def get_next_funding_time(self, symbol: str) -> float | None:
+        return self.next_funding
 
     async def get_balance(self) -> float:
         self.balance_calls += 1
@@ -1570,6 +1574,10 @@ def _patch_main(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> Any:
         def __init__(self, cfg: Any) -> None:
             pass
 
+        async def sync_time(self) -> int:
+            events.append("sync-time")
+            return 0
+
         async def get_instrument_filters(self, symbol: str) -> Any:
             return FakeFilters()
 
@@ -1580,8 +1588,17 @@ def _patch_main(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> Any:
             events.append("client-close")
 
     class FakeMainFeed:
-        def __init__(self, cfg: Any, loop: Any, symbol: str, on_alert: Any = None):
+        def __init__(
+            self,
+            cfg: Any,
+            loop: Any,
+            symbol: str,
+            on_alert: Any = None,
+            **kwargs: Any,
+        ) -> None:
             self.resync_needed = False
+            self.ws_params = kwargs
+            events.append(f"feed-init:{kwargs}")
 
         def start(self) -> None:
             events.append("feed-start")
@@ -1845,6 +1862,9 @@ def test_amain_rejects_hedge_mode(monkeypatch: pytest.MonkeyPatch) -> None:
         def __init__(self, cfg: Any) -> None:
             pass
 
+        async def sync_time(self) -> int:
+            return 0
+
         async def get_instrument_filters(self, symbol: str) -> Any:
             class F:
                 tick_size = 0.5
@@ -1873,3 +1893,345 @@ def test_data_feed_is_connected_flags() -> None:
     feed._public_up = True
     feed._private_up = True
     assert feed.is_connected() is True
+
+
+# ================ Надёжность: SLIPPAGE/COOLDOWN/DAY/WS/... ================
+
+
+async def _no_sleep(_seconds: float) -> None:
+    """Подмена asyncio.sleep в тестах гейтов (проверки ждали бы секунды)."""
+
+
+def _utc_today() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def test_slippage_ok_tolerance() -> None:
+    from robot_zakol.risk import slippage_ok
+
+    assert slippage_ok(100.0, 100.5, 0.0)  # 0 = проверка выключена
+    assert slippage_ok(100.0, 100.5, 0.01)
+    assert not slippage_ok(100.0, 102.0, 0.01)
+    assert not slippage_ok(0.0, 100.0, 0.01)
+
+
+def test_cooldown_remaining_math() -> None:
+    from robot_zakol.risk import cooldown_remaining
+
+    assert cooldown_remaining(0.0, 1000.0, 30.0) == 0.0
+    assert cooldown_remaining(1000.0, 1000.0, 30.0) == pytest.approx(30.0)
+    assert cooldown_remaining(1000.0, 1020.0, 30.0) == pytest.approx(10.0)
+    assert cooldown_remaining(1000.0, 1040.0, 30.0) == 0.0
+    assert cooldown_remaining(1000.0, 1005.0, 0.0) == 0.0
+
+
+def test_daily_stop_reason_limits() -> None:
+    from robot_zakol.risk import daily_stop_reason
+
+    assert daily_stop_reason(-9.0, 5, 10.0, 10) is None
+    assert daily_stop_reason(-10.0, 0, 10.0, 0) == "daily_loss"
+    assert daily_stop_reason(-11.0, 0, 10.0, 0) == "daily_loss"
+    assert daily_stop_reason(0.0, 3, 0.0, 3) == "max_trades"
+    assert daily_stop_reason(0.0, 2, 0.0, 3) is None
+    assert daily_stop_reason(-100.0, 100, 0.0, 0) is None  # всё выключено
+
+
+def test_config_rejects_bad_reliability_values() -> None:
+    with pytest.raises(ValueError, match="SLIPPAGE_PCT"):
+        _cfg(slippage_pct=1.5)
+    with pytest.raises(ValueError, match="RECV_WINDOW"):
+        _cfg(recv_window=0)
+    with pytest.raises(ValueError, match="ORDER_LINK_ID_PREFIX"):
+        _cfg(order_link_prefix="x" * 20)
+    with pytest.raises(ValueError, match="reconnect_sec"):
+        _cfg(reconnect_sec=0.0)
+    with pytest.raises(ValueError, match="DAILY_LOSS_LIMIT"):
+        _cfg(daily_loss_limit=-1.0)
+    with pytest.raises(ValueError, match="MAX_TRADES_PER_DAY"):
+        _cfg(max_trades_per_day=-1)
+
+
+def test_state_roundtrips_daily_counters(tmp_path: Path) -> None:
+    path = tmp_path / "st.json"
+    store = StateStore(path, symbol="QUSDT")
+    store.state.day = "2026-09-29"
+    store.state.day_pnl = -3.5
+    store.state.day_trades = 4
+    store.state.last_close_at = 1790000000.0
+    asyncio.run(store.save())
+
+    again = StateStore(path, symbol="QUSDT")
+    assert again.state.day == "2026-09-29"
+    assert again.state.day_pnl == pytest.approx(-3.5)
+    assert again.state.day_trades == 4
+    assert again.state.last_close_at == pytest.approx(1790000000.0)
+
+
+def test_entry_blocked_false_when_gates_off(tmp_path: Path) -> None:
+    client = FakeClient()
+    cfg = _cfg(kill_switch_file=str(tmp_path / "ks"))
+    cycle = _make_cycle(tmp_path, client, cfg=cfg)
+    assert asyncio.run(cycle._entry_blocked()) is False
+    assert cycle.store.state.day == _utc_today()
+
+
+def test_cooldown_blocks_entry(tmp_path: Path) -> None:
+    client = FakeClient()
+    cfg = _cfg(cooldown_sec=0.05, kill_switch_file=str(tmp_path / "ks"))
+    cycle = _make_cycle(tmp_path, client, cfg=cfg)
+    cycle.store.state.last_close_at = time.time()
+
+    assert asyncio.run(cycle._entry_blocked()) is True
+    assert cycle._gate_reason == "cooldown"
+
+    cycle.store.state.last_close_at = time.time() - 1.0
+    assert asyncio.run(cycle._entry_blocked()) is False
+    assert cycle._gate_reason is None
+
+
+def test_daily_loss_blocks_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    client = FakeClient()
+    cfg = _cfg(daily_loss_limit=5.0, kill_switch_file=str(tmp_path / "ks"))
+    cycle = _make_cycle(tmp_path, client, cfg=cfg)
+    st = cycle.store.state
+    st.day = _utc_today()
+    st.day_pnl = -4.9
+    assert asyncio.run(cycle._entry_blocked()) is False
+
+    st.day_pnl = -5.0
+    assert asyncio.run(cycle._entry_blocked()) is True
+    assert cycle._gate_reason == "daily_loss"
+
+
+def test_max_trades_blocks_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    client = FakeClient()
+    cfg = _cfg(max_trades_per_day=2, kill_switch_file=str(tmp_path / "ks"))
+    cycle = _make_cycle(tmp_path, client, cfg=cfg)
+    st = cycle.store.state
+    st.day = _utc_today()
+    st.day_trades = 2
+    assert asyncio.run(cycle._entry_blocked()) is True
+    assert cycle._gate_reason == "max_trades"
+
+
+def test_roll_day_resets_counters(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client)
+    st = cycle.store.state
+    st.day = "2020-01-01"
+    st.day_pnl = -7.0
+    st.day_trades = 9
+
+    asyncio.run(cycle._roll_day())
+
+    assert st.day == _utc_today()
+    assert st.day_pnl == 0.0
+    assert st.day_trades == 0
+
+
+def test_close_updates_day_counters_and_cooldown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    client = FakeClient()
+    client.pos = None
+    client.closed_pnl = -1.25
+    cfg = _cfg(cooldown_sec=30.0, kill_switch_file=str(tmp_path / "ks"))
+    cycle = _make_cycle(tmp_path, client, cfg=cfg)
+
+    async def run() -> None:
+        cycle.store.state.phase = PHASE_IN_POSITION
+        cycle.store.state.position = OpenPosition(
+            entry_price=97.0, qty=0.001, peak_price=97.0, stop_loss=95.06
+        )
+        await cycle._manage_position()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert st.day == _utc_today()
+    assert st.day_pnl == pytest.approx(-1.25)
+    assert st.day_trades == 1
+    assert st.last_close_at > 0
+    assert st.position is None
+
+    async def gate() -> bool:
+        return await cycle._entry_blocked()
+
+    assert asyncio.run(gate()) is True  # кулдаун после закрытия
+    assert cycle._gate_reason == "cooldown"
+
+
+def test_run_stops_on_kill_switch_file(tmp_path: Path) -> None:
+    client = FakeClient()
+    flag = tmp_path / "zakol.kill"
+    cfg = _cfg(kill_switch_file=str(flag))
+    cycle = _make_cycle(tmp_path, client, cfg=cfg)
+
+    # файла ещё нет — цикл дошёл бы до выставления ордера; ставим флаг сразу
+    # перед запуском, чтобы run() остановился на первой же итерации
+    assert asyncio.run(cycle._kill_switch_hit()) is False
+    flag.write_text("stop", encoding="utf-8")
+
+    asyncio.run(cycle.run())
+
+    st = cycle.store.state
+    assert st.kill is True
+    assert st.phase == PHASE_STOPPED
+    assert client.placed == []  # входов не было
+
+
+def test_funding_window_blocks_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    client = FakeClient()
+    cfg = _cfg(
+        funding_aware=True,
+        funding_window_sec=60.0,
+        kill_switch_file=str(tmp_path / "ks"),
+    )
+    cycle = _make_cycle(tmp_path, client, cfg=cfg)
+
+    client.next_funding = time.time() + 30
+    assert asyncio.run(cycle._entry_blocked()) is True
+    assert cycle._gate_reason == "funding"
+
+    client.next_funding = time.time() + 3600
+    assert asyncio.run(cycle._entry_blocked()) is False
+
+    client.next_funding = time.time() + 30
+    cycle.cfg = _cfg(funding_aware=False, kill_switch_file=str(tmp_path / "ks"))
+    assert asyncio.run(cycle._entry_blocked()) is False
+
+
+def test_place_bracket_recalculates_on_slippage(tmp_path: Path) -> None:
+    client = FakeClient()
+    cfg = _cfg(slippage_pct=0.01, order_link_prefix="zz-")
+    cycle = _make_cycle(tmp_path, client, cfg=cfg)
+
+    async def drift() -> None:
+        cycle.feed.last_price = 102.0  # тик ушёл за время cancel-раунда
+
+    cycle._cancel_stray_orders = drift  # type: ignore[method-assign]
+    asyncio.run(cycle._place_bracket())
+
+    st = cycle.store.state
+    assert st.pending_buy is not None
+    # цена 100 → 102 (2% > допуска 1%) → лимитки от 102: 102*0.97=98.94 → 99.0
+    assert st.pending_buy.price == pytest.approx(99.0)
+    assert st.pending_sell is not None
+    assert st.pending_sell.price == pytest.approx(105.0)
+    assert client.placed[0]["order_link_id"].startswith("zz-")
+    assert client.placed[1]["order_link_id"].startswith("zz-")
+
+
+def test_place_bracket_keeps_price_within_slippage(tmp_path: Path) -> None:
+    client = FakeClient()
+    cfg = _cfg(slippage_pct=0.05)
+    cycle = _make_cycle(tmp_path, client, cfg=cfg)
+
+    async def drift() -> None:
+        cycle.feed.last_price = 102.0  # 2% < допуска 5% — считаем по 100
+
+    cycle._cancel_stray_orders = drift  # type: ignore[method-assign]
+    asyncio.run(cycle._place_bracket())
+
+    st = cycle.store.state
+    assert st.pending_buy is not None
+    assert st.pending_buy.price == pytest.approx(97.0)
+
+
+def test_is_time_error_detection() -> None:
+    from pybit.exceptions import FailedRequestError, InvalidRequestError
+
+    from core.bybit_client import _is_time_error
+
+    timeout = InvalidRequestError(
+        request="r",
+        message="msg",
+        status_code=10002,
+        time="t",
+        resp_headers=None,
+    )
+    other = InvalidRequestError(
+        request="r",
+        message="msg",
+        status_code=10001,
+        time="t",
+        resp_headers=None,
+    )
+    retries = FailedRequestError(
+        request="r",
+        message="Bad Request. Retries exceeded maximum.",
+        status_code=400,
+        time="t",
+        resp_headers=None,
+    )
+    assert _is_time_error(timeout) is True
+    assert _is_time_error(other) is False
+    assert _is_time_error(retries) is True
+    assert _is_time_error(ValueError("boom")) is False
+
+
+def test_sync_time_applies_offset(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pybit import _helpers
+
+    from core import bybit_client as bc
+
+    client = bc.BybitClient(Config(api_key="k", api_secret="s", testnet=True))
+    server_sec = str(int(time.time()) + 5)
+
+    async def fake_call(method: str, *args: Any, **kwargs: Any) -> Any:
+        assert method == "get_server_time"
+        return {"result": {"timeSecond": server_sec, "timeNano": "0"}}
+
+    monkeypatch.setattr(client, "_call", fake_call)
+    monkeypatch.setattr(bc, "_TIME_OFFSET_MS", 0)
+
+    offset = asyncio.run(client.sync_time())
+
+    assert offset is not None
+    assert abs(offset - 5000) < 2000
+    assert _helpers.generate_timestamp is bc._signed_timestamp
+
+
+def test_amain_calls_time_sync_and_passes_ws_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    main_mod = _patch_main(monkeypatch, events)
+
+    asyncio.run(main_mod._amain())
+
+    assert "sync-time" in events
+    feed_inits = [e for e in events if e.startswith("feed-init:")]
+    assert feed_inits
+    assert "reconnect_sec" in feed_inits[0]
+    assert "heartbeat_sec" in feed_inits[0]
+
+
+def test_data_feed_reconnect_params() -> None:
+    from robot_zakol.data_feed import DataFeed
+
+    cfg = Config(api_key="", api_secret="", symbol="BTCUSDT")
+    feed = DataFeed(
+        cfg,
+        asyncio.new_event_loop(),
+        "BTCUSDT",
+        reconnect_sec=5.0,
+        heartbeat_sec=0.25,
+    )
+    assert feed._reconnect_sec == 5.0
+    assert feed._heartbeat_sec == 0.25
+
+    defaults = DataFeed(cfg, asyncio.new_event_loop(), "BTCUSDT")
+    assert defaults._reconnect_sec == 2.0
+    assert defaults._heartbeat_sec == 1.0
