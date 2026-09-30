@@ -16,7 +16,7 @@ from robot_trend.config import TrendConfig, load_config
 from robot_trend.data_feed import DataFeed
 from robot_trend.order_flow import OrderFlow
 from robot_trend.state import StateStore
-from robot_trend.strategy import TrendStrategy
+from robot_trend.strategy import TrendParams, TrendStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ async def _amain() -> None:
             feed=feed,
             store=store,
             notifier=notifier,
-            strategy=TrendStrategy(),
+            strategy=TrendStrategy(TrendParams.from_env(trend.symbol)),
             filters=filters,
         )
 

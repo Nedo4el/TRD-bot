@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
-from core.indicators import atr, bollinger, crossed_down, crossed_up, ema, rsi, sma
+from core.indicators import (
+    adx,
+    adx_di,
+    atr,
+    bollinger,
+    crossed_down,
+    crossed_up,
+    ema,
+    rsi,
+    sma,
+    supertrend,
+)
 
 
 class TestSma:
@@ -89,3 +100,52 @@ class TestCrossHelpers:
     def test_crossed_down(self) -> None:
         assert crossed_down(prev_a=2.0, prev_b=1.0, now_a=1.0, now_b=2.0)
         assert not crossed_down(prev_a=1.0, prev_b=2.0, now_a=3.0, now_b=2.0)
+
+
+class TestAdxDi:
+    def test_not_enough_data(self) -> None:
+        assert adx_di([1.0], [0.0], [0.5], 14) == ([], [], [])
+
+    def test_adx_matches_adx_di(self) -> None:
+        closes = [100.0 + i * 0.5 for i in range(60)]
+        highs = [c + 1.0 for c in closes]
+        lows = [c - 1.0 for c in closes]
+        a, dip, dim = adx_di(highs, lows, closes, 14)
+        assert a == adx(highs, lows, closes, 14)
+        assert len(a) == len(dip) == len(dim)
+
+    def test_rally_has_plus_di_dominant(self) -> None:
+        closes = [100.0 + i for i in range(60)]
+        highs = [c + 1.0 for c in closes]
+        lows = [c - 1.0 for c in closes]
+        _, dip, dim = adx_di(highs, lows, closes, 14)
+        assert dip[-1] > dim[-1]
+
+    def test_collapse_has_minus_di_dominant(self) -> None:
+        closes = [700.0 - i for i in range(60)]
+        highs = [c + 1.0 for c in closes]
+        lows = [c - 1.0 for c in closes]
+        _, dip, dim = adx_di(highs, lows, closes, 14)
+        assert dim[-1] > dip[-1]
+
+
+class TestSupertrend:
+    def test_not_enough_data(self) -> None:
+        assert supertrend([1.0], [1.0], [1.0], 14, 3.0) == ([], [])
+
+    def test_flat_series_stays_bullish(self) -> None:
+        # флэт без размаха: направление не разворачивается
+        n = 40
+        lines, dirs = supertrend([101.0] * n, [99.0] * n, [100.0] * n, 14, 3.0)
+        assert len(lines) == n - 14 + 1
+        assert all(d == 1 for d in dirs)
+
+    def test_flip_on_rally_then_crash(self) -> None:
+        closes = [100.0 + i for i in range(30)] + [130.0 - i * 5 for i in range(1, 15)]
+        highs = [c + 1.0 for c in closes]
+        lows = [c - 1.0 for c in closes]
+        lines, dirs = supertrend(highs, lows, closes, 10, 3.0)
+        assert len(lines) == len(dirs)
+        assert dirs[20] == 1  # в росте — бычий
+        assert dirs[-1] == -1  # после обвала — медвежий
+        assert all(d in (-1, 1) for d in dirs)

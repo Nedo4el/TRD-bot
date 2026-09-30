@@ -32,7 +32,7 @@ from core.strategies import BaseStrategy, Signal
 from robot_flat.strategy import FlatStrategy
 
 # from robot_yrovni_D.strategy import YrovniDStrategy
-from robot_trend.strategy import TrendStrategy
+from robot_trend.strategy import TrendParams, TrendStrategy
 
 # from robot_impulse.strategy import ImpulseStrategy
 # from robot_krugloe.strategy import KrugloeStrategy
@@ -48,7 +48,8 @@ def make_strategy(name: str) -> BaseStrategy:
         Готовый объект стратегии с настройками по умолчанию/.env.
     """
     if name == "trend":
-        return TrendStrategy()
+        # параметры из robot_trend/.env (load_bot_env уже вызван)
+        return TrendStrategy(TrendParams.from_env())
     if name == "flat":
         return FlatStrategy()
     raise ValueError(

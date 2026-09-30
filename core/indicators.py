@@ -181,13 +181,13 @@ def atr(
     return result
 
 
-def adx(
+def adx_di(
     highs: list[float],
     lows: list[float],
     closes: list[float],
     period: int = 14,
-) -> list[float]:
-    """Average Directional Index — сила тренда (0..100).
+) -> tuple[list[float], list[float], list[float]]:
+    """ADX и направления +DI / -DI одной проходкой (сглаживание Уайлдера).
 
     ADX = 100 × сглажённый DX, где DX = |+DI - -DI| / (+DI + -DI).
     +DI / -DI считаются через Directional Movement (DM+ / DM-).
@@ -199,11 +199,12 @@ def adx(
         period: период (классика — 14).
 
     Returns:
-        Значения ADX; длина = len(closes) - 2 * period.
+        Кортеж (adx, di_plus, di_minus); все длины равны,
+        последнее значение соответствует последней свече.
     """
     n = len(closes)
     if period <= 0 or n < 2 * period + 1:
-        return []
+        return [], [], []
 
     # True Range + Directional Movement для каждой свечи
     trs: list[float] = []
@@ -246,6 +247,8 @@ def adx(
     dip, dim = _di(dm_p, dm_m)
     dx = abs(dip - dim) / (dip + dim) * 100 if (dip + dim) > 0 else 0.0
     result: list[float] = [dx]
+    di_plus_series: list[float] = [dip]
+    di_minus_series: list[float] = [dim]
 
     # Сглаживание Уайлдера для ATR, DM+, DM- и ADX
     for i in range(period + 1, n):
@@ -258,8 +261,95 @@ def adx(
 
         # ADX = сглажённый DX
         result.append((result[-1] * (period - 1) + dx) / period)
+        di_plus_series.append(dip)
+        di_minus_series.append(dim)
 
-    return result
+    return result, di_plus_series, di_minus_series
+
+
+def adx(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    period: int = 14,
+) -> list[float]:
+    """Average Directional Index — сила тренда (0..100).
+
+    Args:
+        highs: максимумы свечей.
+        lows: минимумы свечей.
+        closes: цены закрытия.
+        period: период (классика — 14).
+
+    Returns:
+        Значения ADX; длина = len(closes) - period.
+    """
+    return adx_di(highs, lows, closes, period)[0]
+
+
+def supertrend(
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
+    period: int = 14,
+    factor: float = 3.0,
+) -> tuple[list[float], list[int]]:
+    """Supertrend: линия тренда + направление (+1 вверх / -1 вниз).
+
+    Полосы строятся вокруг hl2 ± factor * ATR и «запираются»
+    (ratchet): верхняя только снижается, нижняя только растёт,
+    пока цена не пробьёт полосу — тогда направление разворачивается.
+
+    Args:
+        highs: максимумы свечей.
+        lows: минимумы свечей.
+        closes: цены закрытия.
+        period: период ATR (альты 10-14, BTC/ETH 55).
+        factor: множитель полосы (альты 3.0, BTC/ETH 2.0).
+
+    Returns:
+        Кортеж (line, direction); длина = len(closes) - period + 1,
+        последнее значение соответствует последней свече.
+    """
+    n = len(closes)
+    if period <= 0 or factor <= 0 or n < period + 1:
+        return [], []
+    atrs = atr(highs, lows, closes, period)
+    start = period - 1  # индекс свечи, с которой есть ATR
+
+    lines: list[float] = []
+    dirs: list[int] = []
+    prev_upper = 0.0
+    prev_lower = 0.0
+    prev_dir = 1
+    for i in range(start, n):
+        mid = (highs[i] + lows[i]) / 2.0
+        a = atrs[i - start]
+        raw_upper = mid + factor * a
+        raw_lower = mid - factor * a
+        if i == start:
+            upper, lower = raw_upper, raw_lower
+            prev_dir = 1 if closes[i] >= mid else -1
+        else:
+            # запирание полосы: улучшаем только в сторону тренда
+            upper = (
+                raw_upper
+                if (raw_upper < prev_upper or closes[i - 1] > prev_upper)
+                else prev_upper
+            )
+            lower = (
+                raw_lower
+                if (raw_lower > prev_lower or closes[i - 1] < prev_lower)
+                else prev_lower
+            )
+            if prev_dir == 1:
+                prev_dir = -1 if closes[i] < lower else 1
+            else:
+                prev_dir = 1 if closes[i] > upper else -1
+        lines.append(lower if prev_dir == 1 else upper)
+        dirs.append(prev_dir)
+        prev_upper, prev_lower = upper, lower
+    return lines, dirs
 
 
 def vwap(

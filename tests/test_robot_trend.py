@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import math
 import time
@@ -30,7 +31,7 @@ from robot_trend.state import (
     OpenPosition,
     StateStore,
 )
-from robot_trend.strategy import Instruction, TrendStrategy
+from robot_trend.strategy import Instruction, TrendParams, TrendStrategy, _Snapshot
 
 # ============================== config ==============================
 
@@ -230,19 +231,177 @@ def test_should_kill() -> None:
     assert not should_kill(-1000.0, 0.0, 100.0, 0.0, 0.0)
 
 
-# ============================== стаб стратегии ==============================
+# ============================== стратегия ==============================
 
 
-def test_check_signal_always_hold() -> None:
-    signal = TrendStrategy().check_signal([])
-    assert signal.action == "hold"
-    assert "потом заполним" in signal.reason
+def _trend_candles(
+    flat: int = 260,
+    rally: int = 20,
+    pull: int = 6,
+    resume: int = 4,
+    vol: float = 600.0,
+) -> list[Candle]:
+    """Флэт → рост → откат (Supertrend вниз) → возобновление (вверх).
+
+    На последней свече resume=4 происходит флип Supertrend вверх при
+    выполненном ADX/EMA/объёме — стратегия даёт вход long.
+    """
+    out: list[Candle] = []
+    price = 100.0
+    ts = 0
+
+    def add(o: float, c: float, v: float) -> None:
+        nonlocal price, ts
+        out.append(
+            Candle(ts * 300_000, o, max(o, c) * 1.002, min(o, c) * 0.999, c, v),
+        )
+        price = c
+        ts += 1
+
+    for i in range(flat):
+        add(price, price + (0.05 if i % 2 else -0.05), 100.0)
+    for _ in range(rally):
+        add(price, price * 1.008, 300.0)
+    for _ in range(pull):
+        add(price, price * 0.99, 150.0)
+    for _ in range(resume):
+        add(price, price * 1.012, vol)
+    return out
 
 
-def test_decide_always_none() -> None:
-    assert TrendStrategy().decide([], None) is None
+def test_params_defaults_match_table() -> None:
+    p = TrendParams()
+    assert (p.ema_fast, p.ema_slow, p.ema_macro) == (20, 50, 200)
+    assert (p.adx_period, p.adx_threshold) == (14, 25.0)
+    assert (p.st_atr_period, p.st_factor) == (10, 3.0)
+    assert (p.atr_period, p.sl_atr_mult, p.tp_atr_mult) == (14, 2.0, 3.0)
+    assert (p.vol_period, p.vol_mult) == (20, 1.3)
+
+
+def test_params_validation() -> None:
+    with pytest.raises(ValueError, match="EMA"):
+        TrendParams(ema_fast=50, ema_slow=20)
+    with pytest.raises(ValueError, match=">= 2"):
+        TrendParams(vol_period=1)
+    with pytest.raises(ValueError, match="SL_ATR_MULT"):
+        TrendParams(sl_atr_mult=0.0)
+    with pytest.raises(ValueError, match="ADX_THRESHOLD"):
+        TrendParams(adx_threshold=-1.0)
+
+
+def test_params_from_env_symbol_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "ST_ATR_PERIOD",
+        "ST_FACTOR",
+        "ST_ATR_PERIOD_MAJOR",
+        "ST_FACTOR_MAJOR",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    # BTC/ETH — длинный профиль
+    assert TrendParams.from_env("BTCUSDT").st_atr_period == 55
+    assert TrendParams.from_env("ETHUSDT").st_factor == 2.0
+    # альты — короткий
+    assert TrendParams.from_env("ADAUSDT").st_atr_period == 10
+    assert TrendParams.from_env("ADAUSDT").st_factor == 3.0
+    # override из окружения
+    monkeypatch.setenv("ST_ATR_PERIOD", "14")
+    assert TrendParams.from_env("SOLUSDT").st_atr_period == 14
+    monkeypatch.setenv("ADX_THRESHOLD", "30")
+    assert TrendParams.from_env("SOLUSDT").adx_threshold == 30.0
+
+
+def test_decide_hold_on_insufficient_data() -> None:
+    strat = TrendStrategy()
+    assert strat.decide([], None) is None
     pos = OpenPosition(entry_price=100.0, qty=0.1, side="long")
-    assert TrendStrategy().decide([], pos) is None
+    assert strat.decide(_trend_candles(flat=50, rally=0, resume=0), pos) is None
+
+
+def test_decide_enter_long_on_supertrend_flip() -> None:
+    strat = TrendStrategy()
+    candles = _trend_candles()
+    snap = strat._snapshot(candles)
+    assert snap is not None and snap.st_flip == 1
+    assert strat._entry(snap) == "long"
+
+    ins = strat.decide(candles, None)
+    assert ins is not None and ins.action == "enter"
+    assert ins.side == "long"
+    # стоп/тейк считаются от ATR: 2xATR вниз, 3xATR вверх
+    assert ins.stop == pytest.approx(snap.close - 2.0 * snap.atr)
+    assert ins.take == pytest.approx(snap.close + 3.0 * snap.atr)
+    assert "ST flip long" in ins.reason
+
+
+def test_decide_no_entry_without_volume() -> None:
+    # объём свечи ниже VOL_MULT x SMA20 — пробой не подтверждён
+    strat = TrendStrategy()
+    snap = strat._snapshot(_trend_candles(vol=100.0))
+    assert snap is not None and snap.vol_ratio < 1.3
+    assert strat._entry(snap) is None
+    assert strat.decide(_trend_candles(vol=100.0), None) is None
+
+
+def test_decide_no_entry_when_adx_filter_blocks() -> None:
+    strat = TrendStrategy(TrendParams(adx_threshold=1000.0))
+    assert strat.decide(_trend_candles(), None) is None
+
+
+def test_entry_short_and_stop_take_mirror() -> None:
+    # зеркальный путь: разворот вниз + медвежий режим
+    snap = _Snapshot(
+        close=100.0,
+        trend_up=False,
+        trend_down=True,
+        adx=30.0,
+        di_plus=5.0,
+        di_minus=50.0,
+        st_dir=-1,
+        st_flip=-1,
+        atr=1.0,
+        vol_ratio=2.0,
+    )
+    strat = TrendStrategy()
+    assert strat._entry(snap) == "short"
+    stop, take = strat._stop_take(snap, "short")
+    assert stop == pytest.approx(100.0 + 2.0 * snap.atr)
+    assert take == pytest.approx(100.0 - 3.0 * snap.atr)
+    # тот же снапшот без флипа/объёма — входа нет
+    assert strat._entry(dataclasses.replace(snap, st_flip=0)) is None
+    assert strat._entry(dataclasses.replace(snap, vol_ratio=0.5)) is None
+
+
+def test_decide_exit_on_supertrend_flip_against_position() -> None:
+    strat = TrendStrategy()
+    pos = OpenPosition(entry_price=110.0, qty=0.1, side="long")
+    # откат перевёл Supertrend вниз → выход
+    crash = _trend_candles(resume=0)
+    ins = strat.decide(crash, pos)
+    assert ins is not None and ins.action == "exit"
+    assert "supertrend" in ins.reason
+    # тренд жив — выхода нет
+    assert strat.decide(_trend_candles(), pos) is None
+    # шорт: рост против него → выход, падение в пользу → hold
+    short = OpenPosition(entry_price=110.0, qty=0.1, side="short")
+    assert strat.decide(_trend_candles(), short) is not None
+    assert strat.decide(crash, short) is None
+
+
+def test_check_signal_entry_then_exit() -> None:
+    strat = TrendStrategy()
+    assert strat.check_signal([]).action == "hold"
+
+    sig = strat.check_signal(_trend_candles())
+    assert sig.action == "buy"
+    assert sig.stop_loss is not None and sig.take_profit is not None
+    # позиция в памяти — повторного входа нет
+    assert strat.check_signal(_trend_candles()).action == "hold"
+
+    close = strat.check_signal(_trend_candles(resume=0))
+    assert close.action == "close_long"
+    # сброс памяти после закрытия сделки
+    strat.on_position_closed("long")
+    assert strat.check_signal(_trend_candles(resume=0)).action == "hold"
 
 
 # ============================== фейки для order_flow ==============================

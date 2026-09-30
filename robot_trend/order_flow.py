@@ -6,8 +6,8 @@
   (kill → день UTC → cooldown → фандинг → слippаж), kill-switch,
   дневные счётчики, recover (state ↔ биржа).
 
-Пока ``decide()`` возвращает None (стаб) — сделок нет, но вся механика
-работаeт и покрыта тестами.
+Логика входа/выхода живёт в ``strategy.decide()`` (EMA + ADX + Supertrend),
+этот модуль только исполняет её решения.
 """
 
 from __future__ import annotations

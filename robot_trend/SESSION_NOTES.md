@@ -1,4 +1,54 @@
-# Robot Trend — Состояние на 2026-09-29
+# Robot Trend — Состояние на 2026-10-01
+
+- **Стратегия написана** (см. «Сессия 2026-10-01»): EMA + ADX/DI + Supertrend +
+  ATR + Volume, все параметры в `.env`.
+- Каркас технического слоя (сессия 2026-09-29) — без изменений.
+- Результаты бэктеста старых стратегий (2026-09-13) — только для истории.
+
+---
+
+# Robot Trend — Сессия 2026-10-01 — СТРАТЕГИЯ
+
+## Состав (роли по ТЗ)
+
+| # | Индикатор | Параметры (.env) | Роль |
+|---|-----------|------------------|------|
+| 1 | EMA | `EMA_FAST=20`, `EMA_SLOW=50`, `EMA_MACRO=200` | направление тренда (fast>slow и цена по ту сторону macro) |
+| 2 | ADX (+DI/-DI) | `ADX_PERIOD=14`, `ADX_THRESHOLD=25` | сила тренда / фильтр флэта + направление |
+| 3 | Supertrend | `ST_ATR_PERIOD=10`/`ST_FACTOR=3.0` (альты); `ST_ATR_PERIOD_MAJOR=55`/`ST_FACTOR_MAJOR=2.0` (BTC/ETH) | точка входа + трейлинг-стоп |
+| 4 | ATR | `ATR_PERIOD=14`, `SL_ATR_MULT=2.0`, `TP_ATR_MULT=3.0` | стоп/тейк: SL = цена ∓ 2×ATR, TP = цена ± 3×ATR |
+| 5 | Volume SMA | `VOL_PERIOD=20`, `VOL_MULT=1.3` | подтверждение пробоя (объём свечи ≥ 1.3×SMA20) |
+
+- **Профиль Supertrend выбирается по SYMBOL**: BTC/ETH → 55/2.0, иначе 10/3.0
+  (`TrendParams.from_env`, значения можно переопределить в `.env`).
+- **Вход** — только на **флипе Supertrend** при одновременно выполненном
+  фильтре EMA, ADX ≥ порога, правильном DI и объёме. Нет флипа — нет входа.
+- **Выход** — разворот Supertrend против позиции; серверный SL/TP = страховка.
+- **Размер позиции**: как раньше (`POSITION_PCT`), ATR влияет только на стоп/тейк.
+
+## Что изменено
+| Файл | Изменение |
+|------|-----------|
+| `core/indicators.py` | `adx_di()` (ADX и +DI/−DI одной проходкой, `adx()` — обёртка), `supertrend()` → `(line, direction)` |
+| `robot_trend/strategy.py` | `TrendParams` (env + валидация), `_snapshot()` (EMA/ADX/ST/ATR/volume), `decide()`, `check_signal()` (buy/sell/close_*), `_min_warmup=300`, `_max_lookback=600` |
+| `robot_trend/main.py` | `TrendStrategy(TrendParams.from_env(symbol))` |
+| `backtest.py` | `make_strategy("trend")` → `TrendParams.from_env()` (параметры из `robot_trend/.env`) |
+| `robot_trend/.env`, `.env.example` | блок «СТРАТЕГИЯ» вместо «ПОТОМ ЗАПОЛНИМ» |
+| `tests/` | стаб-тесты заменены (+15): вход/выход/фильтры/профиль ST, `supertrend`, `adx_di` |
+
+## Проверки (2026-10-01)
+- `ruff check`/`ruff format --check` по своим файлам — чисто;
+  `mypy robot_trend core` — 0 ошибок; `pytest` — **217 passed**.
+- `python backtest.py --strategy trend --limit 1200 --no-chart` (BTCUSDT M5) —
+  3 сделки, −0.91%: сигналы работают, **параметры не тюнились**.
+
+## TODO
+- [ ] Тюнинг/тест параметров на разных монетах и ТФ (backtest.py --strategy trend)
+- [ ] Проверить в live-логе стоп/тейк от ATR на реальном символе
+
+---
+
+# Robot Trend — Состояние на 2026-09-29 (история)
 
 - **Каркас «технический слой» построен с нуля** (см. сессию ниже). Стратегия —
   стаб, сделок нет. Все места «ПОТОМ ЗАПОЛНИМ» помечены в коде и `.env`.
