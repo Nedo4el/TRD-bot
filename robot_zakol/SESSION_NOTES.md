@@ -278,6 +278,8 @@ slippage + префикс link-id, `_is_time_error`, `sync_time` со сдвиг
   `_shutdown_close`); `_close_position()` не дублирует KILL, если `kill` уже
   стоит (иначе был второй ERROR-лог при stop после kill-файла).
 - Хелперы: `_shutdown_close`, `_wait_closed` (poll позиции), `_cancel_rest`.
+- `_cfg()` в тестах задаёт `kill_switch_file=""` — тесты не зависят от
+  реального `data/zakol.kill` на диске (иначе `run()` падал в STOPPED).
 - Проверки: `ruff`/`mypy` чисто, **231 passed** (+3 shutdown-теста,
   `test_enter_stopped_keeps_sl_tp` → `test_enter_stopped_cancels_pending_only`).
 
