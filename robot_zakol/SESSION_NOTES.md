@@ -245,3 +245,30 @@ slippage + префикс link-id, `_is_time_error`, `sync_time` со сдвиг
 ## Осталось (не входило в план)
 См. список «Что осталось (не входило в план)» в разделе от 27.09 — ничего не закрыто
 и ничего не добавлено.
+
+---
+
+# Сессия 2026-10-03 — LONGXIAUSDT: только лонг, лимитка −7%
+
+## Параметры (.env)
+| Параметр | Было | Стало |
+|---|---|---|
+| `SYMBOL` | QUSDT | **LONGXIAUSDT** (~$0.045, qty_step 1, min_notional 5, tick 0.0001) |
+| `LONG_ONLY` | — | **true** (новый параметр) |
+| `OFFSET_PCT` | 0.03 | **0.07** (buy −7%, sell больше не ставится) |
+| `STOP_PCT` | 0.03 | 0.03 (без изменений) |
+| `TAKE_PCT` | 0.05 | **0** (фикс. тейк выкл) |
+| `TRAIL_PCT` | 0 | **0.02** (трейлинг-тейк 2% от пика) |
+| `BE_TRIGGER` / `BE_OFFSET` | 0 / 0 | **0.01 / 0** (безубыток после +1% = цена входа) |
+| `POSITION_PCT` | 6 | 6 ($6 ≥ min_notional) |
+
+## Код
+- `LONG_ONLY=true`: `_place_bracket()` ставит только buy-лимитку (order_cycle);
+  бэктест — `_place()` не ставит `pending_sell` (backtest/config.py, backtest.py).
+- Выходы: серверный SL −3%, BE +1% → стоп на входе, трейлинг 2% ниже пика; TP выкл.
+- Проверки: `ruff`/`mypy robot_zakol core` чисто, **219 passed** (+2:
+  `test_place_bracket_long_only`, `test_backtest_long_only_never_opens_short`).
+
+## TODO
+- [ ] Live-запуск на LONGXIAUSDT: сверить фильтры инструмента, qty floor, мин. notional
+- [ ] Отбор монет по hit −3%/20s / бэктест новой сетки (−7%) на LONGXIA и старых кандидатах

@@ -49,6 +49,7 @@ class ZakolConfig(BaseModel):
         default_factory=lambda: _env_float("POSITION_PCT", 10.0)
     )
     offset_pct: float = Field(default_factory=lambda: _env_float("OFFSET_PCT", 0.03))
+    long_only: bool = Field(default_factory=lambda: _env_bool("LONG_ONLY", False))
     ttl_sec: float = Field(default_factory=lambda: _env_float("TTL_SEC", 20.0))
     min_price_change: float = Field(
         default_factory=lambda: _env_float("MIN_PRICE_CHANGE", 0.003),

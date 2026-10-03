@@ -84,7 +84,7 @@ def run_single(
 
 
 def _place(st: StrategyState, tick: Tick, strat: StrategyConfig) -> None:
-    """Поставить брекет: buy -offset и sell +offset от текущей цены."""
+    """Поставить брекет: buy -offset (+ sell +offset, если не long_only)."""
     qty = st.qty_for(tick.price)
     if qty <= 0:
         return
@@ -96,13 +96,14 @@ def _place(st: StrategyState, tick: Tick, strat: StrategyConfig) -> None:
         deadline_ts_ms=deadline,
         side="Buy",
     )
-    st.pending_sell = PendingLimit(
-        target=limit_target(tick.price, strat.offset_pct, strat.tick_size, "Sell"),
-        qty=qty,
-        placed_ts_ms=tick.ts_ms,
-        deadline_ts_ms=deadline,
-        side="Sell",
-    )
+    if not strat.long_only:
+        st.pending_sell = PendingLimit(
+            target=limit_target(tick.price, strat.offset_pct, strat.tick_size, "Sell"),
+            qty=qty,
+            placed_ts_ms=tick.ts_ms,
+            deadline_ts_ms=deadline,
+            side="Sell",
+        )
     st.ref_price = tick.price
     st.phase = "WORKING"
 

@@ -12,6 +12,7 @@ class StrategyConfig:
     """Параметры «Плавающие лимитки ±offset с коротким TTL»."""
 
     offset_pct: float = 0.03
+    long_only: bool = False
     ttl_sec: float = 20.0
     min_price_change: float = 0.003
     stop_pct: float = 0.02
@@ -45,6 +46,7 @@ def strategy_from_zakol(z: ZakolConfig) -> StrategyConfig:
     """Собрать параметры бэктеста из .env robot_zakol (единый источник)."""
     return StrategyConfig(
         offset_pct=z.offset_pct,
+        long_only=z.long_only,
         ttl_sec=z.ttl_sec,
         min_price_change=z.min_price_change,
         stop_pct=z.stop_pct,

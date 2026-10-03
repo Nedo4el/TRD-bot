@@ -333,6 +333,20 @@ def test_place_bracket_sets_working(tmp_path: Path) -> None:
     assert all(o["order_link_id"] for o in client.placed)
 
 
+def test_place_bracket_long_only(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client, cfg=_cfg(long_only=True))
+
+    asyncio.run(cycle._place_bracket())
+    st = cycle.store.state
+    assert st.phase == PHASE_WORKING
+    assert st.pending_buy is not None
+    assert st.pending_sell is None
+    assert len(client.placed) == 1
+    assert client.placed[0]["side"] == "Buy"
+    assert client.placed[0]["price"] == pytest.approx(97.0)
+
+
 def test_order_qty_floors_to_qty_step(tmp_path: Path) -> None:
     """$6 по цене 100 = 0.06 → вниз до шага 0.05, как уйдёт на биржу."""
     client = FakeClient()
@@ -856,6 +870,19 @@ def test_backtest_long_stop_loss() -> None:
     t = res.trades[0]
     assert t.reason == "sl"
     assert t.pnl < 0
+
+
+def test_backtest_long_only_never_opens_short() -> None:
+    """long_only: sell-лимитка не ставится — рост цены не даёт шорт."""
+    ticks = [
+        Tick(ts_ms=0, price=100.0, size=1.0),
+        Tick(ts_ms=1000, price=104.0, size=1.0),
+        Tick(ts_ms=2000, price=96.0, size=1.0),
+    ]
+    series = Series(ticks=ticks, fidelity="1S", source_note="synthetic")
+    res = run_single(series, _bt_cfg(long_only=True), _ideal_fill(), "ideal")
+    assert res.trades
+    assert all(t.side == "long" for t in res.trades)
 
 
 # =========================================================================
@@ -1613,6 +1640,7 @@ def _patch_main(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> Any:
         def __init__(self, path: Any, symbol: str = "") -> None:
             self.path = path
             self.symbol = symbol
+            self.state = SimpleNamespace(kill=False, phase=PHASE_IDLE)
 
         async def save(self) -> None:
             events.append("store-save")
@@ -1627,6 +1655,9 @@ def _patch_main(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> Any:
     class FakeCycle:
         def __init__(self, **kwargs: Any) -> None:
             pass
+
+        def kill_switch_file(self) -> None:
+            return None
 
         async def recover(self) -> None:
             events.append("recover")
@@ -1676,6 +1707,9 @@ def test_amain_cleanup_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     class FailingCycle:
         def __init__(self, **kwargs: Any) -> None:
             pass
+
+        def kill_switch_file(self) -> None:
+            return None
 
         async def recover(self) -> None:
             raise RuntimeError("recover failed")
@@ -2086,6 +2120,35 @@ def test_run_stops_on_kill_switch_file(tmp_path: Path) -> None:
     assert st.kill is True
     assert st.phase == PHASE_STOPPED
     assert client.placed == []  # входов не было
+
+
+def test_reset_manual_kill_clears_state(tmp_path: Path) -> None:
+    """Kill-файла уже нет → kill сбрасывается, бот может стартовать."""
+    from robot_zakol.main import _reset_manual_kill
+
+    store = StateStore(tmp_path / "st.json")
+    store.state.kill = True
+    store.state.phase = PHASE_STOPPED
+
+    assert _reset_manual_kill(store, tmp_path / "zakol.kill") is True
+    assert store.state.kill is False
+    assert store.state.phase == PHASE_IDLE
+    assert _reset_manual_kill(store, tmp_path / "zakol.kill") is False
+
+
+def test_reset_manual_kill_keeps_flag_when_file_exists(tmp_path: Path) -> None:
+    """Файл-файл на месте → kill остаётся, старт уйдёт в STOPPED."""
+    from robot_zakol.main import _reset_manual_kill
+
+    flag = tmp_path / "zakol.kill"
+    flag.write_text("stop", encoding="utf-8")
+    store = StateStore(tmp_path / "st.json")
+    store.state.kill = True
+    store.state.phase = PHASE_STOPPED
+
+    assert _reset_manual_kill(store, flag) is False
+    assert store.state.kill is True
+    assert store.state.phase == PHASE_STOPPED
 
 
 def test_funding_window_blocks_entry(

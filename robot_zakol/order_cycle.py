@@ -197,7 +197,7 @@ class OrderCycle:
         await asyncio.sleep(max(min(wait, 5.0), 0.1))
         return True
 
-    def _kill_switch_file(self) -> Path | None:
+    def kill_switch_file(self) -> Path | None:
         """Путь к файлу-флагу ручной остановки (None — KILL_SWITCH выкл.)."""
         raw = self.cfg.kill_switch_file.strip()
         if not raw:
@@ -207,7 +207,7 @@ class OrderCycle:
 
     async def _kill_switch_hit(self) -> bool:
         """Файл-флаг на диске — ручная остановка без правки .env."""
-        path = self._kill_switch_file()
+        path = self.kill_switch_file()
         if path is None or not path.exists() or self.store.state.kill:
             return False
         logger.error("KILL_SWITCH: найден файл %s — ручная остановка", path)
@@ -287,7 +287,7 @@ class OrderCycle:
         return ref
 
     async def _place_bracket(self) -> None:
-        """Поставить пару PostOnly-лимиток: buy -offset и sell +offset."""
+        """Поставить PostOnly-лимитки: buy -offset (+ sell +offset, если не long_only)."""
         price = await self._current_price()
         await self._cancel_stray_orders()
         price = self._fresh_price(price)
@@ -315,6 +315,11 @@ class OrderCycle:
         )
         # сохраняем сразу: если второй ордер упадёт — на диске уже есть первый
         await self.store.save()
+        if self.cfg.long_only:
+            self.store.state.phase = PHASE_WORKING
+            await self.store.save()
+            logger.info("bracket long-only buy %.8g qty=%.8g", buy_price, qty)
+            return
         sell_link = _order_link_id(self.cfg.order_link_prefix)
         resp_sell = await self.client.place_order(
             symbol=self.cfg.symbol,

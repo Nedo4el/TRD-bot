@@ -6,6 +6,7 @@ import asyncio
 import logging
 import signal
 import time
+from pathlib import Path
 from typing import Any
 
 from core.bybit_client import BybitClient
@@ -15,7 +16,7 @@ from core.notifier import Notifier
 from robot_zakol.config import ZakolConfig, load_config
 from robot_zakol.data_feed import DataFeed
 from robot_zakol.order_cycle import OrderCycle
-from robot_zakol.state import StateStore
+from robot_zakol.state import PHASE_IDLE, PHASE_STOPPED, StateStore
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,23 @@ async def _drain(task: asyncio.Task[Any]) -> None:
         await asyncio.gather(task, return_exceptions=True)
     except Exception as exc:  # noqa: BLE001
         logger.error("цикл завершился с ошибкой: %s", exc)
+
+
+def _reset_manual_kill(store: StateStore, kill_path: Path | None) -> bool:
+    """Сбросить ручной kill прошлой сессии перед recover (True — сброшен).
+
+    kill-файла уже нет → state.kill сбрасывается, иначе recover() уводит
+    в STOPPED и бот не стартует. Если файл на месте — kill остаётся.
+    """
+    st = store.state
+    if not st.kill:
+        return False
+    if kill_path is not None and kill_path.exists():
+        return False
+    st.kill = False
+    if st.phase == PHASE_STOPPED:
+        st.phase = PHASE_IDLE
+    return True
 
 
 async def _amain() -> None:
@@ -125,6 +143,9 @@ async def _amain() -> None:
             except (NotImplementedError, RuntimeError):
                 signal.signal(sig, lambda *_: _signal_handler())
 
+        if _reset_manual_kill(store, cycle.kill_switch_file()):
+            logger.warning("kill прошлой сессии сброшен (kill-файла нет)")
+            await store.save()
         await cycle.recover()
         if zakol.ws_enabled:
             feed.start()
