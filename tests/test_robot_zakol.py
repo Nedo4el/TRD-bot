@@ -70,6 +70,8 @@ def _cfg(**overrides: Any) -> ZakolConfig:
         "max_drawdown_pct": 0.05,
         "deposit_usd": 100.0,
         "partial_fill_pct": 0.80,
+        # изоляция от реального data/zakol.kill на диске
+        "kill_switch_file": "",
     }
     base.update(overrides)
     return ZakolConfig(**base)
