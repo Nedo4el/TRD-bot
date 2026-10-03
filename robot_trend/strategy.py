@@ -8,7 +8,7 @@
 | 2 | ADX (+DI/-DI)  | period=14, threshold=25         | сила тренда / фильтр флэта    |
 | 3 | Supertrend     | ATR=10, factor=3.0 (альты);     | точка входа + трейлинг-стоп   |
 |   |                | ATR=55, factor=2.0 (BTC/ETH)    |                               |
-| 4 | ATR            | period=14                       | волатильность → размер стопа  |
+| 4 | ATR            | period=14                       | волатильность (снапшот)       |
 | 5 | Volume SMA     | period=20, multiplier=1.3       | подтверждение пробоя          |
 
 Вход: разворот Supertrend + тренд (EMA) + ADX >= порога + объём >= mult × SMA.
@@ -50,8 +50,11 @@ class TrendParams:
     st_atr_period: int = 10
     st_factor: float = 3.0
     atr_period: int = 14
-    sl_atr_mult: float = 2.0
-    tp_atr_mult: float = 3.0
+    sl_pct: float = 0.02  # стоп в % от входа
+    tp_pct: float = 0.05  # тейк в % от входа
+    be_trigger_pct: float = 0.02  # BE/trail включаются после +2%
+    be_offset_pct: float = 0.0  # уровень безубытка = вход + offset
+    trail_pct: float = 0.02  # трейлинг: стоп = пик - 2%
     vol_period: int = 20
     vol_mult: float = 1.3
 
@@ -77,8 +80,11 @@ class TrendParams:
                 "ST_FACTOR_MAJOR" if major else "ST_FACTOR", 2.0 if major else 3.0
             ),
             atr_period=_env_int("ATR_PERIOD", 14),
-            sl_atr_mult=_env_float("SL_ATR_MULT", 2.0),
-            tp_atr_mult=_env_float("TP_ATR_MULT", 3.0),
+            sl_pct=_env_float("SL_PCT", 0.02),
+            tp_pct=_env_float("TP_PCT", 0.05),
+            be_trigger_pct=_env_float("BE_TRIGGER", 0.02),
+            be_offset_pct=_env_float("BE_OFFSET", 0.0),
+            trail_pct=_env_float("TRAIL_PCT", 0.02),
             vol_period=_env_int("VOL_PERIOD", 20),
             vol_mult=_env_float("VOL_MULT", 1.3),
         )
@@ -100,8 +106,12 @@ class TrendParams:
             raise ValueError("нужен порядок EMA_FAST < EMA_SLOW < EMA_MACRO")
         if self.adx_threshold < 0:
             raise ValueError("ADX_THRESHOLD не может быть < 0")
-        if self.st_factor <= 0 or self.sl_atr_mult <= 0 or self.tp_atr_mult <= 0:
-            raise ValueError("ST_FACTOR / SL_ATR_MULT / TP_ATR_MULT должны быть > 0")
+        if self.st_factor <= 0:
+            raise ValueError("ST_FACTOR должен быть > 0")
+        if not 0 < self.sl_pct < 1 or not 0 < self.tp_pct < 1:
+            raise ValueError("SL_PCT / TP_PCT должны быть в (0, 1)")
+        if min(self.be_trigger_pct, self.be_offset_pct, self.trail_pct) < 0:
+            raise ValueError("BE_TRIGGER / BE_OFFSET / TRAIL_PCT не могут быть < 0")
         if self.vol_mult <= 0:
             raise ValueError("VOL_MULT должен быть > 0")
 
@@ -188,17 +198,11 @@ class TrendStrategy(BaseStrategy):
         return None
 
     def _stop_take(self, snap: _Snapshot, side: str) -> tuple[float, float]:
-        """SL/TP от ATR: стоп в 2×ATR, тейк в 3×ATR от текущей цены."""
+        """SL/TP в процентах от цены входа (close свечи сигнала)."""
         p = self.params
         if side == "long":
-            return (
-                snap.close - p.sl_atr_mult * snap.atr,
-                snap.close + p.tp_atr_mult * snap.atr,
-            )
-        return (
-            snap.close + p.sl_atr_mult * snap.atr,
-            snap.close - p.tp_atr_mult * snap.atr,
-        )
+            return (snap.close * (1.0 - p.sl_pct), snap.close * (1.0 + p.tp_pct))
+        return (snap.close * (1.0 + p.sl_pct), snap.close * (1.0 - p.tp_pct))
 
     def _exit_for(self, snap: _Snapshot, side: str) -> bool:
         """Supertrend развернулся против позиции — выход (трейлинг)."""

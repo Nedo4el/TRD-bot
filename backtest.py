@@ -177,8 +177,16 @@ def run_backtest(
         entry_time: int
         stop_price: float
         take_price: float
+        peak_price: float = 0.0
+        be_active: bool = False
 
     open_positions: list[OpenPos] = []
+    # BE/trail — только если стратегия задаёт sl_pct (иначе чистые SL/TP)
+    params = getattr(strategy, "params", None)
+    sl_pct = getattr(params, "sl_pct", 0.0) if params else 0.0
+    be_trigger = getattr(params, "be_trigger_pct", 0.0) if params else 0.0
+    be_offset = getattr(params, "be_offset_pct", 0.0) if params else 0.0
+    trail_pct = getattr(params, "trail_pct", 0.0) if params else 0.0
 
     warmup = getattr(strategy, '_min_warmup', max(len(closed) // 4, 210))
 
@@ -281,8 +289,50 @@ def run_backtest(
                 else:
                     sp = entry_price * (1 + sl_pct_fallback / 100.0)
                     tp = entry_price * (1 - tp_pct_fallback / 100.0)
-            open_positions.append(OpenPos(side=side, entry_price=entry_price,
-                                          entry_time=entry_time, stop_price=sp, take_price=tp))
+            open_positions.append(
+                OpenPos(
+                    side=side,
+                    entry_price=entry_price,
+                    entry_time=entry_time,
+                    stop_price=sp,
+                    take_price=tp,
+                    peak_price=entry_price,
+                )
+            )
+
+        # --- BE / trail: подтянуть стоп по этой свече (пробой — со следующей) ---
+        if sl_pct > 0:
+            for pos in open_positions:
+                if pos.side == "Buy":
+                    pos.peak_price = max(pos.peak_price, bar.high)
+                    if be_trigger > 0 and bar.high >= pos.entry_price * (
+                        1.0 + be_trigger
+                    ):
+                        pos.be_active = True
+                    base = (
+                        pos.entry_price * (1.0 + be_offset)
+                        if pos.be_active
+                        else pos.entry_price * (1.0 - sl_pct)
+                    )
+                    cands = [pos.stop_price, base]
+                    if trail_pct > 0 and pos.be_active:
+                        cands.append(pos.peak_price * (1.0 - trail_pct))
+                    pos.stop_price = max(cands)
+                else:
+                    pos.peak_price = min(pos.peak_price, bar.low)
+                    if be_trigger > 0 and bar.low <= pos.entry_price * (
+                        1.0 - be_trigger
+                    ):
+                        pos.be_active = True
+                    base = (
+                        pos.entry_price * (1.0 - be_offset)
+                        if pos.be_active
+                        else pos.entry_price * (1.0 + sl_pct)
+                    )
+                    cands = [pos.stop_price, base]
+                    if trail_pct > 0 and pos.be_active:
+                        cands.append(pos.peak_price * (1.0 + trail_pct))
+                    pos.stop_price = min(cands)
 
         result.equity_curve.append(equity)
         result.equity_times.append(bar.open_time)

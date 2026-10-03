@@ -6,6 +6,85 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RiskDecision:
+    """Новый стоп после обновления по цене (двигается только в плюс)."""
+
+    stop_loss: float
+    be_active: bool
+    update_server: bool
+
+
+def on_price(
+    entry: float,
+    peak: float,
+    price: float,
+    current_stop: float,
+    stop_pct: float,
+    be_trigger_pct: float,
+    be_offset_pct: float,
+    trail_pct: float,
+    be_active: bool = False,
+    side: str = "long",
+) -> RiskDecision:
+    """Обновить peak/BE/trail по новой цене позиции.
+
+    Активация BE и трейлинга одна: прибыль >= be_trigger_pct.
+    trail_pct <= 0 — трейлинг выключен, be_trigger_pct <= 0 — BE выключен.
+    Стоп никогда не уходит в сторону убытка (монотонность).
+    """
+    if side == "short":
+        return _on_price_short(
+            entry,
+            peak,
+            price,
+            current_stop,
+            stop_pct,
+            be_trigger_pct,
+            be_offset_pct,
+            trail_pct,
+            be_active,
+        )
+    new_peak = max(peak, price)
+    be_now = be_active or (
+        be_trigger_pct > 0 and price >= entry * (1.0 + be_trigger_pct)
+    )
+    base = entry * (1.0 + be_offset_pct) if be_now else entry * (1.0 - stop_pct)
+    candidates = [current_stop, base]
+    if trail_pct > 0 and be_now:
+        candidates.append(new_peak * (1.0 - trail_pct))
+    new_stop = max(candidates)
+    update = new_stop != current_stop or be_now != be_active
+    return RiskDecision(stop_loss=new_stop, be_active=be_now, update_server=update)
+
+
+def _on_price_short(
+    entry: float,
+    trough: float,
+    price: float,
+    current_stop: float,
+    stop_pct: float,
+    be_trigger_pct: float,
+    be_offset_pct: float,
+    trail_pct: float,
+    be_active: bool,
+) -> RiskDecision:
+    """Зеркальный on_price: минимум цены, стоп сверху."""
+    new_trough = min(trough, price)
+    be_now = be_active or (
+        be_trigger_pct > 0 and price <= entry * (1.0 - be_trigger_pct)
+    )
+    base = entry * (1.0 - be_offset_pct) if be_now else entry * (1.0 + stop_pct)
+    candidates = [current_stop, base]
+    if trail_pct > 0 and be_now:
+        candidates.append(new_trough * (1.0 + trail_pct))
+    new_stop = min(candidates)
+    update = new_stop != current_stop or be_now != be_active
+    return RiskDecision(stop_loss=new_stop, be_active=be_now, update_server=update)
+
 
 def entry_qty(
     fixed_qty: float,

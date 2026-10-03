@@ -20,6 +20,7 @@ from robot_trend.risk import (
     cooldown_remaining,
     daily_stop_reason,
     entry_qty,
+    on_price,
     position_pnl,
     should_kill,
     slippage_ok,
@@ -231,6 +232,77 @@ def test_should_kill() -> None:
     assert not should_kill(-1000.0, 0.0, 100.0, 0.0, 0.0)
 
 
+# ---- on_price: BE + трейлинг (активация +2%, стоп двигается только в плюс) ----
+
+
+def _on_price(**overrides: Any) -> Any:
+    base: dict[str, Any] = {
+        "entry": 100.0,
+        "peak": 100.0,
+        "price": 100.0,
+        "current_stop": 98.0,
+        "stop_pct": 0.02,
+        "be_trigger_pct": 0.02,
+        "be_offset_pct": 0.0,
+        "trail_pct": 0.02,
+        "be_active": False,
+        "side": "long",
+    }
+    base.update(overrides)
+    return on_price(**base)
+
+
+def test_on_price_before_trigger_keeps_initial_stop() -> None:
+    # +1.9%:BE/trail ещё не включены, стоп остаётся -2%
+    d = _on_price(price=101.9, peak=101.9)
+    assert d.stop_loss == pytest.approx(98.0)
+    assert not d.be_active
+    assert not d.update_server
+
+
+def test_on_price_be_moves_stop_to_entry() -> None:
+    # +2%: безубыток — стоп на цену входа
+    d = _on_price(price=102.0, peak=102.0)
+    assert d.be_active
+    assert d.stop_loss == pytest.approx(100.0)
+    assert d.update_server
+
+
+def test_on_price_trail_follows_peak() -> None:
+    # +5%: trail = пик - 2% = 105 * 0.98 = 102.9 (выше безубытка)
+    d = _on_price(price=105.0, peak=105.0)
+    assert d.be_active
+    assert d.stop_loss == pytest.approx(102.9)
+    # откат: стоп не опускается (монотонность)
+    d2 = _on_price(price=103.0, peak=105.0, current_stop=d.stop_loss, be_active=True)
+    assert d2.stop_loss == pytest.approx(102.9)
+    assert not d2.update_server
+
+
+def test_on_price_short_mirrored() -> None:
+    # шорт: активация при цене <= входа - 2%, стоп сверху
+    # trail = минимум цены * 1.02
+    d = _on_price(
+        price=95.0,
+        peak=95.0,
+        current_stop=102.0,
+        side="short",
+    )
+    assert d.be_active
+    assert d.stop_loss == pytest.approx(95.0 * 1.02)  # 96.9
+    # до активации стоп остаётся +2% от входа
+    d0 = _on_price(price=98.5, peak=98.5, current_stop=102.0, side="short")
+    assert not d0.be_active
+    assert d0.stop_loss == pytest.approx(102.0)
+
+
+def test_on_price_trail_disabled_when_zero() -> None:
+    # trail_pct=0: только BE, стоп стоит на входе даже откатываясь с пика
+    d = _on_price(price=110.0, peak=110.0, trail_pct=0.0)
+    assert d.be_active
+    assert d.stop_loss == pytest.approx(100.0)
+
+
 # ============================== стратегия ==============================
 
 
@@ -274,7 +346,8 @@ def test_params_defaults_match_table() -> None:
     assert (p.ema_fast, p.ema_slow, p.ema_macro) == (20, 50, 200)
     assert (p.adx_period, p.adx_threshold) == (14, 25.0)
     assert (p.st_atr_period, p.st_factor) == (10, 3.0)
-    assert (p.atr_period, p.sl_atr_mult, p.tp_atr_mult) == (14, 2.0, 3.0)
+    assert (p.atr_period, p.sl_pct, p.tp_pct) == (14, 0.02, 0.05)
+    assert (p.be_trigger_pct, p.be_offset_pct, p.trail_pct) == (0.02, 0.0, 0.02)
     assert (p.vol_period, p.vol_mult) == (20, 1.3)
 
 
@@ -283,8 +356,10 @@ def test_params_validation() -> None:
         TrendParams(ema_fast=50, ema_slow=20)
     with pytest.raises(ValueError, match=">= 2"):
         TrendParams(vol_period=1)
-    with pytest.raises(ValueError, match="SL_ATR_MULT"):
-        TrendParams(sl_atr_mult=0.0)
+    with pytest.raises(ValueError, match="SL_PCT"):
+        TrendParams(sl_pct=0.0)
+    with pytest.raises(ValueError, match="TRAIL_PCT"):
+        TrendParams(trail_pct=-0.01)
     with pytest.raises(ValueError, match="ADX_THRESHOLD"):
         TrendParams(adx_threshold=-1.0)
 
@@ -327,9 +402,9 @@ def test_decide_enter_long_on_supertrend_flip() -> None:
     ins = strat.decide(candles, None)
     assert ins is not None and ins.action == "enter"
     assert ins.side == "long"
-    # стоп/тейк считаются от ATR: 2xATR вниз, 3xATR вверх
-    assert ins.stop == pytest.approx(snap.close - 2.0 * snap.atr)
-    assert ins.take == pytest.approx(snap.close + 3.0 * snap.atr)
+    # стоп/тейк в процентах от цены входа: -2% / +5%
+    assert ins.stop == pytest.approx(snap.close * 0.98)
+    assert ins.take == pytest.approx(snap.close * 1.05)
     assert "ST flip long" in ins.reason
 
 
@@ -364,8 +439,8 @@ def test_entry_short_and_stop_take_mirror() -> None:
     strat = TrendStrategy()
     assert strat._entry(snap) == "short"
     stop, take = strat._stop_take(snap, "short")
-    assert stop == pytest.approx(100.0 + 2.0 * snap.atr)
-    assert take == pytest.approx(100.0 - 3.0 * snap.atr)
+    assert stop == pytest.approx(100.0 * 1.02)
+    assert take == pytest.approx(100.0 * 0.95)
     # тот же снапшот без флипа/объёма — входа нет
     assert strat._entry(dataclasses.replace(snap, st_flip=0)) is None
     assert strat._entry(dataclasses.replace(snap, vol_ratio=0.5)) is None
@@ -527,6 +602,7 @@ class FakeNotifier:
 
 class CountingStrategy(TrendStrategy):
     def __init__(self) -> None:
+        super().__init__()
         self.calls = 0
         self.instruction: Instruction | None = None
 

@@ -29,6 +29,7 @@ from robot_trend.risk import (
     cooldown_remaining,
     daily_stop_reason,
     entry_qty,
+    on_price,
     position_pnl,
     should_kill,
     slippage_ok,
@@ -134,6 +135,8 @@ class OrderFlow:
         st = self.store.state
         if st.position is not None and await self._position_gone():
             return
+        if st.position is not None:
+            await self._update_risk()
         candles = await self._fetch_candles()
         closed = candles[:-1] if len(candles) > 1 else []
         if not closed:
@@ -254,6 +257,7 @@ class OrderFlow:
             stop_loss=instruction.stop,
             take_profit=instruction.take,
             opened_at=time.time(),
+            peak_price=entry,
         )
         st.phase = PHASE_IN_POSITION
         await self.store.save()
@@ -385,6 +389,69 @@ class OrderFlow:
             pnl = await self._closed_pnl(pos)
         await self._finalize_close(pnl, "server")
         return True
+
+    async def _update_risk(self) -> None:
+        """BE/trail: подтянуть серверный стоп по свежей цене (только в плюс)."""
+        st = self.store.state
+        pos = st.position
+        if pos is None:
+            return
+        price = self.feed.last_price
+        if price <= 0:
+            try:
+                price = await self.client.get_price(self.cfg.symbol)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("risk: цена недоступна (%s)", exc)
+                return
+        p = self.strategy.params
+        if pos.peak_price <= 0:
+            pos.peak_price = pos.entry_price
+        peak = (
+            max(pos.peak_price, price)
+            if pos.side == "long"
+            else min(pos.peak_price, price)
+        )
+        stop = pos.stop_loss
+        if stop is None:
+            stop = (
+                pos.entry_price * (1.0 - p.sl_pct)
+                if pos.side == "long"
+                else pos.entry_price * (1.0 + p.sl_pct)
+            )
+        decision = on_price(
+            entry=pos.entry_price,
+            peak=peak,
+            price=price,
+            current_stop=stop,
+            stop_pct=p.sl_pct,
+            be_trigger_pct=p.be_trigger_pct,
+            be_offset_pct=p.be_offset_pct,
+            trail_pct=p.trail_pct,
+            be_active=pos.be_active,
+            side=pos.side,
+        )
+        if not decision.update_server:
+            return
+        pos.peak_price = peak
+        pos.stop_loss = decision.stop_loss
+        pos.be_active = decision.be_active
+        await self.store.save()
+        try:
+            await self.client.set_stop_loss_take_profit(
+                self.cfg.symbol,
+                pos.stop_loss,
+                pos.take_profit,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("risk: серверный SL не обновился (%s)", exc)
+            return
+        logger.info(
+            "risk: %s stop=%.6g be=%s peak=%.6g",
+            pos.side,
+            pos.stop_loss,
+            pos.be_active,
+            pos.peak_price,
+        )
 
     async def _closed_pnl(self, pos: OpenPosition) -> float:
         """PnL закрытия: с биржи, иначе расчёт по последней цене."""

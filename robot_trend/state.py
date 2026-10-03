@@ -27,6 +27,9 @@ class OpenPosition:
     stop_loss: float | None = None
     take_profit: float | None = None
     opened_at: float = 0.0
+    # BE/trail: пик цены с момента входа и состояние безубытка
+    peak_price: float = 0.0
+    be_active: bool = False
 
 
 @dataclass
