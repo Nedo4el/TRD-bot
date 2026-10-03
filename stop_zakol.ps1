@@ -1,5 +1,5 @@
-﻿# Остановка robot_zakol: kill-файл → бот снимает свои лимитки и выходит сам.
-# SL/TP открытой позиции на бирже остаются.
+﻿# Остановка robot_zakol: kill-файл → бот снимает лимитки, закрывает позицию
+# по рынку и убирает заявки (при неудаче закрытия — SL/TP остаются).
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 
@@ -31,5 +31,5 @@ if ($procs.Count -gt 0) {
     $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Write-Host 'Не остановился за 40с — убил принудительно. Проверь ордера на бирже!'
 } else {
-    Write-Host 'Остановлен чисто: свои лимитки сняты, SL/TP позиции остались.'
+    Write-Host 'Остановлен чисто: лимитки сняты, позиция закрыта, заявки убраны.'
 }

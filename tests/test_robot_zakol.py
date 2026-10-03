@@ -225,6 +225,8 @@ class FakeClient:
         self.balance = 0.0
         self.balance_calls = 0
         self.next_funding: float | None = None
+        self.closed: list[tuple[float, str]] = []
+        self.fail_close = False
 
     async def get_next_funding_time(self, symbol: str) -> float | None:
         return self.next_funding
@@ -247,6 +249,15 @@ class FakeClient:
 
     async def cancel_all_orders(self, symbol: str) -> dict[str, Any]:
         self.cancel_all += 1
+        return {}
+
+    async def close_position(
+        self, symbol: str, qty: float, side: str
+    ) -> dict[str, Any]:
+        if self.fail_close:
+            raise RuntimeError("close rejected")
+        self.closed.append((qty, side))
+        self.pos = None
         return {}
 
     async def get_open_orders(self, symbol: str) -> list[dict[str, Any]]:
@@ -1173,7 +1184,7 @@ def test_ttl_partial_fill_opens_position_like_backtest(tmp_path: Path) -> None:
 # --- б.5/b.6 kill, SL/TP, recover ---------------------------------------
 
 
-def test_enter_stopped_keeps_sl_tp(tmp_path: Path) -> None:
+def test_enter_stopped_cancels_pending_only(tmp_path: Path) -> None:
     client = FakeClient()
     cycle = _make_cycle(tmp_path, client)
 
@@ -1189,10 +1200,60 @@ def test_enter_stopped_keeps_sl_tp(tmp_path: Path) -> None:
         await cycle._enter_stopped()
 
     asyncio.run(run())
-    assert client.cancel_all == 0  # cancel_all_orders снял бы SL/TP
+    # входные лимитки сняты; SL/TP не трогаем — позицию закроет shutdown
     assert "oid-1" in client.cancelled
-    assert client.sl_calls  # стоп переустановлен
+    assert client.cancel_all == 0
+    assert client.sl_calls == []
+    assert client.closed == []
     assert cycle.store.state.phase == PHASE_STOPPED
+
+
+def test_shutdown_closes_position_and_cancels(tmp_path: Path) -> None:
+    client = FakeClient()
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        st = cycle.store.state
+        st.kill = True
+        st.position = OpenPosition(
+            entry_price=97.0,
+            qty=0.001,
+            peak_price=97.0,
+            stop_loss=95.06,
+        )
+        st.pending_buy = _pending("oid-1", "Buy", 97.0)
+        await cycle._on_shutdown()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert client.closed == [(0.001, "Buy")]  # закрытие по рынку
+    assert "oid-1" in client.cancelled  # входная лимитка снята
+    assert client.cancel_all == 1  # остатки сняты после закрытия
+    assert st.position is None
+    assert st.phase == PHASE_STOPPED  # kill → STOPPED
+
+
+def test_shutdown_close_fails_keeps_sl_tp(tmp_path: Path) -> None:
+    client = FakeClient()
+    client.fail_close = True
+    cycle = _make_cycle(tmp_path, client)
+
+    async def run() -> None:
+        st = cycle.store.state
+        st.position = OpenPosition(
+            entry_price=97.0,
+            qty=0.001,
+            peak_price=97.0,
+            stop_loss=95.06,
+        )
+        await cycle._on_shutdown()
+
+    asyncio.run(run())
+    st = cycle.store.state
+    assert client.closed == []
+    assert client.cancel_all == 0  # заявки не снимаем — SL/TP остался
+    assert client.sl_calls  # фолбэк: SL/TP переустановлены
+    assert st.position is not None
 
 
 def test_recover_respects_kill_flag(tmp_path: Path) -> None:

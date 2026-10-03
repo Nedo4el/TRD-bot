@@ -269,6 +269,18 @@ slippage + префикс link-id, `_is_time_error`, `sync_time` со сдвиг
 - Проверки: `ruff`/`mypy robot_zakol core` чисто, **219 passed** (+2:
   `test_place_bracket_long_only`, `test_backtest_long_only_never_opens_short`).
 
+## Остановка = flat (2026-10-03)
+- `_on_shutdown()` (любой выход из `run()`: kill-файл, SIGTERM, исключение):
+  снять входные лимитки → закрыть позицию по рынку → `cancel_all_orders`.
+  Если закрытие не подтвердилось за 10с — вернуть серверный SL/TP,
+  заявки не снимаем (SL/TP остаётся защитой на бирже).
+- `_enter_stopped()` больше не переустанавливает SL/TP (фолбэк теперь в
+  `_shutdown_close`); `_close_position()` не дублирует KILL, если `kill` уже
+  стоит (иначе был второй ERROR-лог при stop после kill-файла).
+- Хелперы: `_shutdown_close`, `_wait_closed` (poll позиции), `_cancel_rest`.
+- Проверки: `ruff`/`mypy` чисто, **231 passed** (+3 shutdown-теста,
+  `test_enter_stopped_keeps_sl_tp` → `test_enter_stopped_cancels_pending_only`).
+
 ## TODO
 - [ ] Live-запуск на LONGXIAUSDT: сверить фильтры инструмента, qty floor, мин. notional
 - [ ] Отбор монет по hit −3%/20s / бэктест новой сетки (−7%) на LONGXIA и старых кандидатах

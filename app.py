@@ -10,6 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
+import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 MSK = timezone(timedelta(hours=3))
@@ -55,7 +58,8 @@ def load_env_file(bot_dir: Path) -> dict[str, str]:
             continue
         if "=" in line:
             key, _, value = line.partition("=")
-            result[key.strip()] = value.strip()
+            value = value.split("#", 1)[0].strip()
+            result[key.strip()] = value
     return result
 
 
@@ -92,9 +96,9 @@ def format_pnl(pnl: float) -> str:
 NAV_ITEMS = [
     "📊 Обзор",
     "—— ТОРГОВЫЕ БОТЫ ——",
+    "  Trend и Zakol",
     "  Flat",
     "  Yrovni",
-    "  Trend",
     "  Impulse",
     "  Bot 0",
     "—— СКРИНЕРЫ ——",
@@ -136,9 +140,7 @@ def sidebar() -> str:
             st.metric("API ключ", "✓" if api_key_set else "✗")
 
         st.divider()
-        st.caption(
-            f"Обновлено: {datetime.now(MSK).strftime('%H:%M:%S MSK')}"
-        )
+        st.caption(f"Обновлено: {datetime.now(MSK).strftime('%H:%M:%S MSK')}")
 
     return page
 
@@ -380,26 +382,32 @@ def _run_screener_tab(bot_name: str) -> None:
         col1, col2, col3 = st.columns(3)
         with col1:
             min_score = st.slider(
-                "Минимальный Score", 0, 100,
+                "Минимальный Score",
+                0,
+                100,
                 value=st.session_state.get(f"{bot_name}_score", 30),
                 key=f"{bot_name}_score",
             )
         with col2:
             max_price = st.number_input(
                 "Макс. цена ($)",
-                value=float(st.session_state.get(
-                    f"{bot_name}_price",
-                    env.get("MAX_PRICE", "100"),
-                )),
+                value=float(
+                    st.session_state.get(
+                        f"{bot_name}_price",
+                        env.get("MAX_PRICE", "100"),
+                    )
+                ),
                 key=f"{bot_name}_price",
             )
         with col3:
             scan_limit = st.number_input(
                 "Лимит пар",
-                value=int(st.session_state.get(
-                    f"{bot_name}_limit",
-                    env.get("SCAN_LIMIT", "100"),
-                )),
+                value=int(
+                    st.session_state.get(
+                        f"{bot_name}_limit",
+                        env.get("SCAN_LIMIT", "100"),
+                    )
+                ),
                 min_value=10,
                 max_value=500,
                 key=f"{bot_name}_limit",
@@ -409,10 +417,12 @@ def _run_screener_tab(bot_name: str) -> None:
         with col4:
             min_turnover = st.number_input(
                 "Мин. оборот 24ч ($)",
-                value=float(st.session_state.get(
-                    f"{bot_name}_turnover",
-                    env.get("MIN_TURNOVER_24H", "1000000"),
-                )),
+                value=float(
+                    st.session_state.get(
+                        f"{bot_name}_turnover",
+                        env.get("MIN_TURNOVER_24H", "1000000"),
+                    )
+                ),
                 min_value=0.0,
                 max_value=300_000_000.0,
                 step=100_000.0,
@@ -439,10 +449,12 @@ def _run_screener_tab(bot_name: str) -> None:
         with col6:
             lookback = st.number_input(
                 "Свечей",
-                value=int(st.session_state.get(
-                    f"{bot_name}_lookback",
-                    env.get("LOOKBACK_BARS", "50"),
-                )),
+                value=int(
+                    st.session_state.get(
+                        f"{bot_name}_lookback",
+                        env.get("LOOKBACK_BARS", "50"),
+                    )
+                ),
                 min_value=20,
                 max_value=500,
                 key=f"{bot_name}_lookback",
@@ -456,10 +468,12 @@ def _run_screener_tab(bot_name: str) -> None:
             "Мин. % импульса",
             min_value=0.0,
             max_value=20.0,
-            value=float(st.session_state.get(
-                f"{bot_name}_range",
-                env.get("MIN_RANGE_PCT", "3.0"),
-            )),
+            value=float(
+                st.session_state.get(
+                    f"{bot_name}_range",
+                    env.get("MIN_RANGE_PCT", "3.0"),
+                )
+            ),
             step=0.5,
             format="%.1f%%",
             key=f"{bot_name}_range",
@@ -479,9 +493,7 @@ def _run_screener_tab(bot_name: str) -> None:
         st.divider()
         col_live, col_interval = st.columns(2)
         with col_live:
-            live_mode = st.toggle(
-                "🔴 Live (автосканирование)", key=f"{bot_name}_live"
-            )
+            live_mode = st.toggle("🔴 Live (автосканирование)", key=f"{bot_name}_live")
         with col_interval:
             scan_interval = st.number_input(
                 "Интервал (сек)",
@@ -495,8 +507,14 @@ def _run_screener_tab(bot_name: str) -> None:
     if st.button(f"▶️ Запустить {bot_name}", key=f"run_{bot_name}"):
         with st.spinner("Сканирование..."):
             results = _run_screener_async(
-                bot_name, min_score, max_price, scan_limit,
-                min_turnover, timeframe, lookback, min_range_pct,
+                bot_name,
+                min_score,
+                max_price,
+                scan_limit,
+                min_turnover,
+                timeframe,
+                lookback,
+                min_range_pct,
                 freshness,
             )
             if results:
@@ -522,6 +540,7 @@ def _run_screener_tab(bot_name: str) -> None:
     # Live-цикл: ждём и перезапускаем
     if live_mode and bot_name in ("bot_screener_impulse", "bot_screener_uzkiy"):
         import time as _time
+
         placeholder = st.empty()
         placeholder.info(f"⏳ Сканирование через {scan_interval}сек... (Live ON)")
         _time.sleep(scan_interval)
@@ -529,8 +548,14 @@ def _run_screener_tab(bot_name: str) -> None:
         # Сканируем и накапливаем
         with st.spinner("Сканирование..."):
             results = _run_screener_async(
-                bot_name, min_score, max_price, scan_limit,
-                min_turnover, timeframe, lookback, min_range_pct,
+                bot_name,
+                min_score,
+                max_price,
+                scan_limit,
+                min_turnover,
+                timeframe,
+                lookback,
+                min_range_pct,
                 freshness,
             )
             if results:
@@ -549,7 +574,9 @@ def _run_screener_tab(bot_name: str) -> None:
 
 
 async def _fetch_all_with_turnover(
-    max_price: float, scan_limit: int, min_turnover: float = 10_000_000,
+    max_price: float,
+    scan_limit: int,
+    min_turnover: float = 10_000_000,
 ) -> list[dict]:
     """Fetch all symbols with price and turnover for krugloe screener."""
     from bot_screener_klin.fetcher import Fetcher
@@ -595,8 +622,11 @@ async def _fetch_one_price(fetcher, symbol: str, turnover: float) -> dict | None
 
 
 async def _fetch_all_with_candles(
-    max_price: float, scan_limit: int, lookback: int = 50,
-    min_turnover: float = 500_000, timeframe: str = "5",
+    max_price: float,
+    scan_limit: int,
+    lookback: int = 50,
+    min_turnover: float = 500_000,
+    timeframe: str = "5",
 ) -> list[dict]:
     """Fetch all symbols with full candle data for impulse/pump screeners."""
     from bot_screener_klin.fetcher import Fetcher
@@ -635,11 +665,17 @@ async def _fetch_all_with_candles(
 
 
 async def _fetch_one_candles(
-    fetcher, symbol: str, turnover: float, lookback: int, timeframe: str = "5",
+    fetcher,
+    symbol: str,
+    turnover: float,
+    lookback: int,
+    timeframe: str = "5",
 ) -> dict | None:
     """Fetch candles for a single symbol."""
     candles = await fetcher.get_klines(
-        symbol=symbol, interval=timeframe, limit=lookback,
+        symbol=symbol,
+        interval=timeframe,
+        limit=lookback,
     )
     if not candles or len(candles) < lookback:
         return None
@@ -653,9 +689,15 @@ async def _fetch_one_candles(
 
 
 def _run_screener_async(
-    bot_name: str, min_score: int, max_price: float, scan_limit: int,
-    min_turnover: float = 1_000_000, timeframe: str = "5", lookback: int = 50,
-    min_range_pct: float = 3.0, freshness: int = 3,
+    bot_name: str,
+    min_score: int,
+    max_price: float,
+    scan_limit: int,
+    min_turnover: float = 1_000_000,
+    timeframe: str = "5",
+    lookback: int = 50,
+    min_range_pct: float = 3.0,
+    freshness: int = 3,
 ) -> list[dict] | None:
     """Запустить скринер асинхронно."""
     try:
@@ -775,7 +817,11 @@ def _run_screener_async(
             try:
                 symbols = loop.run_until_complete(
                     _fetch_all_with_candles(
-                        max_price, scan_limit, lookback, min_turnover, timeframe,
+                        max_price,
+                        scan_limit,
+                        lookback,
+                        min_turnover,
+                        timeframe,
                     )
                 )
                 if not symbols:
@@ -826,7 +872,11 @@ def _run_screener_async(
             try:
                 symbols = loop.run_until_complete(
                     _fetch_all_with_candles(
-                        max_price, scan_limit, lookback, min_turnover, timeframe,
+                        max_price,
+                        scan_limit,
+                        lookback,
+                        min_turnover,
+                        timeframe,
                     )
                 )
                 if not symbols:
@@ -1015,6 +1065,197 @@ def _display_screener_results(results: list[dict], bot_name: str) -> None:
         )
         if "Score" in df.columns:
             st.bar_chart(df["Score"], height=200)
+
+
+# ============================================================
+# Страница: Роботы (запуск / остановка)
+# ============================================================
+
+# Реестр роботов для вкладки. Новый бот добавляется одной строкой сюда.
+ROBOTS: list[dict[str, str]] = [
+    {"key": "trend", "title": "Trend", "module": "robot_trend", "dir": "robot_trend"},
+    {"key": "zakol", "title": "Zakol", "module": "robot_zakol", "dir": "robot_zakol"},
+]
+
+
+def _robot_env(entry: dict[str, str]) -> dict[str, str]:
+    """Прочитать .env конкретного робота."""
+    return load_env_file(PROJECT_ROOT / entry["dir"])
+
+
+def _robot_path(entry: dict[str, str], env_key: str, default: str) -> Path:
+    """Путь из .env робота (KILL_SWITCH / STATE_FILE / LOG_FILE)."""
+    raw = _robot_env(entry).get(env_key) or default
+    return PROJECT_ROOT / raw
+
+
+def _robot_pids(module: str) -> list[int]:
+    """PID процессов <module>.main, живых в системе."""
+    # Без $_ в команде: при CREATE_NO_WINDOW PowerShell теряет $_
+    flt = f"(Name='python.exe' OR Name='uv.exe') AND CommandLine LIKE '%{module}.main%'"
+    cmd = (
+        'Get-CimInstance Win32_Process -Filter "'
+        + flt
+        + '" | Select-Object -ExpandProperty ProcessId'
+    )
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", cmd],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [int(p) for p in out.stdout.split() if p.strip().isdigit()]
+
+
+def _robot_start(entry: dict[str, str]) -> None:
+    """Запустить робота в фоне (kill-файл прошлой сессии снимаем)."""
+    kill = _robot_path(entry, "KILL_SWITCH", f"data/{entry['key']}.kill")
+    kill.unlink(missing_ok=True)
+
+    py = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+    if not py.exists():
+        py = Path(sys.executable)
+    logs = PROJECT_ROOT / "logs"
+    logs.mkdir(exist_ok=True)
+    with (
+        open(logs / f"{entry['key']}_stdout.log", "ab") as out,
+        open(
+            logs / f"{entry['key']}_stderr.log",
+            "ab",
+        ) as err,
+    ):
+        subprocess.Popen(
+            [str(py), "-m", f"{entry['module']}.main"],
+            cwd=str(PROJECT_ROOT),
+            stdout=out,
+            stderr=err,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+
+
+def _robot_stop(entry: dict[str, str], timeout: float = 40.0) -> None:
+    """Остановить робота: kill-файл, при необходимости — принудительно."""
+    kill = _robot_path(entry, "KILL_SWITCH", f"data/{entry['key']}.kill")
+    kill.parent.mkdir(parents=True, exist_ok=True)
+    kill.write_text("", encoding="utf-8")
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _robot_pids(entry["module"]):
+            return
+        time.sleep(1.0)
+
+    for pid in _robot_pids(entry["module"]):
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", f"Stop-Process -Id {pid} -Force"],
+            capture_output=True,
+            timeout=15,
+            check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+
+
+@st.fragment(run_every="10s")
+def _robot_tab(entry: dict[str, str]) -> None:
+    """Вкладка одного робота: кнопки, статус, состояние, логи."""
+    pids = _robot_pids(entry["module"])
+    running = bool(pids)
+
+    col1, col2, col3 = st.columns([3, 1, 1])
+    with col1:
+        st.metric(
+            "Статус",
+            "🟢 Запущен" if running else "⚪ Остановлен",
+            delta=f"PID {', '.join(map(str, pids))}" if running else None,
+        )
+    with col2:
+        if st.button(
+            "▶️ Старт",
+            disabled=running,
+            use_container_width=True,
+            key=f"{entry['key']}_start",
+        ):
+            _robot_start(entry)
+            st.rerun()
+    with col3:
+        if st.button(
+            "⏹ Стоп",
+            disabled=not running,
+            use_container_width=True,
+            key=f"{entry['key']}_stop",
+        ):
+            with st.spinner("Останавливаю (до 40 сек)..."):
+                _robot_stop(entry)
+            st.rerun()
+
+    env = _robot_env(entry)
+    state_path = _robot_path(
+        entry,
+        "STATE_FILE",
+        f"data/{entry['key']}_state.json",
+    )
+    state: dict = {}
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            state = {}
+
+    st.divider()
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Пара", env.get("SYMBOL") or state.get("symbol", "—"))
+    with c2:
+        st.metric("Фаза", state.get("phase", "—"))
+    with c3:
+        st.metric("Kill", "🔴 да" if state.get("kill") else "нет")
+    with c4:
+        st.metric("PnL дня", format_pnl(float(state.get("day_pnl") or 0)))
+
+    pos = state.get("position")
+    pending = state.get("pending_buy") or state.get("pending_sell")
+    if pos:
+        st.info(
+            f"**Позиция**: {pos.get('side')} qty={pos.get('qty')} "
+            f"entry={pos.get('entry_price')} SL={pos.get('stop_loss')}",
+        )
+    elif pending:
+        st.info(
+            f"**Лимитка**: {pending.get('side')} {pending.get('qty')} "
+            f"@ {pending.get('price')}",
+        )
+    else:
+        st.caption("Позиции и лимиток нет")
+
+    with st.expander("🔑 Все переменные .env"):
+        st.json(env)
+
+    st.subheader("📄 Лог (последние 50 строк)")
+    log_path = _robot_path(entry, "LOG_FILE", f"logs/{entry['key']}.log")
+    if log_path.exists():
+        lines = log_path.read_text(
+            encoding="utf-8",
+            errors="replace",
+        ).splitlines()
+        st.code("\n".join(lines[-50:]), language=None)
+    else:
+        st.info(f"Лог {log_path.name} ещё не создан")
+
+
+def page_robots() -> None:
+    """Страница управления роботами: запуск, остановка, состояние, логи."""
+    st.title("🤖 Роботы")
+    st.caption("Запуск и остановка; статус и логи обновляются сами")
+
+    tabs = st.tabs([r["title"] for r in ROBOTS])
+    for tab, entry in zip(tabs, ROBOTS):
+        with tab:
+            _robot_tab(entry)
 
 
 # ============================================================
@@ -1291,12 +1532,12 @@ def main() -> None:
 
     if page == "📊 Обзор":
         page_overview()
+    elif page == "  Trend и Zakol":
+        page_robots()
     elif page == "  Flat":
         page_bot("robot_flat")
     elif page == "  Yrovni":
         page_bot("robot_yrovni_D")
-    elif page == "  Trend":
-        page_bot("robot_trend")
     elif page == "  Impulse":
         page_bot("robot_impulse")
     elif page == "  Bot 0":

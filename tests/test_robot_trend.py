@@ -990,6 +990,71 @@ def test_recover_returns_false_when_exchange_down(tmp_path: Path) -> None:
     assert asyncio.run(flow.recover()) is False
 
 
+# ============================== shutdown ==============================
+
+
+def test_shutdown_closes_position_and_cancels(tmp_path: Path) -> None:
+    flow, client, _feed, _strategy, store = _make_flow(tmp_path)
+    client.position = Position(
+        symbol="BTCUSDT",
+        side="Buy",
+        size=0.1,
+        avg_price=100.0,
+        unrealised_pnl=0.0,
+    )
+    store.state.position = OpenPosition(
+        entry_price=100.0,
+        qty=0.1,
+        side="long",
+        stop_loss=95.0,
+        take_profit=105.0,
+        opened_at=time.time(),
+    )
+    store.state.phase = PHASE_IN_POSITION
+    asyncio.run(flow._on_shutdown())
+
+    st = store.state
+    assert client.closed == 1  # закрытие по рынку
+    assert client.cancelled_all == 1  # остатки сняты после закрытия
+    assert st.position is None
+    assert st.phase == PHASE_IDLE
+
+
+def test_shutdown_flat_cancels_orders(tmp_path: Path) -> None:
+    flow, client, _feed, _strategy, store = _make_flow(tmp_path)
+    store.state.kill = True
+    store.state.phase = PHASE_STOPPED
+    asyncio.run(flow._on_shutdown())
+
+    assert client.closed == 0
+    assert client.cancelled_all == 1
+    assert store.state.phase == PHASE_STOPPED  # kill → STOPPED
+
+
+def test_shutdown_close_fails_keeps_position(tmp_path: Path) -> None:
+    flow, client, _feed, _strategy, store = _make_flow(tmp_path)
+
+    async def _boom(symbol: str, qty: float, side: str) -> dict[str, Any]:
+        raise RuntimeError("api down")
+
+    client.close_position = _boom  # type: ignore[method-assign]
+    store.state.position = OpenPosition(
+        entry_price=100.0,
+        qty=0.1,
+        side="long",
+        stop_loss=95.0,
+        take_profit=105.0,
+        opened_at=time.time(),
+    )
+    store.state.phase = PHASE_IN_POSITION
+    asyncio.run(flow._on_shutdown())
+
+    st = store.state
+    assert st.position is not None  # позиция остаётся — SL/TP работает
+    assert client.cancelled_all == 0  # заявки не снимаем
+    assert st.phase == PHASE_IN_POSITION
+
+
 # ============================== main ==============================
 
 

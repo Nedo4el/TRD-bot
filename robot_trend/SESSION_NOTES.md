@@ -9,7 +9,7 @@
 
 ---
 
-# Robot Trend — Сессия 2026-10-03 — РИСК: SL 2% / TP 5% / BE + трейлинг
+# Robot Trend — Сессия 2026-10-03 — РИСК: SL 2% / TP 5% / BE + трейлинг; STOP = flat
 
 ## Параметры (по требованию)
 | Параметр | Значение | Env |
@@ -36,9 +36,16 @@
 | `robot_trend/.env`, `.env.example` | блок «Риск» вместо ATR-множителей |
 | `tests/test_robot_trend.py` | правки %-ожиданий + 5 тестов `on_price`; `CountingStrategy` — `super().__init__()` |
 
+## Остановка = flat (та же сессия)
+- `_on_shutdown()` (любой выход из `run()`: kill-switch, SIGTERM, исключение
+  в цикле): закрыть позицию по рынку → `cancel_all_orders`. Если закрытие
+  не подтвердилось — заявки НЕ снимаем, SL/TP остаются защитой.
+- `st.kill` → фаза `STOPPED` в конце shutdown (раньше финализация ставила IDLE).
+
 ## Проверки (2026-10-03)
 - `ruff check` / `ruff format --check` по своим файлам — чисто;
-  `mypy robot_trend robot_zakol core` — 0 ошибок; `pytest` — **226 passed**.
+  `mypy robot_trend robot_zakol core` — 0 ошибок; `pytest` — **231 passed**
+  (+3 shutdown-теста: закрытие/flat/неудача закрытия).
 
 ---
 

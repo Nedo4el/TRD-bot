@@ -777,7 +777,7 @@ class OrderCycle:
         st.last_close_at = time.time()
         st.position = None
         st.phase = PHASE_IDLE
-        if self._kill_by_equity():
+        if not st.kill and self._kill_by_equity():
             await self._trigger_kill(reason)
         else:
             logger.info("close %s pnl=%.2f", reason, pnl)
@@ -815,9 +815,7 @@ class OrderCycle:
         self.store.state.phase = PHASE_STOPPED
         self.store.state.pending_buy = None
         self.store.state.pending_sell = None
-        pos = self.store.state.position
-        if pos is not None:
-            await self._apply_server_sl_tp(pos)
+        # позицию закроет _on_shutdown (SL/TP остаются до подтверждения)
         await self.store.save()
         logger.warning("STOPPED kill=%s", self.store.state.kill)
         self._notify(f"zakol STOPPED kill={self.store.state.kill}")
@@ -883,15 +881,69 @@ class OrderCycle:
         await self._trigger_kill("equity")
 
     async def _on_shutdown(self) -> None:
+        """Остановка: снять лимитки, закрыть позицию, убрать заявки.
+
+        Вызывается при любом выходе из run(): kill-switch, SIGTERM,
+        исключение в цикле. Если позицию закрыть не удалось — возвращаем
+        серверный SL/TP (защита остаётся на бирже).
+        """
+        st = self.store.state
         for p in self._pendings():
             logger.info("shutdown: cancel pending %s", p.order_id)
             try:
                 await self.client.cancel_order(self.cfg.symbol, p.order_id)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("shutdown cancel: %s", exc)
-        self.store.state.pending_buy = None
-        self.store.state.pending_sell = None
+        st.pending_buy = None
+        st.pending_sell = None
+        pos = st.position
+        if pos is not None:
+            await self._shutdown_close(pos)
+        else:
+            await self._cancel_rest()
+        if st.kill:
+            st.phase = PHASE_STOPPED
         await self.store.save()
+
+    async def _shutdown_close(self, pos: OpenPosition) -> None:
+        """Закрыть позицию рыночным ордером; при неудаче — вернуть SL/TP."""
+        side = "Buy" if pos.side == "long" else "Sell"
+        try:
+            await self.client.close_position(self.cfg.symbol, pos.qty, side)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("shutdown: закрытие не вышло — %s", exc)
+            await self._apply_server_sl_tp(pos)
+            return
+        if not await self._wait_closed():
+            logger.warning("shutdown: закрытие не подтвердилось — SL/TP остаются")
+            await self._apply_server_sl_tp(pos)
+            return
+        try:
+            await self._close_position("stop")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("shutdown: финализация закрытия: %s", exc)
+        await self._cancel_rest()
+
+    async def _wait_closed(self, timeout: float = 10.0) -> bool:
+        """Дождаться исчезновения позиции на бирже (закрытие подтверждено)."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                pos = await self.client.get_position(self.cfg.symbol)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("wait closed: %s", exc)
+                return False
+            if pos is None or pos.size <= 0:
+                return True
+            await asyncio.sleep(0.5)
+        return False
+
+    async def _cancel_rest(self) -> None:
+        """Снять все оставшиеся заявки (лимитки/conditional-сироты)."""
+        try:
+            await self.client.cancel_all_orders(self.cfg.symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("shutdown cancel_all: %s", exc)
 
     async def recover(self) -> None:
         """Синхронизировать state с биржей после рестарта."""

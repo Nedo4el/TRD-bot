@@ -672,8 +672,23 @@ class OrderFlow:
             logger.debug("notify: %s", exc)
 
     async def _on_shutdown(self) -> None:
+        """Остановка: закрыть позицию по рынку и снять все заявки.
+
+        Вызывается при любом выходе из run(): kill-switch, SIGTERM,
+        исключение в цикле. Если позицию закрыть не удалось — SL/TP
+        на бирже остаются, заявки НЕ снимаем (иначе снимем защиту).
+        """
         st = self.store.state
-        if st.position is None and st.phase == PHASE_IN_POSITION:
+        if st.position is not None:
+            await self._exit("stop")
+        if st.position is None:
+            try:
+                await self.client.cancel_all_orders(self.cfg.symbol)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("shutdown cancel_all: %s", exc)
+        if st.kill:
+            st.phase = PHASE_STOPPED
+        elif st.position is None and st.phase == PHASE_IN_POSITION:
             st.phase = PHASE_IDLE
         await self.store.save()
         logger.info("order_flow остановлен (phase=%s)", st.phase)
