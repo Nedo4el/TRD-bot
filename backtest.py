@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from core.bybit_client import BybitClient, Candle
@@ -38,18 +38,34 @@ from robot_trend.strategy import TrendParams, TrendStrategy
 # from robot_krugloe.strategy import KrugloeStrategy
 
 
-def make_strategy(name: str) -> BaseStrategy:
+def make_strategy(
+    name: str,
+    timeframe: str | None = None,
+    htf: str | None = None,
+    symbol: str | None = None,
+) -> BaseStrategy:
     """Создать стратегию по имени (параметры — из .env корня, если есть).
 
     Args:
         name: flat | trend.
+        timeframe: рабочий ТФ в минутах (переопределяет TIMEFRAME из .env).
+        htf: старший ТФ в минутах (переопределяет HTF_TIMEFRAME из .env).
+        symbol: символ - профиль Supertrend (BTC/ETH vs альт).
 
     Returns:
         Готовый объект стратегии с настройками по умолчанию/.env.
     """
     if name == "trend":
         # параметры из robot_trend/.env (load_bot_env уже вызван)
-        return TrendStrategy(TrendParams.from_env())
+        params = TrendParams.from_env(symbol)
+        updates: dict[str, int] = {}
+        if timeframe and timeframe.isdigit():
+            updates["timeframe_min"] = int(timeframe)
+        if htf and htf.isdigit():
+            updates["htf_min"] = int(htf)
+        if updates:
+            params = replace(params, **updates)
+        return TrendStrategy(params)
     if name == "flat":
         return FlatStrategy()
     raise ValueError(
@@ -345,13 +361,22 @@ async def fetch_candles(
     limit: int,
     start_ms: int | None = None,
     end_ms: int | None = None,
+    timeframe: str | None = None,
 ) -> list[Candle]:
     """Загрузить свечи с Bybit через API с пагинацией.
+
+    Args:
+        config: конфигурация (symbol; timeframe — если не передан явно).
+        limit: сколько свечей нужно.
+        start_ms: начало диапазона (unix, мс), если задано.
+        end_ms: конец диапазона (unix, мс), если задано.
+        timeframe: интервал в минутах (для старшего ТФ мульти-ТФ стратегий).
 
     Bybit отдаёт максимум 1000 свечей за запрос.
     Пагинация: запрашиваем newer через end= (timestamp старшей свечи - 1мс).
     """
     client = BybitClient(config)
+    interval = timeframe or config.timeframe
     PAGE = 1000
     try:
         all_candles: list[Candle] = []
@@ -365,7 +390,7 @@ async def fetch_candles(
 
             candles = await client.get_klines(
                 config.symbol,
-                interval=config.timeframe,
+                interval=interval,
                 limit=batch,
                 end=end_ts,
             )
@@ -626,7 +651,12 @@ def main() -> None:
         "--limit", type=int, default=500, help="сколько свечей брать (пагинация >1000)"
     )
     parser.add_argument("--symbol", default=None, help="пара (по умолчанию из .env)")
-    parser.add_argument("--timeframe", default=None, help="таймфрейм")
+    parser.add_argument("--timeframe", default=None, help="таймфрейм (минуты)")
+    parser.add_argument(
+        "--htf",
+        default=None,
+        help="старший ТФ в минутах (мульти-ТФ; по умолчанию HTF_TIMEFRAME)",
+    )
     parser.add_argument("--sl", type=float, default=None, help="SL %% (fallback)")
     parser.add_argument("--tp", type=float, default=None, help="TP %% (fallback)")
     parser.add_argument("--no-chart", action="store_true", help="не показывать график")
@@ -672,11 +702,31 @@ def main() -> None:
         limit = int(days * 24 * 60 / tf_minutes) + 100  # +100 запас
         print(f"Даты: {args.start_date} → {args.end_date} | {days:.0f} дней | ~{limit} свечей")
 
-    strategy = make_strategy(args.strategy)
+    strategy = make_strategy(
+        args.strategy, timeframe=args.timeframe, htf=args.htf, symbol=config.symbol
+    )
     candles = asyncio.run(fetch_candles(config, limit, start_ms=start_ms, end_ms=end_ms))
+
+    # старший ТФ (мульти-ТФ стратегии, напр. trend: 30м режим / 5м триггер)
+    htf_tf = str(getattr(getattr(strategy, "params", None), "htf_min", "") or "")
+    if htf_tf:
+        if start_ms and end_ms:
+            days_htf = (end_ms - start_ms) / 86400000
+            htf_limit = int(days_htf * 24 * 60 / int(htf_tf)) + 100
+        else:
+            htf_limit = int(limit * int(config.timeframe) / int(htf_tf)) + 50
+        htf_candles = asyncio.run(
+            fetch_candles(
+                config, htf_limit, start_ms=start_ms, end_ms=end_ms, timeframe=htf_tf
+            ),
+        )
+        strategy.set_htf(htf_candles)
+        print(f"Старший ТФ: {htf_tf}м, свечей: {len(htf_candles)}")
+    tf_label = f"{config.timeframe}/{htf_tf}" if htf_tf else config.timeframe
+
     result = run_backtest(candles, strategy, sl_pct, tp_pct)
 
-    print_stats(result, strategy.name, config.symbol, config.timeframe)
+    print_stats(result, strategy.name, config.symbol, tf_label)
 
     # Сохранение отчёта в файл
     if args.save_report:
@@ -684,7 +734,9 @@ def main() -> None:
         report_path = Path(args.save_report)
         report_path.parent.mkdir(parents=True, exist_ok=True)
         with open(report_path, "w", encoding="utf-8") as f:
-            f.write(f"Backtest Report: {strategy.name} | {config.symbol} | {config.timeframe}\n")
+            f.write(
+                f"Backtest Report: {strategy.name} | {config.symbol} | {tf_label}\n"
+            )
             f.write(f"Date range: {args.start_date or 'N/A'} → {args.end_date or 'N/A'}\n")
             f.write(f"Candles: {len(candles)}\n")
             f.write("=" * 55 + "\n")
@@ -708,8 +760,8 @@ def main() -> None:
         print(f"\nОтчёт сохранён: {report_path}")
 
     if not args.no_chart and result.equity_curve:
-        plot_equity(result, strategy.name, config.symbol, config.timeframe)
-        plot_trades(result, strategy.name, config.symbol, config.timeframe)
+        plot_equity(result, strategy.name, config.symbol, tf_label)
+        plot_trades(result, strategy.name, config.symbol, tf_label)
 
 
 if __name__ == "__main__":

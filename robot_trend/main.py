@@ -138,9 +138,10 @@ async def _amain() -> None:
                     f"WS не подключился за {WS_CONNECT_TIMEOUT:.0f}с — старт отменён",
                 )
         logger.info(
-            "robot_trend started symbol=%s tf=%s testnet=%s",
+            "robot_trend started symbol=%s tf=%s htf=%s testnet=%s",
             cfg.symbol,
             trend.timeframe,
+            trend.htf_timeframe,
             cfg.testnet,
         )
         runner = asyncio.create_task(flow.run())

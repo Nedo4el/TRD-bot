@@ -6,7 +6,7 @@ import logging
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from core.config import load_bot_env
 
@@ -45,6 +45,9 @@ class TrendConfig(BaseModel):
     category: str = Field(default_factory=lambda: os.getenv("CATEGORY", "linear"))
     symbol: str = Field(default_factory=lambda: os.getenv("SYMBOL", "BTCUSDT"))
     timeframe: str = Field(default_factory=lambda: os.getenv("TIMEFRAME", "5"))
+    # старший ТФ: направление + сила тренда (EMA/ADX), входы только по нему
+    htf_timeframe: str = Field(default_factory=lambda: os.getenv("HTF_TIMEFRAME", "30"))
+    htf_candle_warmup: int = Field(default_factory=lambda: _env_int("HTF_WARMUP", 250))
 
     # --- Размер позиции ---
     deposit_usd: float = Field(default_factory=lambda: _env_float("DEPOSIT_USD", 100.0))
@@ -128,12 +131,18 @@ class TrendConfig(BaseModel):
             raise ValueError("SYMBOL не задан")
         return v
 
-    @field_validator("timeframe")
+    @field_validator("timeframe", "htf_timeframe")
     @classmethod
     def _timeframe_positive(cls, v: str) -> str:
         if not v.isdigit() or int(v) <= 0:
             raise ValueError("TIMEFRAME должен быть положительным числом (минуты)")
         return v
+
+    @model_validator(mode="after")
+    def _htf_slower_than_tf(self) -> TrendConfig:
+        if int(self.htf_timeframe) <= int(self.timeframe):
+            raise ValueError("HTF_TIMEFRAME должен быть больше TIMEFRAME")
+        return self
 
     @field_validator("position_pct")
     @classmethod
@@ -169,7 +178,7 @@ class TrendConfig(BaseModel):
             raise ValueError("значение в секундах должно быть > 0")
         return v
 
-    @field_validator("max_trades_per_day", "candles_warmup")
+    @field_validator("max_trades_per_day", "candles_warmup", "htf_candle_warmup")
     @classmethod
     def _int_non_negative(cls, v: int) -> int:
         if v < 0:

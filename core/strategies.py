@@ -69,3 +69,13 @@ class BaseStrategy(ABC):
         Args:
             direction: "long" или "short".
         """
+
+    def set_htf(self, htf_candles: list[Candle]) -> None:
+        """Отдать стратегии свечи старшего ТФ (мульти-ТФ бэктест).
+
+        По умолчанию no-op — для стратегий, работающих в одном ТФ.
+        Вызывает backtest.py до прогона, если стратегия переопределила.
+
+        Args:
+            htf_candles: свечи старшего ТФ от старых к новым.
+        """

@@ -32,7 +32,13 @@ from robot_trend.state import (
     OpenPosition,
     StateStore,
 )
-from robot_trend.strategy import Instruction, TrendParams, TrendStrategy, _Snapshot
+from robot_trend.strategy import (
+    Instruction,
+    TrendParams,
+    TrendStrategy,
+    _HTFSnapshot,
+    _Snapshot,
+)
 
 # ============================== config ==============================
 
@@ -79,6 +85,8 @@ def test_config_defaults() -> None:
     assert cfg.symbol == "BTCUSDT"
     assert cfg.order_link_prefix == "tr-"
     assert cfg.timeframe == "5"
+    assert cfg.htf_timeframe == "30"
+    assert cfg.htf_candle_warmup == 250
 
 
 def test_config_timeframe_must_be_positive_int() -> None:
@@ -86,6 +94,18 @@ def test_config_timeframe_must_be_positive_int() -> None:
         _cfg(timeframe="abc")
     with pytest.raises(ValueError, match="TIMEFRAME"):
         _cfg(timeframe="0")
+    with pytest.raises(ValueError, match="TIMEFRAME"):
+        _cfg(htf_timeframe="abc")
+
+
+def test_config_htf_must_be_slower_than_tf() -> None:
+    # 30м/30м и 30м/15м — старший ТФ обязан быть медленнее рабочего
+    with pytest.raises(ValueError, match="HTF_TIMEFRAME"):
+        _cfg(timeframe="30", htf_timeframe="30")
+    with pytest.raises(ValueError, match="HTF_TIMEFRAME"):
+        _cfg(timeframe="30", htf_timeframe="15")
+    # а корректная пара проходит
+    assert _cfg(timeframe="5", htf_timeframe="60").htf_timeframe == "60"
 
 
 def test_config_position_pct_range() -> None:
@@ -341,12 +361,39 @@ def _trend_candles(
     return out
 
 
+def _htf_candles(direction: int = 1, flat: int = 200, trend: int = 30) -> list[Candle]:
+    """Старший ТФ (30м): длинный флэт → тренд direction (+1 вверх / -1 вниз).
+
+    После флэта EMA сходится; 30 импульсных свечей дают ADX >= 25
+    и явное направление (trend_up при +1, trend_down при -1).
+    """
+    out: list[Candle] = []
+    price = 100.0
+    ts = 0
+
+    def add(o: float, c: float, v: float) -> None:
+        nonlocal price, ts
+        out.append(
+            Candle(ts * 1_800_000, o, max(o, c) * 1.002, min(o, c) * 0.999, c, v),
+        )
+        price = c
+        ts += 1
+
+    step = 1.012 if direction >= 1 else 0.988
+    for i in range(flat):
+        add(price, price + (0.05 if i % 2 else -0.05), 100.0)
+    for _ in range(trend):
+        add(price, price * step, 300.0)
+    return out
+
+
 def test_params_defaults_match_table() -> None:
     p = TrendParams()
+    assert (p.timeframe_min, p.htf_min, p.htf_warmup) == (5, 30, 250)
     assert (p.ema_fast, p.ema_slow, p.ema_macro) == (20, 50, 200)
     assert (p.adx_period, p.adx_threshold) == (14, 25.0)
     assert (p.st_atr_period, p.st_factor) == (10, 3.0)
-    assert (p.atr_period, p.sl_pct, p.tp_pct) == (14, 0.02, 0.05)
+    assert (p.sl_pct, p.tp_pct) == (0.02, 0.05)
     assert (p.be_trigger_pct, p.be_offset_pct, p.trail_pct) == (0.02, 0.0, 0.02)
     assert (p.vol_period, p.vol_mult) == (20, 1.3)
 
@@ -362,6 +409,10 @@ def test_params_validation() -> None:
         TrendParams(trail_pct=-0.01)
     with pytest.raises(ValueError, match="ADX_THRESHOLD"):
         TrendParams(adx_threshold=-1.0)
+    with pytest.raises(ValueError, match="TIMEFRAME"):
+        TrendParams(timeframe_min=30, htf_min=5)
+    with pytest.raises(ValueError, match="HTF_WARMUP"):
+        TrendParams(htf_warmup=100)
 
 
 def test_params_from_env_symbol_profile(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -383,100 +434,169 @@ def test_params_from_env_symbol_profile(monkeypatch: pytest.MonkeyPatch) -> None
     assert TrendParams.from_env("SOLUSDT").st_atr_period == 14
     monkeypatch.setenv("ADX_THRESHOLD", "30")
     assert TrendParams.from_env("SOLUSDT").adx_threshold == 30.0
+    # ТФ берутся из окружения
+    monkeypatch.setenv("TIMEFRAME", "15")
+    monkeypatch.setenv("HTF_TIMEFRAME", "60")
+    p = TrendParams.from_env("SOLUSDT")
+    assert (p.timeframe_min, p.htf_min) == (15, 60)
 
 
 def test_decide_hold_on_insufficient_data() -> None:
     strat = TrendStrategy()
-    assert strat.decide([], None) is None
+    assert strat.decide([], [], None) is None
     pos = OpenPosition(entry_price=100.0, qty=0.1, side="long")
-    assert strat.decide(_trend_candles(flat=50, rally=0, resume=0), pos) is None
+    # мало свечей рабочего ТФ (нужно >= VOL_PERIOD + 2)
+    assert strat.decide(_trend_candles(flat=10, rally=0, resume=0), [], pos) is None
+    # мало свечей старшего ТФ — входа нет
+    assert strat.decide(_trend_candles(), [], None) is None
 
 
 def test_decide_enter_long_on_supertrend_flip() -> None:
     strat = TrendStrategy()
     candles = _trend_candles()
-    snap = strat._snapshot(candles)
-    assert snap is not None and snap.st_flip == 1
-    assert strat._entry(snap) == "long"
+    ltf = strat._snapshot(candles)
+    assert ltf is not None and ltf.st_flip == 1
+    htf = strat._htf_snapshot(_htf_candles())
+    assert htf is not None and htf.trend_up
+    assert strat._entry(ltf, htf) == "long"
 
-    ins = strat.decide(candles, None)
+    ins = strat.decide(candles, _htf_candles(), None)
     assert ins is not None and ins.action == "enter"
     assert ins.side == "long"
     # стоп/тейк в процентах от цены входа: -2% / +5%
-    assert ins.stop == pytest.approx(snap.close * 0.98)
-    assert ins.take == pytest.approx(snap.close * 1.05)
+    assert ins.stop == pytest.approx(ltf.close * 0.98)
+    assert ins.take == pytest.approx(ltf.close * 1.05)
     assert "ST flip long" in ins.reason
+    assert "HTF ADX" in ins.reason
+
+
+def test_htf_snapshot_direction_and_strength() -> None:
+    strat = TrendStrategy()
+    up = strat._htf_snapshot(_htf_candles(1))
+    assert up is not None
+    assert up.trend_up and not up.trend_down
+    assert up.adx >= 25.0 and up.di_plus > up.di_minus
+
+    down = strat._htf_snapshot(_htf_candles(-1))
+    assert down is not None
+    assert down.trend_down and not down.trend_up
+    assert down.adx >= 25.0 and down.di_minus > down.di_plus
+
+    assert strat._htf_snapshot([]) is None
+    assert strat._htf_snapshot(_htf_candles()[:100]) is None  # < EMA_MACRO + 2
+
+
+def test_entry_requires_htf_direction() -> None:
+    strat = TrendStrategy()
+    ltf = strat._snapshot(_trend_candles())  # флип Supertrend вверх
+    assert ltf is not None and ltf.st_flip == 1
+    up = strat._htf_snapshot(_htf_candles(1))
+    down = strat._htf_snapshot(_htf_candles(-1))
+    assert up is not None and down is not None
+    # направление 30м совпадает — вход есть
+    assert strat._entry(ltf, up) == "long"
+    # 30м вниз — лонг запрещён
+    assert strat._entry(ltf, down) is None
+    # слабый тренд старшего ТФ (ADX < порога) — входа нет
+    weak = dataclasses.replace(up, adx=10.0)
+    assert strat._entry(ltf, weak) is None
+
+
+def test_decide_enter_requires_htf() -> None:
+    strat = TrendStrategy()
+    candles = _trend_candles()
+    assert strat.decide(candles, _htf_candles(-1), None) is None
+    ins = strat.decide(candles, _htf_candles(1), None)
+    assert ins is not None and ins.action == "enter" and ins.side == "long"
 
 
 def test_decide_no_entry_without_volume() -> None:
     # объём свечи ниже VOL_MULT x SMA20 — пробой не подтверждён
     strat = TrendStrategy()
-    snap = strat._snapshot(_trend_candles(vol=100.0))
-    assert snap is not None and snap.vol_ratio < 1.3
-    assert strat._entry(snap) is None
-    assert strat.decide(_trend_candles(vol=100.0), None) is None
+    ltf = strat._snapshot(_trend_candles(vol=100.0))
+    assert ltf is not None and ltf.vol_ratio < 1.3
+    htf = strat._htf_snapshot(_htf_candles())
+    assert htf is not None
+    assert strat._entry(ltf, htf) is None
+    assert strat.decide(_trend_candles(vol=100.0), _htf_candles(), None) is None
 
 
 def test_decide_no_entry_when_adx_filter_blocks() -> None:
+    # ADX-порог применяется к свечам старшего ТФ (30м)
     strat = TrendStrategy(TrendParams(adx_threshold=1000.0))
-    assert strat.decide(_trend_candles(), None) is None
+    assert strat.decide(_trend_candles(), _htf_candles(), None) is None
 
 
 def test_entry_short_and_stop_take_mirror() -> None:
-    # зеркальный путь: разворот вниз + медвежий режим
-    snap = _Snapshot(
-        close=100.0,
-        trend_up=False,
-        trend_down=True,
-        adx=30.0,
-        di_plus=5.0,
-        di_minus=50.0,
-        st_dir=-1,
-        st_flip=-1,
-        atr=1.0,
-        vol_ratio=2.0,
+    # зеркальный путь: разворот вниз + медвежий режим старшего ТФ
+    ltf = _Snapshot(close=100.0, st_dir=-1, st_flip=-1, vol_ratio=2.0)
+    htf = _HTFSnapshot(
+        trend_up=False, trend_down=True, adx=30.0, di_plus=5.0, di_minus=50.0
     )
     strat = TrendStrategy()
-    assert strat._entry(snap) == "short"
-    stop, take = strat._stop_take(snap, "short")
+    assert strat._entry(ltf, htf) == "short"
+    stop, take = strat._stop_take(ltf, "short")
     assert stop == pytest.approx(100.0 * 1.02)
     assert take == pytest.approx(100.0 * 0.95)
-    # тот же снапшот без флипа/объёма — входа нет
-    assert strat._entry(dataclasses.replace(snap, st_flip=0)) is None
-    assert strat._entry(dataclasses.replace(snap, vol_ratio=0.5)) is None
+    # тот же триггер без флипа/объёма — входа нет
+    assert strat._entry(dataclasses.replace(ltf, st_flip=0), htf) is None
+    assert strat._entry(dataclasses.replace(ltf, vol_ratio=0.5), htf) is None
+    # старший ТФ вверх — шорт запрещён
+    up = dataclasses.replace(htf, trend_up=True, trend_down=False)
+    assert strat._entry(ltf, up) is None
 
 
 def test_decide_exit_on_supertrend_flip_against_position() -> None:
+    # выход живёт на 5м и не зависит от старшего ТФ (передаём [])
     strat = TrendStrategy()
     pos = OpenPosition(entry_price=110.0, qty=0.1, side="long")
     # откат перевёл Supertrend вниз → выход
     crash = _trend_candles(resume=0)
-    ins = strat.decide(crash, pos)
+    ins = strat.decide(crash, [], pos)
     assert ins is not None and ins.action == "exit"
     assert "supertrend" in ins.reason
     # тренд жив — выхода нет
-    assert strat.decide(_trend_candles(), pos) is None
+    assert strat.decide(_trend_candles(), [], pos) is None
     # шорт: рост против него → выход, падение в пользу → hold
     short = OpenPosition(entry_price=110.0, qty=0.1, side="short")
-    assert strat.decide(_trend_candles(), short) is not None
-    assert strat.decide(crash, short) is None
+    assert strat.decide(_trend_candles(), [], short) is not None
+    assert strat.decide(crash, [], short) is None
 
 
 def test_check_signal_entry_then_exit() -> None:
     strat = TrendStrategy()
     assert strat.check_signal([]).action == "hold"
+    # без свечей старшего ТФ вход невозможен
+    no_htf = strat.check_signal(_trend_candles())
+    assert no_htf.action == "hold" and "старшего ТФ" in no_htf.reason
 
-    sig = strat.check_signal(_trend_candles())
+    # длинный рабочий ряд: к концу накопилось достаточно закрытых 30м свечей
+    strat.set_htf(_htf_candles())
+    candles = _trend_candles(flat=1300)
+    sig = strat.check_signal(candles)
     assert sig.action == "buy"
     assert sig.stop_loss is not None and sig.take_profit is not None
     # позиция в памяти — повторного входа нет
-    assert strat.check_signal(_trend_candles()).action == "hold"
+    assert strat.check_signal(candles).action == "hold"
 
-    close = strat.check_signal(_trend_candles(resume=0))
+    close = strat.check_signal(_trend_candles(flat=1300, resume=0))
     assert close.action == "close_long"
     # сброс памяти после закрытия сделки
     strat.on_position_closed("long")
-    assert strat.check_signal(_trend_candles(resume=0)).action == "hold"
+    after = strat.check_signal(_trend_candles(flat=1300, resume=0))
+    assert after.action == "hold"
+
+
+def test_closed_htf_no_hindsight() -> None:
+    # свечи30м считаются закрытыми только к моменту закрытия5м-свечи
+    strat = TrendStrategy()
+    strat.set_htf(_htf_candles())
+    # закрытие первой5м-свечи (t=300с):30м-свеча [0..30м) ещё открыта
+    assert strat._closed_htf(Candle(0, 100.0, 101.0, 99.0, 100.0, 1.0)) == []
+    # закрытие в t=30м: свеча [0..30м) закрыта и включается, [30м..60м) — нет
+    closed = strat._closed_htf(Candle(1_500_000, 100.0, 101.0, 99.0, 100.0, 1.0))
+    assert closed and closed[-1].open_time == 0
+    assert all(c.open_time + 1_800_000 <= 1_800_000 for c in closed)
 
 
 # ============================== фейки для order_flow ==============================
@@ -605,9 +725,13 @@ class CountingStrategy(TrendStrategy):
         super().__init__()
         self.calls = 0
         self.instruction: Instruction | None = None
+        self.htf: list[Candle] = []
 
-    def decide(self, candles: list[Candle], position: Any) -> Instruction | None:
+    def decide(
+        self, candles: list[Candle], htf: list[Candle], position: Any
+    ) -> Instruction | None:
         self.calls += 1
+        self.htf = htf
         return self.instruction
 
 
@@ -886,6 +1010,38 @@ def test_tick_new_candle_decides_again(tmp_path: Path) -> None:
     client.candles = _candles(6, offset=10)
     asyncio.run(flow._tick())
     assert strategy.calls == 2
+
+
+def test_tick_passes_htf_to_strategy(tmp_path: Path) -> None:
+    flow, _client, _feed, strategy, _store = _make_flow(tmp_path)
+    asyncio.run(flow._tick())
+    assert strategy.calls == 1
+    # старший ТФ запрошен отдельно и передан в decide()
+    assert strategy.htf
+
+
+def test_tick_htf_failure_defers_decision(tmp_path: Path) -> None:
+    flow, client, _feed, strategy, _store = _make_flow(tmp_path)
+    orig = client.get_klines
+
+    async def flaky(
+        symbol: str,
+        interval: str | None = None,
+        limit: int | None = None,
+        start: int | None = None,
+        end: int | None = None,
+    ) -> list[Candle]:
+        if interval == flow.cfg.htf_timeframe:
+            raise RuntimeError("api down")
+        return await orig(symbol, interval=interval, limit=limit, start=start, end=end)
+
+    client.get_klines = flaky  # type: ignore[method-assign]
+    asyncio.run(flow._tick())
+    assert strategy.calls == 0  # свечей 30м нет — решение отложено
+
+    client.get_klines = orig  # type: ignore[method-assign]
+    asyncio.run(flow._tick())
+    assert strategy.calls == 1  # доступны — решили (дедуп 5м не сработал)
 
 
 def test_order_link_prefix_and_len(tmp_path: Path) -> None:

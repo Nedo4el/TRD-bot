@@ -6,8 +6,8 @@
   (kill → день UTC → cooldown → фандинг → слippаж), kill-switch,
   дневные счётчики, recover (state ↔ биржа).
 
-Логика входа/выхода живёт в ``strategy.decide()`` (EMA + ADX + Supertrend),
-этот модуль только исполняет её решения.
+Логика входа/выхода живёт в ``strategy.decide()`` (мульти-ТФ: режим по 30м,
+вход/выход по 5м), этот модуль только исполняет её решения и грузит оба ТФ.
 """
 
 from __future__ import annotations
@@ -144,13 +144,17 @@ class OrderFlow:
             return
         if closed[-1].open_time == self._last_decided:
             return  # новой закрытой свечи нет
+        htf = await self._fetch_htf()
+        if htf is None:
+            # решение откладывается: _last_decided не трогаем, повторим тик
+            return
         self._last_decided = closed[-1].open_time
-        await self._on_candles(closed)
+        await self._on_candles(closed, htf)
 
-    async def _on_candles(self, closed: list[Candle]) -> None:
-        """Отдать закрытые свечи стратегии и исполнить её решение."""
+    async def _on_candles(self, closed: list[Candle], htf: list[Candle]) -> None:
+        """Отдать закрытые свечи (5м + 30м) стратегии и исполнить решение."""
         st = self.store.state
-        instruction = self.strategy.decide(closed, st.position)
+        instruction = self.strategy.decide(closed, htf, st.position)
         if instruction is None:
             return
         if instruction.action == "exit":
@@ -615,6 +619,27 @@ class OrderFlow:
             interval=self.cfg.timeframe,
             limit=self.cfg.candles_warmup + 1,  # +1 — формирующаяся свеча
         )
+
+    async def _fetch_htf(self) -> list[Candle] | None:
+        """Закрытые свечи старшего ТФ (None — входное решение откладываем).
+
+        Грузим только в момент решения (раз в TIMEFRAME минут), поэтому
+        лишнего REST-нагрузки нет. Выходы/risk от старшего ТФ не зависят.
+        """
+        try:
+            candles = await self.client.get_klines(
+                self.cfg.symbol,
+                interval=self.cfg.htf_timeframe,
+                limit=self.cfg.htf_candle_warmup + 1,  # +1 — формирующаяся
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("свечи %sм недоступны: %s", self.cfg.htf_timeframe, exc)
+            return None
+        closed = candles[:-1] if len(candles) > 1 else []
+        if not closed:
+            logger.warning("свечи %sм пусты — решение отложено", self.cfg.htf_timeframe)
+            return None
+        return closed
 
     async def _wait_position(self) -> Position | None:
         for _ in range(FILL_RETRIES):
