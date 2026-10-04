@@ -35,6 +35,17 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _env_grid(name: str, default: tuple[float, ...]) -> tuple[float, ...]:
+    """Список сетки через запятую: GRID_PCTS=0.02,0.03,0.05."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if not parts:
+        return default
+    return tuple(float(p) for p in parts)
+
+
 class ZakolConfig(BaseModel):
     """Параметры robot_zakol из окружения."""
 
@@ -49,6 +60,14 @@ class ZakolConfig(BaseModel):
         default_factory=lambda: _env_float("POSITION_PCT", 10.0)
     )
     offset_pct: float = Field(default_factory=lambda: _env_float("OFFSET_PCT", 0.03))
+    # сетка лонг/шорт уровней (доли от цены): лонги −2/−3/−5%, шорты +2/+3/+5%
+    grid_pcts: tuple[float, ...] = Field(
+        default_factory=lambda: _env_grid("GRID_PCTS", (0.02, 0.03, 0.05)),
+    )
+    # задержка перед выставлением стопа после входа, сек (0 = стоп сразу от входа)
+    stop_delay_sec: float = Field(
+        default_factory=lambda: _env_float("STOP_DELAY_SEC", 10.0),
+    )
     long_only: bool = Field(default_factory=lambda: _env_bool("LONG_ONLY", False))
     ttl_sec: float = Field(default_factory=lambda: _env_float("TTL_SEC", 20.0))
     min_price_change: float = Field(
@@ -137,6 +156,16 @@ class ZakolConfig(BaseModel):
             raise ValueError("OFFSET_PCT должен быть в (0, 1)")
         return v
 
+    @field_validator("grid_pcts")
+    @classmethod
+    def _grid_in_range(cls, v: tuple[float, ...]) -> tuple[float, ...]:
+        if len(v) > 6:
+            raise ValueError("GRID_PCTS: не больше 6 уровней")
+        for p in v:
+            if not (0 < p < 1):
+                raise ValueError("GRID_PCTS: каждый уровень в (0, 1)")
+        return v
+
     @field_validator("ttl_sec")
     @classmethod
     def _ttl_positive(cls, v: float) -> float:
@@ -158,7 +187,7 @@ class ZakolConfig(BaseModel):
             raise ValueError("SLIPPAGE_PCT должен быть в [0, 1)")
         return v
 
-    @field_validator("cooldown_sec", "funding_window_sec")
+    @field_validator("cooldown_sec", "funding_window_sec", "stop_delay_sec")
     @classmethod
     def _seconds_non_negative(cls, v: float) -> float:
         if v < 0:

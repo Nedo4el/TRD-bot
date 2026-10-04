@@ -808,9 +808,11 @@ def test_on_price_trail_disabled_when_zero() -> None:
 
 def _bt_cfg(**overrides: Any) -> StrategyConfig:
     base: dict[str, Any] = {
+        "grid_pcts": (0.03,),  # одиночный уровень — как старый ±offset
         "offset_pct": 0.03,
         "ttl_sec": 20.0,
         "stop_pct": 0.03,
+        "stop_delay_sec": 0.0,  # стоп сразу от входа (старая семантика)
         "take_pct": 0.05,
         "trail_pct": 0.0,
         "be_trigger_pct": 0.0,

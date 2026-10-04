@@ -1,4 +1,4 @@
-"""Движок бэктеста: event-loop по тикам, пара TTL-лимиток, fill, exit."""
+"""Движок бэктеста: event-loop по тикам, бракет-сетка TTL-лимиток, fill, exit."""
 
 from __future__ import annotations
 
@@ -84,26 +84,39 @@ def run_single(
 
 
 def _place(st: StrategyState, tick: Tick, strat: StrategyConfig) -> None:
-    """Поставить брекет: buy -offset (+ sell +offset, если не long_only)."""
-    qty = st.qty_for(tick.price)
-    if qty <= 0:
+    """Поставить бракет-сетку: лонги −grid, шорты +grid (если не long_only)."""
+    grid: tuple[float, ...] = strat.grid_pcts
+    if not grid:
+        if strat.offset_pct <= 0:
+            return
+        grid = (strat.offset_pct,)
+    qty_total = st.qty_for(tick.price)
+    if qty_total <= 0:
         return
+    qty_each = qty_total / len(grid)
     deadline = tick.ts_ms + int(strat.ttl_sec * 1000)
-    st.pending_buy = PendingLimit(
-        target=limit_target(tick.price, strat.offset_pct, strat.tick_size, "Buy"),
-        qty=qty,
-        placed_ts_ms=tick.ts_ms,
-        deadline_ts_ms=deadline,
-        side="Buy",
-    )
-    if not strat.long_only:
-        st.pending_sell = PendingLimit(
-            target=limit_target(tick.price, strat.offset_pct, strat.tick_size, "Sell"),
-            qty=qty,
+    st.pending_buys = [
+        PendingLimit(
+            target=limit_target(tick.price, pct, strat.tick_size, "Buy"),
+            qty=qty_each,
             placed_ts_ms=tick.ts_ms,
             deadline_ts_ms=deadline,
-            side="Sell",
+            side="Buy",
         )
+        for pct in grid
+    ]
+    st.pending_sells = []
+    if not strat.long_only:
+        st.pending_sells = [
+            PendingLimit(
+                target=limit_target(tick.price, pct, strat.tick_size, "Sell"),
+                qty=qty_each,
+                placed_ts_ms=tick.ts_ms,
+                deadline_ts_ms=deadline,
+                side="Sell",
+            )
+            for pct in grid
+        ]
     st.ref_price = tick.price
     st.phase = "WORKING"
 
@@ -115,21 +128,18 @@ def _step_working(
     fill_cfg: FillConfig,
     prev_price: float | None,
 ) -> None:
-    for attr in ("pending_buy", "pending_sell"):
-        order = getattr(st, attr)
-        if order is None or not order.active:
-            continue
-        status = _try_fill(st, order, tick, strat, fill_cfg, prev_price)
-        if status in ("opened", "rejected"):
-            return
-    order = st.pending_buy or st.pending_sell
-    if order is None or tick.ts_ms < order.deadline_ts_ms:
+    ready = _collect_fills(st, tick, strat, fill_cfg, prev_price)
+    if ready:
+        # филл ордера или группы: открываем позицию, остальное снимаем
+        _open_position(st, ready, tick, strat)
         return
-    for attr in ("pending_buy", "pending_sell"):
-        part = getattr(st, attr)
-        if part is not None and part.filled_qty > 0:
-            _open_position(st, part, part.target, tick, True)
-            return
+    orders = st.pendings()
+    if not orders or not any(o.active for o in orders):
+        _drop_grid(st)
+        st.phase = "IDLE"
+        return
+    if tick.ts_ms < orders[0].deadline_ts_ms:
+        return
     st.counters.ttl_cancels += 1
     ref = st.ref_price or tick.price
     delta = abs(tick.price - ref) / ref if ref else 1.0
@@ -137,71 +147,94 @@ def _step_working(
         st.counters.extends += 1
     else:
         st.counters.re_places += 1
-    _drop_both(st)
+    _drop_grid(st)
     st.phase = "IDLE"
     _place(st, tick, strat)
 
 
-def _try_fill(
+def _collect_fills(
     st: StrategyState,
-    order: PendingLimit,
     tick: Tick,
     strat: StrategyConfig,
     fill_cfg: FillConfig,
     prev_price: float | None,
-) -> str:
-    """Обработать один тик для одного ордера. "opened" | "rejected" | ""."""
-    outcome = st.fill_model.on_tick(
-        order,
-        tick.price,
-        tick.size,
-        prev_price,
-        tick.ts_ms,
-    )
-    if outcome.post_only_reject:
-        st.counters.post_only_rejects += 1
-        _drop_both(st)
-        st.phase = "IDLE"
-        return "rejected"
-    if outcome.queue_reject:
-        st.counters.queue_rejects += 1
-    if outcome.filled_qty > 0:
-        order.filled_qty += outcome.filled_qty
-        st.counters.fills += 1
-        if outcome.partial:
-            st.counters.partial_fills += 1
-        if order.side == "Sell":
-            slip = max(0.0, outcome.fill_price - order.target)
-        else:
-            slip = max(0.0, order.target - outcome.fill_price)
-        st.counters.entry_slippage_sum += slip
-        fill_ratio = order.filled_qty / order.qty if order.qty else 0.0
-        if fill_ratio >= strat.partial_fill_pct or fill_cfg.ideal:
-            _open_position(st, order, outcome.fill_price, tick, outcome.partial)
-            return "opened"
-        if tick.ts_ms >= order.deadline_ts_ms and order.filled_qty > 0:
-            _open_position(st, order, outcome.fill_price, tick, True)
-            return "opened"
-    return ""
+) -> list[PendingLimit]:
+    """Прогнать тик по всей сетке, вернуть ордера, готовые к открытию."""
+    for order in st.pendings():
+        if not order.active:
+            continue
+        outcome = st.fill_model.on_tick(
+            order,
+            tick.price,
+            tick.size,
+            prev_price,
+            tick.ts_ms,
+        )
+        if outcome.post_only_reject:
+            st.counters.post_only_rejects += 1
+            order.active = False
+            continue
+        if outcome.queue_reject:
+            st.counters.queue_rejects += 1
+        if outcome.filled_qty > 0:
+            order.filled_qty += outcome.filled_qty
+            st.counters.fills += 1
+            if outcome.partial:
+                st.counters.partial_fills += 1
+            if order.side == "Sell":
+                slip = max(0.0, outcome.fill_price - order.target)
+            else:
+                slip = max(0.0, order.target - outcome.fill_price)
+            st.counters.entry_slippage_sum += slip
+    ready: list[PendingLimit] = []
+    for order in st.pendings():
+        if order.filled_qty <= 0:
+            continue
+        ratio = order.filled_qty / order.qty if order.qty else 0.0
+        if (
+            ratio >= strat.partial_fill_pct
+            or fill_cfg.ideal
+            or tick.ts_ms >= order.deadline_ts_ms
+        ):
+            ready.append(order)
+    return ready
 
 
-def _drop_both(st: StrategyState) -> None:
-    st.pending_buy = None
-    st.pending_sell = None
+def _drop_grid(st: StrategyState) -> None:
+    st.pending_buys.clear()
+    st.pending_sells.clear()
 
 
 def _open_position(
     st: StrategyState,
-    order: PendingLimit,
-    fill_price: float,
+    ready: list[PendingLimit],
     tick: Tick,
-    was_partial: bool,
+    strat: StrategyConfig,
 ) -> None:
-    qty = order.filled_qty if order.filled_qty > 0 else order.qty
-    entry = fill_price
-    side = "short" if order.side == "Sell" else "long"
-    stop_pct = st.cfg.stop_pct
-    stop = entry * (1.0 + stop_pct) if side == "short" else entry * (1.0 - stop_pct)
+    """Открыть позицию из группы филлнувшихся ордеров одной стороны."""
+    qty = sum(o.filled_qty for o in ready)
+    if qty <= 0:
+        return
+    entry = sum(o.target * o.filled_qty for o in ready) / qty
+    long_qty = sum(o.filled_qty for o in ready if o.side != "Sell")
+    side = "long" if long_qty * 2 >= qty else "short"
+    if 0.0 < long_qty < qty:
+        logger.warning(
+            "групповой вход с обеих сторон: long=%.6g short=%.6g",
+            long_qty,
+            qty - long_qty,
+        )
+    was_partial = any(o.filled_qty < o.qty - 1e-12 for o in ready)
+    if strat.stop_delay_sec <= 0:
+        stop = (
+            entry * (1.0 - strat.stop_pct)
+            if side == "long"
+            else entry * (1.0 + strat.stop_pct)
+        )
+        armed = True
+    else:
+        stop = entry
+        armed = False
     pos = Position(
         entry_price=entry,
         qty=qty,
@@ -211,12 +244,11 @@ def _open_position(
         opened_ts=tick.ts_ms,
         was_partial=was_partial,
         fill_price=entry,
+        stop_armed=armed,
     )
-    _drop_both(st)
+    _drop_grid(st)
     st.position = pos
     st.phase = "IN_POSITION"
-    if was_partial:
-        st.counters.partial_fills += 1
 
 
 def _step_position(
@@ -230,6 +262,14 @@ def _step_position(
     if pos is None:
         st.phase = "IDLE"
         return
+    delay_ms = int(strat.stop_delay_sec * 1000)
+    if not pos.stop_armed and tick.ts_ms >= pos.opened_ts + delay_ms:
+        # стоп через stop_delay_sec: stop_pct от текущей цены
+        if pos.side == "long":
+            pos.stop = tick.price * (1.0 - strat.stop_pct)
+        else:
+            pos.stop = tick.price * (1.0 + strat.stop_pct)
+        pos.stop_armed = True
     _need, exit_reason = update_position_risk(pos, tick.price, strat)
     if exit_reason is None:
         return

@@ -1,4 +1,4 @@
-"""Стратегия: пара TTL-лимиток ±offset + управление позицией SL/TP/BE/trail."""
+"""Стратегия: бракет-сетка ±grid с TTL + позиция со стопом/BE/тейк-трейлингом."""
 
 from __future__ import annotations
 
@@ -63,6 +63,8 @@ class Position:
     opened_ts: int = 0
     was_partial: bool = False
     fill_price: float = 0.0
+    # False = стоп ещё не выставлен (ждём stop_delay_sec после входа)
+    stop_armed: bool = True
 
 
 def limit_target(
@@ -91,8 +93,8 @@ class StrategyState:
         self.fill_model = fill
         self.deposit = deposit
         self.phase = "IDLE"
-        self.pending_buy: PendingLimit | None = None
-        self.pending_sell: PendingLimit | None = None
+        self.pending_buys: list[PendingLimit] = []
+        self.pending_sells: list[PendingLimit] = []
         self.position: Position | None = None
         self.session_pnl = 0.0
         self.peak_session_pnl = 0.0
@@ -111,7 +113,7 @@ class StrategyState:
         return self.notional / price
 
     def pendings(self) -> list[PendingLimit]:
-        return [p for p in (self.pending_buy, self.pending_sell) if p is not None]
+        return [*self.pending_buys, *self.pending_sells]
 
 
 def should_kill(st: StrategyState, cfg: StrategyConfig) -> bool:
@@ -124,7 +126,7 @@ def should_kill(st: StrategyState, cfg: StrategyConfig) -> bool:
     return drawdown >= st.deposit * abs(cfg.max_drawdown_pct)
 
 
-def take_hit(pos: Position, price: float, cfg: StrategyConfig) -> bool:
+def take_zone(pos: Position, price: float, cfg: StrategyConfig) -> bool:
     """Цена достигла уровня тейка (take_pct <= 0 — тейк выключен)."""
     if cfg.take_pct <= 0:
         return False
@@ -138,13 +140,14 @@ def update_position_risk(
     price: float,
     cfg: StrategyConfig,
 ) -> tuple[bool, str | None]:
-    """Обновить peak/BE/trail. Возвращает (need_server_update, exit_reason|None).
+    """Обновить peak/BE/трейлинг/стоп. (need_server_update, exit_reason|None).
 
-    trail_pct <= 0 — трейлинг выключен, be_trigger_pct <= 0 — BE выключен.
-    Если цена достигла тейка — exit_reason = "tp".
+    Тейк-зона: при trail_pct > 0 — трейлинг trail_pct от пика (закрытие
+    при откате от пика), при trail_pct <= 0 — фиксированный выход "tp".
+    Стоп: pos.stop_armed=False (задержка stop_delay_sec после входа) —
+    работает только BE и трейлинг тейка; после выставления — монотонный
+    стоп (выставленный уровень / BE / трейлинг).
     """
-    if take_hit(pos, price, cfg):
-        return False, "tp"
     if pos.side == "short":
         return _update_short(pos, price, cfg)
     return _update_long(pos, price, cfg)
@@ -154,36 +157,36 @@ def _update_long(
     pos: Position, price: float, cfg: StrategyConfig
 ) -> tuple[bool, str | None]:
     pos.peak = max(pos.peak, price)
+    if take_zone(pos, price, cfg):
+        if cfg.trail_pct <= 0:
+            return False, "tp"
+        pos.trail_stop = pos.peak * (1.0 - cfg.trail_pct)
     if (
         not pos.be_active
         and cfg.be_trigger_pct > 0
         and price >= pos.entry_price * (1.0 + cfg.be_trigger_pct)
     ):
         pos.be_active = True
-    base = (
-        pos.entry_price * (1.0 + cfg.be_offset_pct)
-        if pos.be_active
-        else pos.entry_price * (1.0 - cfg.stop_pct)
-    )
-    trail = 0.0
-    if cfg.trail_pct > 0:
-        trail = pos.peak * (1.0 - cfg.trail_pct)
-        pos.trail_stop = trail
-        new_stop = max(pos.stop, base, trail)
-    else:
-        new_stop = max(pos.stop, base)
-    need = abs(new_stop - pos.stop) > 0
+    parts: list[float] = []
+    if pos.stop_armed:
+        parts.append(pos.stop)
+    if pos.be_active:
+        parts.append(pos.entry_price * (1.0 + cfg.be_offset_pct))
+    if pos.trail_stop > 0:
+        parts.append(pos.trail_stop)
+    if not parts:
+        return False, None  # стоп ещё не выставлен
+    new_stop = max(parts)
+    need = abs(new_stop - pos.stop) > 1e-12
     pos.stop = new_stop
     if price <= pos.stop:
         be_level = pos.entry_price * (1.0 + cfg.be_offset_pct)
-        if pos.be_active and abs(pos.stop - be_level) < 1e-12:
+        if pos.be_active and abs(new_stop - be_level) <= 1e-12:
             return need, "be"
-        if pos.stop > pos.entry_price * (1.0 - cfg.stop_pct) + 1e-12:
-            if cfg.trail_pct > 0 and abs(pos.stop - trail) < 1e-12 and pos.be_active:
-                return need, "trail"
-            if pos.stop > pos.entry_price:
-                return need, "trail"
-            return need, "sl"
+        if pos.trail_stop > 0 and abs(new_stop - pos.trail_stop) <= 1e-12:
+            return need, "trail"
+        if new_stop > pos.entry_price:
+            return need, "trail"
         return need, "sl"
     return need, None
 
@@ -193,35 +196,35 @@ def _update_short(
 ) -> tuple[bool, str | None]:
     """Зеркальный _update_long: минимум цены, стоп сверху."""
     pos.peak = min(pos.peak, price)
+    if take_zone(pos, price, cfg):
+        if cfg.trail_pct <= 0:
+            return False, "tp"
+        pos.trail_stop = pos.peak * (1.0 + cfg.trail_pct)
     if (
         not pos.be_active
         and cfg.be_trigger_pct > 0
         and price <= pos.entry_price * (1.0 - cfg.be_trigger_pct)
     ):
         pos.be_active = True
-    base = (
-        pos.entry_price * (1.0 - cfg.be_offset_pct)
-        if pos.be_active
-        else pos.entry_price * (1.0 + cfg.stop_pct)
-    )
-    trail = 0.0
-    if cfg.trail_pct > 0:
-        trail = pos.peak * (1.0 + cfg.trail_pct)
-        pos.trail_stop = trail
-        new_stop = min(pos.stop, base, trail)
-    else:
-        new_stop = min(pos.stop, base)
-    need = abs(new_stop - pos.stop) > 0
+    parts: list[float] = []
+    if pos.stop_armed:
+        parts.append(pos.stop)
+    if pos.be_active:
+        parts.append(pos.entry_price * (1.0 - cfg.be_offset_pct))
+    if pos.trail_stop > 0:
+        parts.append(pos.trail_stop)
+    if not parts:
+        return False, None
+    new_stop = min(parts)
+    need = abs(new_stop - pos.stop) > 1e-12
     pos.stop = new_stop
     if price >= pos.stop:
         be_level = pos.entry_price * (1.0 - cfg.be_offset_pct)
-        if pos.be_active and abs(pos.stop - be_level) < 1e-12:
+        if pos.be_active and abs(new_stop - be_level) <= 1e-12:
             return need, "be"
-        if pos.stop < pos.entry_price * (1.0 + cfg.stop_pct) - 1e-12:
-            if cfg.trail_pct > 0 and abs(pos.stop - trail) < 1e-12 and pos.be_active:
-                return need, "trail"
-            if pos.stop < pos.entry_price:
-                return need, "trail"
-            return need, "sl"
+        if pos.trail_stop > 0 and abs(new_stop - pos.trail_stop) <= 1e-12:
+            return need, "trail"
+        if new_stop < pos.entry_price:
+            return need, "trail"
         return need, "sl"
     return need, None

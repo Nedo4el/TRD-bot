@@ -9,13 +9,15 @@ from robot_zakol.config import ZakolConfig
 
 @dataclass(frozen=True)
 class StrategyConfig:
-    """Параметры «Плавающие лимитки ±offset с коротким TTL»."""
+    """Параметры «бракет-сетка ±grid с коротким TTL»."""
 
+    grid_pcts: tuple[float, ...] = (0.02, 0.03, 0.05)
     offset_pct: float = 0.03
     long_only: bool = False
     ttl_sec: float = 20.0
     min_price_change: float = 0.003
     stop_pct: float = 0.02
+    stop_delay_sec: float = 10.0
     take_pct: float = 0.05
     trail_pct: float = 0.02
     be_trigger_pct: float = 0.005
@@ -45,11 +47,13 @@ class FillConfig:
 def strategy_from_zakol(z: ZakolConfig) -> StrategyConfig:
     """Собрать параметры бэктеста из .env robot_zakol (единый источник)."""
     return StrategyConfig(
+        grid_pcts=z.grid_pcts,
         offset_pct=z.offset_pct,
         long_only=z.long_only,
         ttl_sec=z.ttl_sec,
         min_price_change=z.min_price_change,
         stop_pct=z.stop_pct,
+        stop_delay_sec=z.stop_delay_sec,
         take_pct=z.take_pct,
         trail_pct=z.trail_pct,
         be_trigger_pct=z.be_trigger_pct,
