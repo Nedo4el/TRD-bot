@@ -607,9 +607,30 @@ class BybitClient:
             )
 
     async def get_position(self, symbol: str) -> Position | None:
-        """Получить открытую позицию по инструменту (None если позиции нет)."""
+        """Открытая позиция по инструменту (None если позиции нет)."""
         positions = await self.get_positions(symbol)
         return positions[0] if positions else None
+
+    async def get_position_stops(self, symbol: str) -> tuple[float, float]:
+        """Серверные стопы текущей позиции: ``(stop loss, take profit)``.
+
+        Returns:
+            Кортеж цен (0.0 — стоп/тейк не задан или позиции нет).
+        """
+        resp = await self._call(
+            "get_positions",
+            category=self.config.category,
+            symbol=symbol,
+        )
+        rows = resp["result"].get("list", [])
+        if not rows:
+            return 0.0, 0.0
+        row = rows[0]
+        # stopLoss/takeProfit — уровень позиции; stopOrderPrice — запасное
+        # поле (активный условный ордер), если уровень ещё не отобразился
+        sl = row.get("stopLoss") or row.get("stopOrderPrice") or 0.0
+        tp = row.get("takeProfit") or row.get("takeOrderPrice") or 0.0
+        return float(sl), float(tp)
 
     async def get_positions(self, symbol: str) -> list[Position]:
         """Все открытые позиции символа (one-way — до 1, хедж — до 2)."""

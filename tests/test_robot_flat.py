@@ -1018,7 +1018,7 @@ def test_enter_sl_setup_failure_closes_position(tmp_path: Path) -> None:
     assert st.day_trades == 1
 
 
-# ============================== order_flow: выход ==============================
+# ============================== order_flow: риск (BE) ==============================
 
 
 def _open_position(flow: OrderFlow, store: StateStore) -> None:
@@ -1034,6 +1034,48 @@ def _open_position(flow: OrderFlow, store: StateStore) -> None:
     flow.client.position = Position(  # type: ignore[attr-defined]
         symbol="BTCUSDT", side="Buy", size=0.1, avg_price=100.0, unrealised_pnl=0.0
     )
+
+
+def test_update_risk_be_lifts_stop_v3(tmp_path: Path) -> None:
+    # v3: sl_pct=0 (стоп уровня 95), BE через +3% от входа 100
+    flow, client, feed, _strategy, store = _make_flow(tmp_path)
+    _open_position(flow, store)
+    # до триггера — серверный стоп не трогаем
+    feed.last_price = 102.9
+    asyncio.run(flow._update_risk())
+    assert client.sl_calls == []
+    assert store.state.position is not None
+    assert store.state.position.stop_loss == 95.0
+    # +3% — безубыток: стоп на цену входа
+    feed.last_price = 103.0
+    asyncio.run(flow._update_risk())
+    pos = store.state.position
+    assert pos is not None
+    assert pos.be_active
+    assert pos.stop_loss == pytest.approx(100.0)
+    assert client.sl_calls == [(100.0, 105.0)]
+    # откат — стоп монотонно стоит на входе, повторных вызовов нет
+    feed.last_price = 101.0
+    asyncio.run(flow._update_risk())
+    assert pos.stop_loss == pytest.approx(100.0)
+    assert len(client.sl_calls) == 1
+
+
+def test_update_risk_short_be_mirrored(tmp_path: Path) -> None:
+    flow, client, feed, _strategy, store = _make_flow(tmp_path)
+    _open_position(flow, store)
+    pos = store.state.position
+    assert pos is not None
+    pos.side = "short"
+    pos.stop_loss = 105.0  # VAH + 5%
+    feed.last_price = 97.0  # −3% от входа → BE
+    asyncio.run(flow._update_risk())
+    assert pos.be_active
+    assert pos.stop_loss == pytest.approx(100.0)
+    assert client.sl_calls == [(100.0, 105.0)]
+
+
+# ============================== order_flow: выход ==============================
 
 
 def test_exit_flow_finalizes_counters(tmp_path: Path) -> None:
