@@ -1,407 +1,293 @@
+"""Стратегия robot_flat: EMA 20/50/200 + ADX 14 + ATR 14 (4H).
+
+| # | Индикатор | Параметры (.env)     | Роль                                  |
+|---|-----------|----------------------|---------------------------------------|
+| 1 | EMA       | 20/50/200            | направление и режим (must-have)       |
+| 2 | ADX       | период 14, порог 25  | фильтр: тренд или флэт (must-have)    |
+| 3 | ATR       | период 14, ×1.5 / ×3 | стоп и тейк (must-have)               |
+| + | RSI       | 14, ≥50 / <50        | опциональный фильтр (RSI_FILTER)      |
+| + | Volume    | SMA20 × 1.3          | опциональный фильтр (VOLUME_FILTER)   |
+
+Вход по **состоянию**: EMA20 > EMA50, close > EMA200 и ADX >= 25 (long;
+зеркально short) + опциональные RSI/Volume-фильтры. Выход: разворот
+состояния (EMA20/50 или close против EMA200) либо срабатывание
+ATR-стопа/тейка (SL/TP считает бэктест/биржа).
+
+Правило внедрения индикаторов: каждый новый индикатор включается флагом
+только после того, как улучшил PF на прогоне (см. SESSION_NOTES).
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from core.bybit_client import Candle
+from core.indicators import adx_di, atr, ema, rsi, sma
 from core.strategies import BaseStrategy, Signal
+from robot_flat.config import _env_bool, _env_float, _env_int
+from robot_flat.state import OpenPosition
 
 
-@dataclass
-class FlatConfig:
-    """Параметры боковика на основе POC."""
+@dataclass(frozen=True)
+class Instruction:
+    """Решение стратегии. Исполняет технический слой (order_flow)."""
 
-    poc_lookback: int = 600
-    range_pct: float = 20.0
-
-    # Фильтр тренда (EMA)
-    trend_ema_fast: int = 50
-    trend_ema_slow: int = 200
-    trend_threshold: float = 2.0  # % разницы EMA — выше = тренд
-
-    # Сетка ордеров (от POC, %)
-    order_levels: list[float] = field(
-        default_factory=lambda: [-6.0, -8.0, -10.0, 6.0, 8.0, 10.0]
-    )
-    # Стоп зона (±% от POC, запрет ордеров)
-    stop_zone_pct: float = 5.0
-    # Стоп от границы коридора (%)
-    stop_from_border_pct: float = 3.0
-    # Тейк: на 1% ближе к POC от противоположного ордера
-    tp_offset_pct: float = 1.0
-    # Максимум позиций в одну сторону
-    max_positions: int = 3
-    # Частичное закрытие на POC (%)
-    partial_close_pct: float = 50.0
-    # Трейлинг TP после POC (%)
-    trailing_after_poc_pct: float = 2.0
-    # Размер ордера ($)
-    order_size_usd: float = 100.0
+    action: str  # "enter" | "exit"
+    side: str = ""  # "long" | "short" (для enter)
+    stop: float | None = None  # уровень SL (для enter)
+    take: float | None = None  # уровень TP (для enter)
+    reason: str = ""
 
 
-@dataclass
-class PositionState:
-    """Состояние открытой позиции."""
+@dataclass(frozen=True)
+class FlatParams:
+    """Параметры стратегии (из ``.env``, дефолты из таблицы в docstring)."""
 
-    direction: str  # "long" или "short"
-    entry_price: float
-    current_peak: float  # пик в сторону прибыли
-    trailing_stop: float  # текущий трейлинг стоп
+    # --- must-have: EMA (режим/направление) ---
+    ema_fast: int = 20
+    ema_slow: int = 50
+    ema_macro: int = 200
+    # --- must-have: ADX (тренд против флэта) ---
+    adx_period: int = 14
+    adx_threshold: float = 25.0
+    # --- must-have: ATR (стоп/тейк) ---
+    atr_period: int = 14
+    atr_sl_mult: float = 1.5  # SL = k x ATR от цены входа
+    atr_tp_mult: float = 3.0  # TP = k x ATR (RR 1:2)
+    # --- опциональные фильтры (включаются флагом после проверки PF) ---
+    use_rsi: bool = False
+    rsi_period: int = 14
+    rsi_side: float = 50.0  # long: RSI >= 50, short: RSI < 50
+    use_volume: bool = False
+    vol_period: int = 20
+    vol_mult: float = 1.3  # volume >= 1.3 x SMA20
+    # --- риск-слой (BE/trail) выключен: стопы считает ATR ---
+    sl_pct: float = 0.0
+    be_trigger_pct: float = 0.0
+    be_offset_pct: float = 0.0
+    trail_pct: float = 0.0
+
+    @classmethod
+    def from_env(cls) -> FlatParams:
+        """Собрать параметры из окружения (RSI_FILTER / VOLUME_FILTER — флаги)."""
+        return cls(
+            ema_fast=_env_int("EMA_FAST", 20),
+            ema_slow=_env_int("EMA_SLOW", 50),
+            ema_macro=_env_int("EMA_MACRO", 200),
+            adx_period=_env_int("ADX_PERIOD", 14),
+            adx_threshold=_env_float("ADX_THRESHOLD", 25.0),
+            atr_period=_env_int("ATR_PERIOD", 14),
+            atr_sl_mult=_env_float("ATR_SL_MULT", 1.5),
+            atr_tp_mult=_env_float("ATR_TP_MULT", 3.0),
+            use_rsi=_env_bool("RSI_FILTER", False),
+            rsi_period=_env_int("RSI_PERIOD", 14),
+            use_volume=_env_bool("VOLUME_FILTER", False),
+            vol_period=_env_int("VOL_PERIOD", 20),
+            vol_mult=_env_float("VOL_MULT", 1.3),
+        )
+
+    def __post_init__(self) -> None:
+        periods = {
+            "EMA_FAST": self.ema_fast,
+            "EMA_SLOW": self.ema_slow,
+            "EMA_MACRO": self.ema_macro,
+            "ADX_PERIOD": self.adx_period,
+            "ATR_PERIOD": self.atr_period,
+            "RSI_PERIOD": self.rsi_period,
+            "VOL_PERIOD": self.vol_period,
+        }
+        for name, value in periods.items():
+            if value < 2:
+                raise ValueError(f"{name} должен быть >= 2")
+        if not self.ema_fast < self.ema_slow < self.ema_macro:
+            raise ValueError("нужен порядок EMA_FAST < EMA_SLOW < EMA_MACRO")
+        if self.adx_threshold < 0:
+            raise ValueError("ADX_THRESHOLD не может быть < 0")
+        if self.atr_sl_mult <= 0 or self.atr_tp_mult <= 0:
+            raise ValueError("ATR_SL_MULT / ATR_TP_MULT должны быть > 0")
+        if not 0 <= self.sl_pct < 1:
+            raise ValueError("SL_PCT должен быть в [0, 1)")
+        if min(self.be_trigger_pct, self.be_offset_pct, self.trail_pct) < 0:
+            raise ValueError("BE_TRIGGER / BE_OFFSET / TRAIL_PCT не могут быть < 0")
+        if not 0 < self.rsi_side < 100:
+            raise ValueError("RSI_SIDE должен быть в (0, 100)")
+        if self.vol_mult <= 0:
+            raise ValueError("VOL_MULT должен быть > 0")
+
+
+@dataclass(frozen=True)
+class _Snapshot:
+    """Значения индикаторов на последней закрытой свече."""
+
+    close: float
+    ema_fast: float
+    ema_slow: float
+    ema_macro: float
+    adx: float
+    atr: float
+    rsi_v: float
+    vol_ratio: float  # volume / SMA20(volume)
 
 
 class FlatStrategy(BaseStrategy):
-    """Боковик после импульса: POC-based коридор + сетка ордеров + трейлинг."""
+    """EMA 20/50/200 + ADX 14/25 + ATR 14; опционально RSI и Volume."""
 
     name = "flat"
+    #: сколько закрытых свечей нужно бэктесту до первого решения
+    _min_warmup = 300
+    #: окно пересчёта индикаторов в бэктесте
+    _max_lookback = 600
 
-    def __init__(self, cfg: FlatConfig | None = None):
-        self.cfg = cfg or FlatConfig()
-        self._positions: list[PositionState] = []
-        self._fixed_poc: float | None = None
+    def __init__(self, params: FlatParams | None = None) -> None:
+        self.params = params if params is not None else FlatParams.from_env()
+        # память позиции для check_signal() (бэктест не знает про decide())
+        self._bt_side: str = ""
 
-    def check_signal(self, candles: list[Candle]) -> Signal:
-        min_candles = max(self.cfg.poc_lookback, self.cfg.trend_ema_slow)
-        if len(candles) < min_candles:
-            return Signal(
-                action="hold", reason=f"мало свечей ({len(candles)}/{min_candles})"
-            )
+    # ==================== индикаторы ====================
 
-        # POC: окно poc_lookback; пересчёт после закрытия всех позиций
-        if self._fixed_poc is None:
-            window = candles[-self.cfg.poc_lookback :]
-            highs = [c.high for c in window]
-            lows = [c.low for c in window]
-            volumes = [c.volume for c in window]
-            self._fixed_poc = self._calc_volume_poc(highs, lows, volumes)
-
-        poc = self._fixed_poc
-
-        if poc <= 0:
-            return Signal(action="hold", reason="POC = 0")
-
+    def _snapshot(self, candles: list[Candle]) -> _Snapshot | None:
+        """Свечи рабочего ТФ: EMA/ADX/ATR/RSI/объём (None — данных мало)."""
+        p = self.params
+        if len(candles) < p.ema_macro + 2:
+            return None
         closes = [c.close for c in candles]
         highs = [c.high for c in candles]
         lows = [c.low for c in candles]
+        volumes = [c.volume for c in candles]
 
-        current_price = closes[-1]
-        high = highs[-1]
-        low = lows[-1]
-        deviation = (current_price - poc) / poc * 100
-        half_range = self.cfg.range_pct / 2
-
-        # Проверяем трейлинг стоп для открытых позиций
-        trailing_signal = self._check_trailing_stop(
-            current_price, high, low, poc, half_range
+        fast, slow, macro = (
+            ema(closes, p.ema_fast),
+            ema(closes, p.ema_slow),
+            ema(closes, p.ema_macro),
         )
-        if trailing_signal:
-            return trailing_signal
+        adx_v, _, _ = adx_di(highs, lows, closes, p.adx_period)
+        atr_v = atr(highs, lows, closes, p.atr_period)
+        rsi_v = rsi(closes, p.rsi_period)
+        vol_ma = sma(volumes, p.vol_period)
+        series = (fast, slow, macro, adx_v, atr_v, rsi_v, vol_ma)
+        if any(len(s) < 2 for s in series):
+            return None
+        if atr_v[-1] <= 0:
+            return None
 
-        # === ФИЛЬТР ТРЕНДА: EMA fast vs slow ===
-        ema_fast = self._ema(closes, self.cfg.trend_ema_fast)
-        ema_slow = self._ema(closes, self.cfg.trend_ema_slow)
-        if ema_slow > 0:
-            trend_pct = (ema_fast - ema_slow) / ema_slow * 100
-        else:
-            trend_pct = 0.0
+        return _Snapshot(
+            close=closes[-1],
+            ema_fast=fast[-1],
+            ema_slow=slow[-1],
+            ema_macro=macro[-1],
+            adx=adx_v[-1],
+            atr=atr_v[-1],
+            rsi_v=rsi_v[-1],
+            vol_ratio=volumes[-1] / vol_ma[-1] if vol_ma[-1] > 0 else 0.0,
+        )
 
-        if abs(trend_pct) > self.cfg.trend_threshold:
-            direction = "ВВЕРХ" if trend_pct > 0 else "ВНИЗ"
-            return Signal(
-                action="hold",
-                reason=(
-                    f"ТРЕНД {direction} | EMA{self.cfg.trend_ema_fast}={ema_fast:.4f} "
-                    f"vs EMA{self.cfg.trend_ema_slow}={ema_slow:.4f} | "
-                    f"разница={trend_pct:+.2f}% > ±{self.cfg.trend_threshold}%"
-                ),
-            )
+    # ==================== решения ====================
 
-        # ТРЕНД: цена за пределами коридора
-        if abs(deviation) > half_range:
-            direction = "ВВЕРХ" if deviation > 0 else "ВНИЗ"
-            return Signal(
-                action="hold",
-                reason=(
-                    f"КОРИДОР {direction} | POC={poc:.4f} | цена={current_price:.4f} | "
-                    f"откл={deviation:+.1f}% > ±{half_range:.0f}%"
-                ),
-            )
+    def _entry_side(self, s: _Snapshot) -> str | None:
+        """Сторона входа: состояние EMA (направление/режим) + ADX (тренд)."""
+        p = self.params
+        if s.adx < p.adx_threshold:
+            return None
+        side: str | None = None
+        if s.ema_fast > s.ema_slow and s.close > s.ema_macro:
+            side = "long"
+        elif s.ema_fast < s.ema_slow and s.close < s.ema_macro:
+            side = "short"
+        if side is None:
+            return None
+        if p.use_rsi:
+            long_ok = s.rsi_v >= p.rsi_side
+            if (side == "long") != long_ok:
+                return None
+        if p.use_volume and s.vol_ratio < p.vol_mult:
+            return None
+        return side
 
-        # Ищем лучший ордер в стакане
-        best_order = self._find_best_order(current_price, poc, deviation, half_range)
+    def _exit_for(self, s: _Snapshot, side: str) -> bool:
+        """Разворот состояния EMA против позиции — выход (SL/TP делает биржа)."""
+        if side == "long":
+            return s.ema_fast < s.ema_slow or s.close < s.ema_macro
+        return s.ema_fast > s.ema_slow or s.close > s.ema_macro
 
-        if best_order:
-            return best_order
+    def _stop_take(self, s: _Snapshot, side: str) -> tuple[float, float]:
+        """ATR-стоп и тейк (RR = atr_tp_mult / atr_sl_mult)."""
+        p = self.params
+        if side == "long":
+            return (s.close - p.atr_sl_mult * s.atr, s.close + p.atr_tp_mult * s.atr)
+        return (s.close + p.atr_sl_mult * s.atr, s.close - p.atr_tp_mult * s.atr)
 
-        # СТОП ЗОНА: цена рядом с POC — ждём движения
-        if abs(deviation) < self.cfg.stop_zone_pct:
-            return Signal(
-                action="hold",
-                reason=(
-                    f"СТОП ЗОНА | POC={poc:.4f} | цена={current_price:.4f} | "
-                    f"откл={deviation:+.1f}% < ±{self.cfg.stop_zone_pct:.0f}% | "
-                    f"сетка: buy@-6/-8/-10% sell@+6/+8/+10%"
-                ),
-            )
+    # ==================== живой цикл ====================
 
-        # Нет подходящих ордеров — ждём
-        return Signal(
-            action="hold",
+    def decide(
+        self,
+        candles: list[Candle],
+        position: OpenPosition | None,
+    ) -> Instruction | None:
+        """Решение живого цикла order_flow.
+
+        Args:
+            candles: свечи рабочего ТФ (старые → новые, последняя закрытая).
+            position: открытая позиция или None.
+
+        Returns:
+            Instruction("enter"/"exit") либо None = hold.
+        """
+        s = self._snapshot(candles)
+        if s is None:
+            return None
+        if position is not None:
+            if self._exit_for(s, position.side):
+                return Instruction(action="exit", reason="разворот EMA")
+            return None
+        side = self._entry_side(s)
+        if side is None:
+            return None
+        stop, take = self._stop_take(s, side)
+        return Instruction(
+            action="enter",
+            side=side,
+            stop=stop,
+            take=take,
             reason=(
-                f"БОКОВИК | POC={poc:.4f} | цена={current_price:.4f} | "
-                f"откл={deviation:+.1f}% (диапазон ±{half_range:.0f}%) | "
-                f"стоп зона ±{self.cfg.stop_zone_pct:.0f}%"
+                f"EMA state {side}, ADX {s.adx:.1f}, ATR {s.atr:.4f}"
+                + (f", RSI {s.rsi_v:.0f}" if self.params.use_rsi else "")
             ),
         )
 
-    def _check_trailing_stop(
-        self,
-        current_price: float,
-        high: float,
-        low: float,
-        poc: float,
-        half_range: float,
-    ) -> Signal | None:
-        """Проверить трейлинг стоп для открытых позиций."""
-        if not self._positions:
-            return None
+    # ==================== бэктест ====================
 
-        for pos in self._positions[:]:
-            if pos.direction == "long":
-                # Для LONG: пик растёт вверх, стоп поднимается
-                if high > pos.current_peak:
-                    pos.current_peak = high
-                    pos.trailing_stop = high * (
-                        1 - self.cfg.trailing_after_poc_pct / 100
-                    )
-
-                # Проверяем удар стопа
-                if low <= pos.trailing_stop:
-                    self._positions.remove(pos)
-                    self._maybe_reset_poc()
-                    return Signal(
-                        action="close_long",
-                        reason=(
-                            f"ТРЕЙЛИНГ LONG | стоп={pos.trailing_stop:.4f} | "
-                            f"цена={current_price:.4f} | пик={pos.current_peak:.4f}"
-                        ),
-                        stop_loss=pos.trailing_stop,
-                    )
-
-                # Частичное закрытие на POC
-                deviation = (current_price - poc) / poc * 100
-                if abs(deviation) < 1.0 and len(self._positions) > 0:
-                    return Signal(
-                        action="close_long_50",
-                        reason=(
-                            f"ЧАСТИЧНОЕ ЗАКРЫТИЕ LONG 50% | POC={poc:.4f} | "
-                            f"цена={current_price:.4f}"
-                        ),
-                    )
-
-            elif pos.direction == "short":
-                # Для SHORT: пик растёт вниз, стоп опускается
-                if low < pos.current_peak:
-                    pos.current_peak = low
-                    pos.trailing_stop = low * (
-                        1 + self.cfg.trailing_after_poc_pct / 100
-                    )
-
-                # Проверяем удар стопа
-                if high >= pos.trailing_stop:
-                    self._positions.remove(pos)
-                    self._maybe_reset_poc()
-                    return Signal(
-                        action="close_short",
-                        reason=(
-                            f"ТРЕЙЛИНГ SHORT | стоп={pos.trailing_stop:.4f} | "
-                            f"цена={current_price:.4f} | пик={pos.current_peak:.4f}"
-                        ),
-                        stop_loss=pos.trailing_stop,
-                    )
-
-                # Частичное закрытие на POC
-                deviation = (current_price - poc) / poc * 100
-                if abs(deviation) < 1.0 and len(self._positions) > 0:
-                    return Signal(
-                        action="close_short_50",
-                        reason=(
-                            f"ЧАСТИЧНОЕ ЗАКРЫТИЕ SHORT 50% | POC={poc:.4f} | "
-                            f"цена={current_price:.4f}"
-                        ),
-                    )
-
-        return None
-
-    def on_position_closed(self, direction: str) -> None:
-        """Вызвать при внешнем закрытии позиции (SL/TP движком или бэктестом).
+    def check_signal(self, candles: list[Candle]) -> Signal:
+        """Хук ``backtest.py --strategy flat``.
 
         Args:
-            direction: "long" или "short".
+            candles: свечи рабочего ТФ от старых к новым.
+
+        Returns:
+            Signal(buy/sell/close_long/close_short/hold) с абсолютными SL/TP.
         """
-        for pos in reversed(self._positions):
-            if pos.direction == direction:
-                self._positions.remove(pos)
-                break
-        self._maybe_reset_poc()
+        if not candles:
+            return Signal(action="hold", reason="нет свечей")
+        s = self._snapshot(candles)
+        if s is None:
+            return Signal(action="hold", reason="мало свечей")
+        if self._bt_side:
+            if self._exit_for(s, self._bt_side):
+                close = "close_long" if self._bt_side == "long" else "close_short"
+                self._bt_side = ""
+                return Signal(action=close, reason="разворот EMA", stop_loss=s.close)
+            return Signal(action="hold", reason="позиция открыта")
+        side = self._entry_side(s)
+        if side is None:
+            return Signal(action="hold", reason="нет сигнала")
+        stop, take = self._stop_take(s, side)
+        self._bt_side = side
+        return Signal(
+            action="buy" if side == "long" else "sell",
+            reason=f"EMA state {side}",
+            stop_loss=stop,
+            take_profit=take,
+        )
 
-    def _maybe_reset_poc(self) -> None:
-        if not self._positions:
-            self._fixed_poc = None
-
-    def _find_best_order(
-        self,
-        current_price: float,
-        poc: float,
-        deviation: float,
-        half_range: float,
-    ) -> Signal | None:
-        """Найти лучший ордер в стакане с учётом приоритета TP."""
-
-        n_long = sum(1 for p in self._positions if p.direction == "long")
-        n_short = sum(1 for p in self._positions if p.direction == "short")
-
-        # Проверяем LONG ордера (цена ниже POC)
-        if deviation < 0 and n_long < self.cfg.max_positions:
-            for level in sorted(self.cfg.order_levels, reverse=True):
-                if level > 0:
-                    continue
-                order_price = poc * (1 + level / 100)
-
-                if current_price <= order_price:
-                    # TP = противоположный ордер на 1% ближе к POC
-                    tp_level = abs(level) - self.cfg.tp_offset_pct
-                    tp_price = poc * (1 + tp_level / 100)
-
-                    # SL = граница коридора + stop_from_border_pct от POC
-                    sl_price = poc * (
-                        1 - (half_range + self.cfg.stop_from_border_pct) / 100
-                    )
-
-                    # Добавляем позицию в состояние
-                    self._positions.append(
-                        PositionState(
-                            direction="long",
-                            entry_price=current_price,
-                            current_peak=current_price,
-                            trailing_stop=sl_price,
-                        )
-                    )
-
-                    return Signal(
-                        action="buy",
-                        reason=(
-                            f"LONG @{level:+.0f}% | POC={poc:.4f} | "
-                            f"цена={current_price:.4f} | "
-                            f"TP={tp_price:.4f} | SL={sl_price:.4f}"
-                        ),
-                        stop_loss=sl_price,
-                        take_profit=tp_price,
-                    )
-
-        # Проверяем SHORT ордера (цена выше POC)
-        if deviation > 0 and n_short < self.cfg.max_positions:
-            for level in sorted(self.cfg.order_levels):
-                if level < 0:
-                    continue
-                order_price = poc * (1 + level / 100)
-
-                if current_price >= order_price:
-                    # TP = противоположный ордер на 1% ближе к POC
-                    tp_level = level - self.cfg.tp_offset_pct
-                    tp_price = poc * (1 - tp_level / 100)
-
-                    # SL = граница коридора + stop_from_border_pct от POC
-                    sl_price = poc * (
-                        1 + (half_range + self.cfg.stop_from_border_pct) / 100
-                    )
-
-                    # Добавляем позицию в состояние
-                    self._positions.append(
-                        PositionState(
-                            direction="short",
-                            entry_price=current_price,
-                            current_peak=current_price,
-                            trailing_stop=sl_price,
-                        )
-                    )
-
-                    return Signal(
-                        action="sell",
-                        reason=(
-                            f"SHORT @{level:+.0f}% | POC={poc:.4f} | "
-                            f"цена={current_price:.4f} | "
-                            f"TP={tp_price:.4f} | SL={sl_price:.4f}"
-                        ),
-                        stop_loss=sl_price,
-                        take_profit=tp_price,
-                    )
-
-        return None
-
-    @staticmethod
-    def _ema(data: list[float], period: int) -> float:
-        """Exponential Moving Average."""
-        if len(data) < period:
-            return 0.0
-        multiplier = 2 / (period + 1)
-        ema = sum(data[:period]) / period
-        for price in data[period:]:
-            ema = (price - ema) * multiplier + ema
-        return ema
-
-    @staticmethod
-    def _calc_volume_poc(
-        highs: list[float],
-        lows: list[float],
-        volumes: list[float],
-        n_buckets: int = 100,
-    ) -> float:
-        """Volume Profile POC — объём распределяется по всем бинам, которые пересекает свеча.
-
-        Каждая свеча распределяет свой объём пропорционально по бинам
-        от low до high (volume / кол-во бинов, которых касается свеча).
-        """
-        if not highs or not lows or not volumes:
-            return 0.0
-
-        global_low = min(lows)
-        global_high = max(highs)
-        if global_low == global_high:
-            return global_low
-
-        bucket_size = (global_high - global_low) / n_buckets
-        profile = [0.0] * n_buckets
-
-        for high, low, vol in zip(highs, lows, volumes):
-            if low >= high or vol <= 0:
-                continue
-            # Определяем какие бины пересекает свеча
-            start_bin = max(0, int((low - global_low) / bucket_size))
-            end_bin = min(n_buckets - 1, int((high - global_low) / bucket_size))
-            n_bins = end_bin - start_bin + 1
-            vol_per_bin = vol / n_bins
-            for b in range(start_bin, end_bin + 1):
-                profile[b] += vol_per_bin
-
-        best_idx = profile.index(max(profile))
-        return global_low + (best_idx + 0.5) * bucket_size
-
-    @staticmethod
-    def _calc_poc(closes: list[float], volumes: list[float]) -> float:
-        """Point of Control — цена с максимальным объёмом (legacy, по close)."""
-        if not closes or not volumes:
-            return 0.0
-
-        mn, mx = min(closes), max(closes)
-        if mn == mx:
-            return mn
-
-        n_buckets = 50
-        bucket_size = (mx - mn) / n_buckets
-        buckets_vol = [0.0] * n_buckets
-
-        for price, vol in zip(closes, volumes):
-            idx = min(int((price - mn) / bucket_size), n_buckets - 1)
-            buckets_vol[idx] += vol
-
-        best_idx = buckets_vol.index(max(buckets_vol))
-        return mn + (best_idx + 0.5) * bucket_size
+    def on_position_closed(self, direction: str) -> None:
+        """Сброс памяти позиции бэктеста (SL/TP закрыли сделку)."""
+        self._bt_side = ""
