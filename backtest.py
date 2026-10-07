@@ -169,6 +169,7 @@ def run_backtest(
     strategy: BaseStrategy,
     sl_pct_fallback: float,
     tp_pct_fallback: float,
+    fee_pct: float = 0.0,
 ) -> BacktestResult:
     """Эмулировать торговлю по свечам (мульти-позиции).
 
@@ -177,6 +178,7 @@ def run_backtest(
         strategy: объект стратегии.
         sl_pct_fallback: SL в %, если стратегия не дала свою.
         tp_pct_fallback: TP в %, аналогично.
+        fee_pct: комиссия в % за одну сторону (вход + выход = ×2 на сделку).
 
     Returns:
         BacktestResult со сделками и equity curve.
@@ -195,6 +197,8 @@ def run_backtest(
         take_price: float
         peak_price: float = 0.0
         be_active: bool = False
+        #: доля исходной позиции у этого транша (2-траншный TP)
+        ratio: float = 1.0
 
     open_positions: list[OpenPos] = []
     # BE/trail — только если стратегия задаёт sl_pct (иначе чистые SL/TP)
@@ -237,6 +241,7 @@ def run_backtest(
                 if pos.side == "Buy"
                 else (pos.entry_price - exit_price) / pos.entry_price * 100
             )
+            move = (move - fee_pct * 2.0) * pos.ratio
             equity += move
             result.trades.append(
                 Trade(
@@ -253,19 +258,22 @@ def run_backtest(
 
         for pos in closed_this_bar:
             open_positions.remove(pos)
-            notify = getattr(strategy, "on_position_closed", None)
-            if notify is not None:
-                notify("long" if pos.side == "Buy" else "short")
-            strategy.on_position_closed("long" if pos.side == "Buy" else "short")
-            notify = getattr(strategy, "on_position_closed", None)
-            if notify is not None:
-                notify("long" if pos.side == "Buy" else "short")
+        # уведомляем один раз — когда сторона опустела после SL/TP
+        # (раньше вызывалось до 3 раз на закрытие — дубли убраны)
+        if closed_this_bar:
+            for side_name in ("Buy", "Sell"):
+                was_closed = any(p.side == side_name for p in closed_this_bar)
+                still_open = any(p.side == side_name for p in open_positions)
+                if was_closed and not still_open:
+                    strategy.on_position_closed(
+                        "long" if side_name == "Buy" else "short",
+                    )
 
-        # --- Выход по трейлингу стратегии (close_long / close_short) ---
+        # --- Выход по сигналу стратегии (close_long / close_short) ---
         if signal.action in ("close_long", "close_short"):
             want_side = "Buy" if signal.action == "close_long" else "Sell"
-            target = next((p for p in open_positions if p.side == want_side), None)
-            if target is not None:
+            targets = [p for p in open_positions if p.side == want_side]
+            for target in targets:
                 open_positions.remove(target)
                 exit_price = (
                     target.stop_price
@@ -273,10 +281,15 @@ def run_backtest(
                     else signal.stop_loss
                 )
                 move = (
-                    (exit_price - target.entry_price) / target.entry_price * 100
+                    (exit_price - target.entry_price)
+                    / target.entry_price
+                    * 100
                     if want_side == "Buy"
-                    else (target.entry_price - exit_price) / target.entry_price * 100
+                    else (target.entry_price - exit_price)
+                    / target.entry_price
+                    * 100
                 )
+                move = (move - fee_pct * 2.0) * target.ratio
                 equity += move
                 result.trades.append(
                     Trade(
@@ -293,11 +306,53 @@ def run_backtest(
         # --- Входим по сигналу ---
         if signal.action in ("buy", "sell"):
             side = signal.action.capitalize()
-            entry_price = bar.close
+            entry_price = (
+                signal.entry_price
+                if signal.entry_price is not None
+                else bar.close
+            )
             entry_time = bar.open_time
             if signal.stop_loss is not None and signal.take_profit is not None:
                 sp = signal.stop_loss
                 tp = signal.take_profit
+                if (
+                    signal.take_profit2 is not None
+                    and 0.0 < signal.tp_split < 1.0
+                ):
+                    # 2-траншный TP: доля на take_profit, остаток — на TP2
+                    open_positions.append(
+                        OpenPos(
+                            side=side,
+                            entry_price=entry_price,
+                            entry_time=entry_time,
+                            stop_price=sp,
+                            take_price=tp,
+                            peak_price=entry_price,
+                            ratio=signal.tp_split,
+                        ),
+                    )
+                    open_positions.append(
+                        OpenPos(
+                            side=side,
+                            entry_price=entry_price,
+                            entry_time=entry_time,
+                            stop_price=sp,
+                            take_price=signal.take_profit2,
+                            peak_price=entry_price,
+                            ratio=1.0 - signal.tp_split,
+                        ),
+                    )
+                else:
+                    open_positions.append(
+                        OpenPos(
+                            side=side,
+                            entry_price=entry_price,
+                            entry_time=entry_time,
+                            stop_price=sp,
+                            take_price=tp,
+                            peak_price=entry_price,
+                        ),
+                    )
             else:
                 if side == "Buy":
                     sp = entry_price * (1 - sl_pct_fallback / 100.0)
@@ -305,19 +360,19 @@ def run_backtest(
                 else:
                     sp = entry_price * (1 + sl_pct_fallback / 100.0)
                     tp = entry_price * (1 - tp_pct_fallback / 100.0)
-            open_positions.append(
-                OpenPos(
-                    side=side,
-                    entry_price=entry_price,
-                    entry_time=entry_time,
-                    stop_price=sp,
-                    take_price=tp,
-                    peak_price=entry_price,
+                open_positions.append(
+                    OpenPos(
+                        side=side,
+                        entry_price=entry_price,
+                        entry_time=entry_time,
+                        stop_price=sp,
+                        take_price=tp,
+                        peak_price=entry_price,
+                    ),
                 )
-            )
 
         # --- BE / trail: подтянуть стоп по этой свече (пробой — со следующей) ---
-        if sl_pct > 0:
+        if sl_pct > 0 or be_trigger > 0 or trail_pct > 0:
             for pos in open_positions:
                 if pos.side == "Buy":
                     pos.peak_price = max(pos.peak_price, bar.high)
@@ -325,12 +380,11 @@ def run_backtest(
                         1.0 + be_trigger
                     ):
                         pos.be_active = True
-                    base = (
-                        pos.entry_price * (1.0 + be_offset)
-                        if pos.be_active
-                        else pos.entry_price * (1.0 - sl_pct)
-                    )
-                    cands = [pos.stop_price, base]
+                    cands = [pos.stop_price]
+                    if pos.be_active:
+                        cands.append(pos.entry_price * (1.0 + be_offset))
+                    elif sl_pct > 0:
+                        cands.append(pos.entry_price * (1.0 - sl_pct))
                     if trail_pct > 0 and pos.be_active:
                         cands.append(pos.peak_price * (1.0 - trail_pct))
                     pos.stop_price = max(cands)
@@ -340,12 +394,11 @@ def run_backtest(
                         1.0 - be_trigger
                     ):
                         pos.be_active = True
-                    base = (
-                        pos.entry_price * (1.0 - be_offset)
-                        if pos.be_active
-                        else pos.entry_price * (1.0 + sl_pct)
-                    )
-                    cands = [pos.stop_price, base]
+                    cands = [pos.stop_price]
+                    if pos.be_active:
+                        cands.append(pos.entry_price * (1.0 - be_offset))
+                    elif sl_pct > 0:
+                        cands.append(pos.entry_price * (1.0 + sl_pct))
                     if trail_pct > 0 and pos.be_active:
                         cands.append(pos.peak_price * (1.0 + trail_pct))
                     pos.stop_price = min(cands)
@@ -663,6 +716,12 @@ def main() -> None:
     parser.add_argument("--start-date", default=None, help="начальная дата (YYYY-MM-DD)")
     parser.add_argument("--end-date", default=None, help="конечная дата (YYYY-MM-DD)")
     parser.add_argument("--save-report", default=None, help="путь для сохранения отчёта (.txt)")
+    parser.add_argument(
+        "--fee-pct",
+        type=float,
+        default=0.0,
+        help="комиссия %% за сторону (вход+выход = ×2 на сделку)",
+    )
     args = parser.parse_args()
 
     setup_logging("logs/backtest.log", "WARNING")
@@ -724,9 +783,11 @@ def main() -> None:
         print(f"Старший ТФ: {htf_tf}м, свечей: {len(htf_candles)}")
     tf_label = f"{config.timeframe}/{htf_tf}" if htf_tf else config.timeframe
 
-    result = run_backtest(candles, strategy, sl_pct, tp_pct)
+    result = run_backtest(candles, strategy, sl_pct, tp_pct, fee_pct=args.fee_pct)
 
     print_stats(result, strategy.name, config.symbol, tf_label)
+    if args.fee_pct:
+        print(f"  Комиссия:      {args.fee_pct}% × 2 стороны учтена в PnL")
 
     # Сохранение отчёта в файл
     if args.save_report:

@@ -1,4 +1,4 @@
-"""Тесты robot_flat: config, state, risk, стаб-стратегия, order_flow."""
+"""Тесты robot_flat: config, state, risk, volume_profile, стратегия v3, order_flow."""
 
 from __future__ import annotations
 
@@ -6,12 +6,21 @@ import asyncio
 import json
 import math
 import time
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import robot_flat.order_flow as order_flow_mod
 from core.bybit_client import BybitClient, Candle, Position
+from core.indicators import adx_di
+from core.volume_profile import (
+    build_volume_profile,
+    compute_poc_va,
+    find_poc,
+    find_value_area,
+)
 from robot_flat.config import FlatConfig
 from robot_flat.main import _core_config
 from robot_flat.order_flow import OrderFlow
@@ -31,7 +40,7 @@ from robot_flat.state import (
     OpenPosition,
     StateStore,
 )
-from robot_flat.strategy import FlatParams, FlatStrategy, Instruction
+from robot_flat.strategy import FlatParams, FlatStrategy, Instruction, _Profile
 
 # ============================== config ==============================
 
@@ -318,186 +327,329 @@ def test_on_price_all_disabled_keeps_stop() -> None:
     assert not d.update_server
 
 
-# ============================== стратегия ==============================
+def test_on_price_be_only_when_stop_pct_zero() -> None:
+    # v3: стоп даёт стратегия (sl_pct=0) — pre-BE стоп не двигаем,
+    # после +3% безубыток ставит стоп на цену входа
+    d = _on_price(
+        price=102.9,
+        peak=102.9,
+        current_stop=95.0,
+        stop_pct=0.0,
+        be_trigger_pct=0.03,
+        trail_pct=0.0,
+    )
+    assert not d.be_active
+    assert d.stop_loss == 95.0
+    d2 = _on_price(
+        price=103.0,
+        peak=103.0,
+        current_stop=95.0,
+        stop_pct=0.0,
+        be_trigger_pct=0.03,
+        trail_pct=0.0,
+    )
+    assert d2.be_active
+    assert d2.stop_loss == pytest.approx(100.0)
+    assert d2.update_server
+    # шорт зеркально: −3% от входа → стоп на вход
+    d3 = _on_price(
+        price=97.0,
+        peak=97.0,
+        current_stop=105.0,
+        stop_pct=0.0,
+        be_trigger_pct=0.03,
+        trail_pct=0.0,
+        side="short",
+    )
+    assert d3.be_active
+    assert d3.stop_loss == pytest.approx(100.0)
 
 
-def _gen(
-    flat: int = 260,
-    rally: int = 15,
-    pull: int = 6,
-    resume: int = 4,
-    up: bool = True,
-) -> list[Candle]:
-    """Флэт → импульс (ADX растёт) → откат → продолжение.
-
-    На баре 263 (4-й бар импульса) ADX >= 25 при живом объёме — вход.
-    up=False — зеркальный нисходящий ряд (сигнал short).
-    """
-    out: list[Candle] = []
-    price = 100.0
-    ts = 0
-
-    def add(o: float, c: float, v: float) -> None:
-        nonlocal price, ts
-        out.append(
-            Candle(ts * 300_000, o, max(o, c) * 1.002, min(o, c) * 0.999, c, v),
-        )
-        price = c
-        ts += 1
-
-    step = 1.008 if up else 0.992
-    pull_step = 0.99 if up else 1.01
-    resume_step = 1.012 if up else 0.988
-    for i in range(flat):
-        add(price, price + (0.05 if i % 2 else -0.05), 100.0)
-    for _ in range(rally):
-        add(price, price * step, 300.0)
-    for _ in range(pull):
-        add(price, price * pull_step, 150.0)
-    for _ in range(resume):
-        add(price, price * resume_step, 600.0)
-    return out
+# ============================== volume_profile ==============================
 
 
-def _gen_crash() -> list[Candle]:
-    """Ряд _gen() + резкий разворот вниз (разрушает состояние long)."""
-    out = _gen()
-    price = out[-1].close
-    ts = len(out)
-    for _ in range(40):
-        out.append(
-            Candle(
-                ts * 300_000, price, price * 1.002, price * 0.97, price * 0.97, 400.0
-            ),
-        )
-        price *= 0.97
-        ts += 1
-    return out
+def test_build_volume_profile_poc() -> None:
+    # 90% объёма в коридоре 100–101, хвост 101–102 → POC в коридоре
+    c1 = Candle(0, 100.5, 101.0, 100.0, 100.5, 90.0)
+    c2 = Candle(300_000, 101.0, 102.0, 100.9, 101.5, 10.0)
+    profile = build_volume_profile([c1, c2], num_bins=10)
+    assert profile
+    poc = find_poc(profile)
+    assert poc is not None
+    assert 100.8 <= poc <= 101.2
+    assert find_poc([]) is None
+
+
+def test_value_area_covers_poc() -> None:
+    bars = [Candle(i * 300_000, 100.4, 101.0, 100.0, 100.7, 10.0) for i in range(6)]
+    profile = build_volume_profile(bars, num_bins=20)
+    area = find_value_area(profile, 0.7)
+    assert area is not None
+    val, vah = area
+    poc = find_poc(profile)
+    assert poc is not None
+    assert 100.0 <= val <= poc <= vah <= 101.0
+    assert find_value_area(profile, 0.0) is None
+
+
+def test_compute_poc_va_degenerate() -> None:
+    assert compute_poc_va([]) is None
+    one = [Candle(0, 100.0, 101.0, 99.0, 100.0, 1.0)]
+    assert compute_poc_va(one) is None  # нужен минимум 2 бара
+
+
+# ============================== стратегия v3 ==============================
+
+
+def _mk(bar: int, o: float, h: float, l: float, c: float, v: float = 100.0) -> Candle:
+    """Бар M5 по индексу (open_time = bar × 5 мин)."""
+    return Candle(bar * 300_000, o, h, l, c, v)
+
+
+def _flat_bars(n: int = 30) -> list[Candle]:
+    """Плоский боковик в коридоре 100.4–100.6 (ADX мал, входов нет)."""
+    return [_mk(i, 100.5, 100.6, 100.4, 100.5) for i in range(n)]
+
+
+def _frozen(
+    candles: list[Candle],
+    poc: float = 100.5,
+    val: float = 100.15,
+    vah: float = 100.85,
+    params: FlatParams | None = None,
+) -> FlatStrategy:
+    """Стратегия с замороженным профилем (ts = последняя свеча окна)."""
+    strat = FlatStrategy(params if params is not None else FlatParams())
+    strat._profile = _Profile(
+        ts=candles[-1].open_time,
+        poc=poc,
+        val=val,
+        vah=vah,
+    )
+    return strat
 
 
 def test_params_defaults() -> None:
     p = FlatParams()
-    assert (p.ema_fast, p.ema_slow, p.ema_macro) == (20, 50, 200)
+    assert (p.poc_window_min, p.poc_refresh_min) == (30, 60)
+    assert (p.value_area_pct, p.profile_bins) == (0.7, 100)
     assert (p.adx_period, p.adx_threshold) == (14, 25.0)
-    assert (p.atr_period, p.atr_sl_mult, p.atr_tp_mult) == (14, 1.5, 3.0)
-    assert p.use_rsi is False and p.use_volume is False  # пока не внедрены
-    assert (p.sl_pct, p.be_trigger_pct, p.trail_pct) == (0.0, 0.0, 0.0)  # ATR-стопы
+    assert (p.grid_levels, p.middle_pct) == (3, 0.5)
+    assert (p.breakout_pct, p.breakout_return_min) == (0.05, 10)
+    assert (p.tp_offset_pct, p.tp_split) == (0.01, 0.5)
+    assert (p.sl_pct, p.be_trigger_pct) == (0.0, 0.03)  # стоп стратегии, BE +3%
 
 
 def test_params_validation() -> None:
-    with pytest.raises(ValueError, match="EMA"):
-        FlatParams(ema_fast=50, ema_slow=20)
-    with pytest.raises(ValueError, match=">= 2"):
-        FlatParams(vol_period=1)
-    with pytest.raises(ValueError, match="ADX_THRESHOLD"):
-        FlatParams(adx_threshold=-1.0)
-    with pytest.raises(ValueError, match="ATR_SL_MULT"):
-        FlatParams(atr_sl_mult=0.0)
+    with pytest.raises(ValueError, match="VALUE_AREA_PCT"):
+        FlatParams(value_area_pct=0.0)
+    with pytest.raises(ValueError, match="MIDDLE_PCT"):
+        FlatParams(middle_pct=1.0)
+    with pytest.raises(ValueError, match="GRID_LEVELS"):
+        FlatParams(grid_levels=0)
+    with pytest.raises(ValueError, match="BREAKOUT_PCT"):
+        FlatParams(breakout_pct=0.0)
+    with pytest.raises(ValueError, match="BREAKOUT_RETURN_MIN"):
+        FlatParams(breakout_return_min=0)
+    with pytest.raises(ValueError, match="TP_SPLIT"):
+        FlatParams(tp_split=1.0)
     with pytest.raises(ValueError, match="SL_PCT"):
         FlatParams(sl_pct=-0.01)
-    with pytest.raises(ValueError, match="RSI_SIDE"):
-        FlatParams(rsi_side=100.0)
-    with pytest.raises(ValueError, match="VOL_MULT"):
-        FlatParams(vol_mult=0.0)
+    with pytest.raises(ValueError, match="ADX_THRESHOLD"):
+        FlatParams(adx_threshold=-1.0)
 
 
 def test_params_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("EMA_FAST", "12")
+    monkeypatch.setenv("POC_WINDOW_MIN", "45")
     monkeypatch.setenv("ADX_THRESHOLD", "30")
-    monkeypatch.setenv("RSI_FILTER", "true")
-    monkeypatch.setenv("VOLUME_FILTER", "1")
+    monkeypatch.setenv("MIDDLE_PCT", "0.3")
+    monkeypatch.setenv("BE_TRIGGER_PCT", "0.05")
     p = FlatParams.from_env()
-    assert p.ema_fast == 12
+    assert p.poc_window_min == 45
     assert p.adx_threshold == 30.0
-    assert p.use_rsi is True
-    assert p.use_volume is True
+    assert p.middle_pct == 0.3
+    assert p.be_trigger_pct == 0.05
 
 
-def test_check_signal_hold_on_empty_and_flat() -> None:
+def test_check_signal_empty_and_short_window() -> None:
     strat = FlatStrategy(FlatParams())
     assert strat.name == "flat"
     assert strat.check_signal([]).action == "hold"
-    # чистый флэт: ADX ~ 0 < 25 — входа нет
-    flat_only = _gen(flat=260, rally=0, pull=0, resume=0)
-    assert strat.check_signal(flat_only).action == "hold"
+    assert strat.check_signal(_flat_bars(5)).action == "hold"  # < 28 баров
 
 
-def test_entry_long_requires_adx_and_sets_atr_stop() -> None:
-    candles = _gen()
-    # до порога ADX — hold
-    assert FlatStrategy(FlatParams()).check_signal(candles[:263]).action == "hold"
-    # бар 263: ADX 25.7 >= 25, состояние long → buy
-    strat = FlatStrategy(FlatParams())
-    sig = strat.check_signal(candles[:264])
+def test_grid_levels_inside_va_outside_middle() -> None:
+    strat = _frozen(_flat_bars())
+    p = strat.params
+    prof = strat._profile
+    assert prof is not None
+    longs, shorts = strat._grid(prof)
+    assert len(longs) == 3 and len(shorts) == 3
+    half_mid = (prof.vah - prof.val) * p.middle_pct / 2
+    for lv in longs:
+        assert prof.val < lv < prof.poc - half_mid  # внутри сектора, вне middle
+    for lv in shorts:
+        assert prof.poc + half_mid < lv < prof.vah
+    assert all(a < b for a, b in pairwise(longs))  # по возрастанию
+    # вырожденный диапазон → сетки нет
+    assert strat._grid(_Profile(ts=0, poc=100.0, val=100.0, vah=100.0)) == ([], [])
+
+
+def test_hold_when_no_level_touched() -> None:
+    candles = _flat_bars()
+    sig = _frozen(candles).check_signal(candles)
+    assert sig.action == "hold"
+    assert "не коснулись" in sig.reason
+
+
+def test_entry_long_touch_levels_and_levels() -> None:
+    candles = _flat_bars(30)
+    candles[-1] = _mk(29, 100.5, 100.6, 100.19, 100.5)  # касание всех long
+    strat = _frozen(candles)
+    sig = strat.check_signal(candles)
     assert sig.action == "buy"
-    snap = strat._snapshot(candles[:264])
-    assert snap is not None
-    assert sig.stop_loss == pytest.approx(snap.close - 1.5 * snap.atr)
-    assert sig.take_profit == pytest.approx(snap.close + 3.0 * snap.atr)
-    # позиция в памяти — повторного входа нет
-    assert strat.check_signal(candles[:264]).action == "hold"
+    # из коснутых выбирается ближайший к POC (= верхний long-уровень)
+    longs, _ = strat._grid(strat._profile)  # type: ignore[arg-type]
+    assert sig.entry_price == pytest.approx(max(longs))
+    assert sig.stop_loss == pytest.approx(100.15 * 0.95)  # VAL − 5%
+    assert sig.take_profit == pytest.approx(100.5)  # POC
+    assert sig.tp_split == 0.5
+    assert sig.take_profit is not None and sig.take_profit2 is not None
+    assert sig.take_profit2 >= sig.take_profit  # кламп к POC (offset 1% шире VA)
+    assert "grid long" in sig.reason
+    # уровень занят — повторного входа на нём нет
+    again = strat.check_signal(candles)
+    assert again.action == "buy"  # второй уровень (близкие свободны)
+    assert again.entry_price == pytest.approx(longs[1])
 
 
 def test_entry_short_mirror() -> None:
-    candles = _gen(up=False)
-    strat = FlatStrategy(FlatParams())
-    sig = strat.check_signal(candles[:264])
+    candles = _flat_bars(30)
+    candles[-1] = _mk(29, 100.5, 100.72, 100.4, 100.6)  # касание нижнего short
+    strat = _frozen(candles)
+    sig = strat.check_signal(candles)
     assert sig.action == "sell"
-    snap = strat._snapshot(candles[:264])
-    assert snap is not None
-    assert sig.stop_loss == pytest.approx(snap.close + 1.5 * snap.atr)
-    assert sig.take_profit == pytest.approx(snap.close - 3.0 * snap.atr)
+    _, shorts = strat._grid(strat._profile)  # type: ignore[arg-type]
+    assert sig.entry_price == pytest.approx(min(shorts))
+    assert sig.stop_loss == pytest.approx(100.85 * 1.05)  # VAH + 5%
+    assert sig.take_profit == pytest.approx(100.5)
+    # зеркальный TP2: обратная (long) сетка + offset, кламп к POC
+    if sig.take_profit2 is not None and sig.take_profit is not None:
+        assert sig.take_profit2 <= sig.take_profit
 
 
-def test_entry_rsi_and_volume_filters() -> None:
-    candles = _gen()
-    # дефолт (RSI >= 50 на ралли) — вход есть
-    rsi_ok = FlatStrategy(FlatParams(use_rsi=True))
-    assert rsi_ok.check_signal(candles[:264]).action == "buy"
-    # завышенный порог — RSI-фильтр блокирует
-    block_rsi = FlatStrategy(FlatParams(use_rsi=True, rsi_side=99.0))
-    assert block_rsi.check_signal(candles[:264]).action == "hold"
-    # объём: дефолт проходит, завышенный множитель блокирует
-    vol_ok = FlatStrategy(FlatParams(use_volume=True))
-    assert vol_ok.check_signal(candles[:264]).action == "buy"
-    block_vol = FlatStrategy(FlatParams(use_volume=True, vol_mult=100.0))
-    assert block_vol.check_signal(candles[:264]).action == "hold"
+def test_tp2_beyond_poc_when_offset_small() -> None:
+    params = FlatParams(tp_offset_pct=0.001)
+    candles = _flat_bars(30)
+    candles[-1] = _mk(29, 100.5, 100.6, 100.19, 100.5)
+    sig = _frozen(candles, params=params).check_signal(candles)
+    assert sig.action == "buy"
+    assert sig.take_profit2 is not None
+    # min(shorts) × 0.999 = 100.71875 × 0.999 ≈ 100.618 > POC
+    assert sig.take_profit2 == pytest.approx(100.71875 * 0.999)
+    assert sig.take_profit is not None
+    assert sig.take_profit2 > sig.take_profit
 
 
-def test_exit_on_state_reversal() -> None:
-    candles = _gen_crash()
-    strat = FlatStrategy(FlatParams())
-    acts: list[tuple[int, str]] = []
-    for i in range(200, len(candles)):
-        sig = strat.check_signal(candles[: i + 1])
-        if sig.action != "hold":
-            acts.append((i, sig.action))
-    # вход long → разворот состояния (close_long по close) → новый вход short
-    assert acts[0][1] == "buy"
-    assert acts[1][1] == "close_long"
-    assert acts[2][1] == "sell"
+def test_adx_trend_gate_blocks_entry() -> None:
+    # сильный нисходящий тренд к POC → ADX >= 25 → входов нет,
+    # хотя финальный бар закрыт в VA и касается long-уровня
+    bars: list[Candle] = []
+    price = 100.0
+    for i in range(40):  # медленный рост
+        bars.append(_mk(i, price, price * 1.002, price * 0.999, price * 1.001))
+        price *= 1.001
+    for i in range(40, 55):  # падение к VA (~−0.23%/бар)
+        bars.append(_mk(i, price, price * 1.001, price * 0.998, price * 0.9977))
+        price *= 0.9977
+    bars.append(_mk(55, price, 100.6, 100.19, 100.5))  # закрытие в VA, касание
+    strat = _frozen(bars)
+    sig = strat.check_signal(bars)
+    assert sig.action == "hold"
+    assert "тренд" in sig.reason
+    adx_s, _, _ = adx_di(
+        [c.high for c in bars],
+        [c.low for c in bars],
+        [c.close for c in bars],
+        14,
+    )
+    assert adx_s[-1] >= 25.0  # предусловие теста
+
+
+def test_guard_breakout_return_and_halt() -> None:
+    bars = _flat_bars(30)
+    strat = _frozen(bars)
+    # свеча вне диапазона (вниз) — таймер стартует, входов нет
+    bars.append(_mk(30, 100.4, 100.5, 99.4, 99.5))
+    sig = strat.check_signal(bars)
+    assert sig.action == "hold"
+    assert strat._breakout_since == bars[-1].open_time
+    # вернулась — таймер сброшен
+    bars.append(_mk(31, 99.6, 100.5, 99.5, 100.5))
+    strat.check_signal(bars)
+    assert strat._breakout_since is None
+    # снова вне 10+ минут подряд → халт + форс-пересчёт POC
+    bars.append(_mk(32, 100.5, 100.6, 99.4, 99.5))
+    strat.check_signal(bars)
+    assert strat._breakout_since == bars[-1].open_time
+    bars.append(_mk(33, 99.5, 99.6, 99.4, 99.5))
+    strat.check_signal(bars)
+    bars.append(_mk(34, 99.5, 99.6, 99.4, 99.5))
+    sig = strat.check_signal(bars)
+    assert sig.action == "hold"
+    assert "халт" in sig.reason
+    assert strat._profile is not None
+    assert strat._profile.ts == bars[-1].open_time  # POC пересчитан
+    assert strat._breakout_since is None
+
+
+def test_hourly_profile_refresh() -> None:
+    bars = _flat_bars(30)
+    strat = _frozen(bars)
+    frozen_ts = strat._profile.ts  # type: ignore[union-attr]
+    # +55 минут — профиль ещё заморожен
+    for i in range(11):
+        bars.append(_mk(30 + i, 100.5, 100.6, 100.4, 100.5))
+    strat.check_signal(bars)
+    assert strat._profile is not None and strat._profile.ts == frozen_ts
+    # +60 минут — hourly rolling-пересчёт от последней свечи
+    bars.append(_mk(41, 100.5, 100.6, 100.4, 100.5))
+    strat.check_signal(bars)
+    assert strat._profile is not None
+    assert strat._profile.ts == bars[-1].open_time
+
+
+def test_grid_capacity_and_release() -> None:
+    candles = _flat_bars(30)
+    # порог ADX поднят: сами касания просаживают low и поднимают ADX —
+    # здесь изолируем логику книги, не тренд-гейт
+    strat = _frozen(candles, params=FlatParams(adx_threshold=99.0))
+    # три входа подряд по разным уровням (касания: все / средний / нижний)
+    for i, low in enumerate([100.19, 100.23, 100.19]):
+        candles.append(_mk(30 + i, 100.5, 100.6, low, 100.5))
+        assert strat.check_signal(candles).action == "buy"
+    # сторона заполнена
+    candles.append(_mk(33, 100.5, 100.6, 100.19, 100.5))
+    sig = strat.check_signal(candles)
+    assert sig.action == "hold"
+    assert "заполнена" in sig.reason
+    # позиция закрыта → книга свободна → вход снова возможен
     strat.on_position_closed("long")
-    # после сброса памяти выход не повторяется
-    assert strat.check_signal(candles[: acts[1][0] + 1]).action == "hold"
+    assert strat.check_signal(candles).action == "buy"
 
 
-def test_decide_enter_and_exit_live() -> None:
-    strat = FlatStrategy(FlatParams())
-    candles = _gen()
-    assert strat.decide(candles[:200], None) is None  # мало свечей (< EMA200+2)
-    flat_only = _gen(flat=300, rally=0, pull=0, resume=0)
-    assert strat.decide(flat_only, None) is None  # флэт — входа нет
-    # полный ряд: вход
+def test_decide_live_enter_and_busy_position() -> None:
+    candles = _flat_bars(30)
+    candles[-1] = _mk(29, 100.5, 100.6, 100.19, 100.5)
+    strat = _frozen(candles)
     ins = strat.decide(candles, None)
     assert ins is not None and ins.action == "enter" and ins.side == "long"
-    assert ins.stop is not None and ins.take is not None
-    assert "EMA state long" in ins.reason
-    # с позицией: тренд жив — hold; разворот — exit
-    pos = OpenPosition(entry_price=ins.stop, qty=0.1, side="long")
+    assert ins.stop == pytest.approx(95.1425)
+    assert ins.take == pytest.approx(100.5)
+    assert "grid long" in ins.reason
+    # позиция открыта — новых входов нет (SL/TP делает биржа)
+    pos = OpenPosition(entry_price=100.28, qty=0.1, side="long")
     assert strat.decide(candles, pos) is None
-    exit_ins = strat.decide(_gen_crash(), pos)
-    assert exit_ins is not None and exit_ins.action == "exit"
-    assert "разворот" in exit_ins.reason
 
 
 # ============================== фейки для order_flow ==============================
@@ -525,9 +677,12 @@ class FakeClient:
         self.sl_calls: list[tuple[float, float | None]] = []
         self.closed = 0
         self.cancelled_all = 0
+        self.cancelled_orders: list[str] = []
         self.last_pnl: float | None = None
         self.funding_at: float | None = None
         self.fail_sl = False
+        self.fill_limit = True  # False — лимитка не исполняется
+        self.fill_on_cancel = False  # гонка: исполнилась в момент отмены
 
     async def get_price(self, symbol: str) -> float:
         return self.price
@@ -556,17 +711,37 @@ class FakeClient:
         order_link_id: str | None = None,
     ) -> dict[str, Any]:
         self.placed.append(
-            {"side": side, "qty": qty, "type": order_type, "link": order_link_id}
+            {
+                "side": side,
+                "qty": qty,
+                "type": order_type,
+                "price": price,
+                "link": order_link_id,
+            }
         )
-        if order_type == "Market" and not reduce_only:
+        if order_type in ("Market", "Limit") and not reduce_only and self.fill_limit:
             self.position = Position(
                 symbol=symbol,
                 side=side,
                 size=qty,
-                avg_price=self.price,
+                avg_price=(price or self.price)
+                if order_type == "Limit"
+                else self.price,
                 unrealised_pnl=0.0,
             )
         return {"result": {"orderId": "oid-1"}}
+
+    async def cancel_order(self, symbol: str, order_id: str) -> dict[str, Any]:
+        self.cancelled_orders.append(order_id)
+        if self.fill_on_cancel:
+            self.position = Position(
+                symbol=symbol,
+                side="Buy",
+                size=0.1,
+                avg_price=99.0,
+                unrealised_pnl=0.0,
+            )
+        return {}
 
     async def set_stop_loss_take_profit(
         self,
@@ -671,6 +846,7 @@ def _enter_instruction() -> Instruction:
     return Instruction(
         action="enter",
         side="long",
+        price=99.0,
         stop=95.0,
         take=105.0,
         reason="test",
@@ -689,7 +865,8 @@ def test_enter_full_flow(tmp_path: Path) -> None:
     order = client.placed[0]
     assert order["side"] == "Buy"
     assert order["qty"] == pytest.approx(0.1)  # 100$*10% / 100$
-    assert order["type"] == "Market"
+    assert order["type"] == "Limit"  # вход только лимитками
+    assert order["price"] == pytest.approx(99.0)  # уровень стратегии
     assert order["link"] is not None
     assert order["link"].startswith("fl-")
     assert len(order["link"]) <= 36
@@ -698,9 +875,59 @@ def test_enter_full_flow(tmp_path: Path) -> None:
     st = store.state
     assert st.phase == PHASE_IN_POSITION
     assert st.position is not None
-    assert st.position.entry_price == 100.0
+    assert st.position.entry_price == 99.0
     assert st.position.side == "long"
     assert st.position.stop_loss == 95.0
+
+
+def test_enter_limit_price_fallback_to_rest(tmp_path: Path) -> None:
+    # инструкция без уровня — лимитка по текущей цене
+    flow, client, _feed, strategy, _store = _make_flow(tmp_path)
+    strategy.instruction = Instruction(
+        action="enter",
+        side="long",
+        stop=95.0,
+        take=105.0,
+        reason="no level",
+    )
+    asyncio.run(flow._tick())
+    assert client.placed[0]["type"] == "Limit"
+    assert client.placed[0]["price"] == pytest.approx(100.0)
+
+
+def test_enter_limit_not_filled_cancelled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(order_flow_mod, "ENTRY_FILL_RETRIES", 1)
+    flow, client, _feed, strategy, store = _make_flow(tmp_path)
+    client.fill_limit = False
+    strategy.instruction = _enter_instruction()
+    asyncio.run(flow._tick())
+    assert client.placed[0]["type"] == "Limit"
+    assert client.cancelled_orders == ["oid-1"]  # снята
+    assert client.sl_calls == []
+    assert store.state.position is None
+    assert store.state.phase == PHASE_IDLE
+
+
+def test_enter_limit_cancel_race_fill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # лимитка исполнилась в момент отмены — позицию подхватываем
+    monkeypatch.setattr(order_flow_mod, "ENTRY_FILL_RETRIES", 1)
+    flow, client, _feed, strategy, store = _make_flow(tmp_path)
+    client.fill_limit = False
+    client.fill_on_cancel = True
+    strategy.instruction = _enter_instruction()
+    asyncio.run(flow._tick())
+    assert client.cancelled_orders == ["oid-1"]
+    st = store.state
+    assert st.position is not None
+    assert st.position.entry_price == pytest.approx(99.0)
+    assert client.sl_calls == [(95.0, 105.0)]
+    assert st.phase == PHASE_IN_POSITION
 
 
 def test_enter_without_stop_rejected(tmp_path: Path) -> None:

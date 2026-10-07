@@ -58,8 +58,13 @@ def on_price(
     be_now = be_active or (
         be_trigger_pct > 0 and price >= entry * (1.0 + be_trigger_pct)
     )
-    base = entry * (1.0 + be_offset_pct) if be_now else entry * (1.0 - stop_pct)
-    candidates = [current_stop, base]
+    candidates = [current_stop]
+    if be_now:
+        candidates.append(entry * (1.0 + be_offset_pct))
+    elif stop_pct > 0:
+        # стоп по %-допуску от входа; stop_pct = 0 — стоп не трогаем
+        # (стратегия даёт свой уровень, напр. граница VA ± 5%)
+        candidates.append(entry * (1.0 - stop_pct))
     if trail_pct > 0 and be_now:
         candidates.append(new_peak * (1.0 - trail_pct))
     new_stop = max(candidates)
@@ -83,8 +88,11 @@ def _on_price_short(
     be_now = be_active or (
         be_trigger_pct > 0 and price <= entry * (1.0 - be_trigger_pct)
     )
-    base = entry * (1.0 - be_offset_pct) if be_now else entry * (1.0 + stop_pct)
-    candidates = [current_stop, base]
+    candidates = [current_stop]
+    if be_now:
+        candidates.append(entry * (1.0 - be_offset_pct))
+    elif stop_pct > 0:
+        candidates.append(entry * (1.0 + stop_pct))
     if trail_pct > 0 and be_now:
         candidates.append(new_trough * (1.0 + trail_pct))
     new_stop = min(candidates)

@@ -46,9 +46,11 @@ from robot_flat.strategy import FlatStrategy, Instruction
 
 logger = logging.getLogger(__name__)
 
-# сколько раз ждать появления позиции после Market-ордера
+# сколько раз ждать появления позиции после ордера
 FILL_RETRIES = 5
 FILL_DELAY = 0.2
+# входная лимитка может ждать касания уровня — ждём дольше
+ENTRY_FILL_RETRIES = 15
 
 
 def _utc_day() -> str:
@@ -170,7 +172,7 @@ class OrderFlow:
     # ==================== вход ====================
 
     async def _enter(self, instruction: Instruction) -> None:
-        """Вход по сигналу стратегии: гейты → Market → серверный SL/TP."""
+        """Вход по сигналу стратегии: гейты → лимитка по уровню → серверный SL/TP."""
         blocked = await self._entry_blocked()
         if blocked is not None:
             self._log_gate(blocked)
@@ -216,34 +218,46 @@ class OrderFlow:
             return
 
         side = "Buy" if instruction.side == "long" else "Sell"
+        limit_price = (
+            instruction.price
+            if instruction.price is not None and instruction.price > 0
+            else rest_price
+        )
         link = self._order_link_id()
         logger.info(
-            "вход %s qty=%s ref=%.4f SL=%s TP=%s",
+            "вход %s qty=%s limit=%.4f SL=%s TP=%s",
             instruction.side,
             qty,
-            rest_price,
+            limit_price,
             instruction.stop,
             instruction.take,
         )
         try:
-            await self.client.place_order(
+            resp = await self.client.place_order(
                 self.cfg.symbol,
                 side,
                 qty,
-                "Market",
+                "Limit",
+                price=limit_price,
                 order_link_id=link,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("ордер не выставлен: %s", exc)
             self._notify(f"flat: ошибка входа — {exc}")
             return
+        order_id = str((resp.get("result") or {}).get("orderId") or "")
 
-        pos = await self._wait_position()
+        pos = await self._wait_position(retries=ENTRY_FILL_RETRIES)
         if pos is None:
-            logger.error(
-                "позиция не подтвердилась после Market-ордера — ждём recover",
-            )
-            return
+            # лимитка не исполнилась — снимаем; вход повторится
+            # на следующем касании уровня (книга чистится в decide)
+            await self._cancel_entry(order_id)
+            pos = await self.client.get_position(
+                self.cfg.symbol
+            )  # гонка отмена/исполнение
+            if pos is None or pos.size <= 0:
+                logger.info("лимитка не исполнилась — снята, ждём касания уровня")
+                return
         entry = pos.avg_price or rest_price
         if not slippage_ok(rest_price, entry, self.cfg.slippage_pct):
             logger.warning("проскальзывание: ref=%.4f fill=%.4f", rest_price, entry)
@@ -617,13 +631,30 @@ class OrderFlow:
             limit=self.cfg.candles_warmup + 1,  # +1 — формирующаяся свеча
         )
 
-    async def _wait_position(self) -> Position | None:
-        for _ in range(FILL_RETRIES):
+    async def _wait_position(
+        self,
+        retries: int = FILL_RETRIES,
+        delay: float = FILL_DELAY,
+    ) -> Position | None:
+        for _ in range(retries):
             pos = await self.client.get_position(self.cfg.symbol)
             if pos is not None and pos.size > 0:
                 return pos
-            await asyncio.sleep(FILL_DELAY)
+            await asyncio.sleep(delay)
         return None
+
+    async def _cancel_entry(self, order_id: str) -> None:
+        """Снять невыполненную входную лимитку (best effort)."""
+        if order_id:
+            try:
+                await self.client.cancel_order(self.cfg.symbol, order_id)
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("отмена лимитки не удалась (%s) — cancel_all", exc)
+        try:
+            await self.client.cancel_all_orders(self.cfg.symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("cancel_all не удался: %s — ждём recover", exc)
 
     async def _wait_no_position(self) -> bool:
         for _ in range(FILL_RETRIES):

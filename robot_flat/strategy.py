@@ -1,20 +1,20 @@
-"""Стратегия robot_flat: EMA 20/50/200 + ADX 14 + ATR 14 (4H).
+"""Стратегия robot_flat v3: сетка вокруг POC внутри VA-диапазона (M5).
 
-| # | Индикатор | Параметры (.env)     | Роль                                  |
-|---|-----------|----------------------|---------------------------------------|
-| 1 | EMA       | 20/50/200            | направление и режим (must-have)       |
-| 2 | ADX       | период 14, порог 25  | фильтр: тренд или флэт (must-have)    |
-| 3 | ATR       | период 14, ×1.5 / ×3 | стоп и тейк (must-have)               |
-| + | RSI       | 14, ≥50 / <50        | опциональный фильтр (RSI_FILTER)      |
-| + | Volume    | SMA20 × 1.3          | опциональный фильтр (VOLUME_FILTER)   |
+| # | Правило | Параметры (.env) |
+|---|---------|------------------|
+| 1 | Профиль: POC + VAH/VAL (value area 70%) из последних 30 мин | POC_WINDOW_MIN, POC_REFRESH_MIN, VALUE_AREA_PCT |
+| 2 | Пересчёт профиля каждый час (rolling) + форс по халту | POC_REFRESH_MIN |
+| 3 | Тренд-гейт: ADX >= порога → новые входы запрещены | ADX_PERIOD, ADX_THRESHOLD |
+| 4 | Середина (MIDDLE_PCT ширины вокруг POC) — не торгуется | MIDDLE_PCT, GRID_LEVELS |
+| 5 | Вход: касание уровня сетки (лимит-эмуляция) | — |
+| 6 | SL = граница VA ± 5% цены | BREAKOUT_PCT |
+| 7 | TP1 (50%) = POC; TP2 (50%) = ближайший уровень обратной сетки − 1% к POC | TP_SPLIT, TP_OFFSET_PCT |
+| 8 | BE: +3% от входа → стоп = вход (считают backtest/risk) | BE_TRIGGER_PCT |
+| 9 | Гвард: вне диапазона > 10 мин → халт входов + форс-пересчёт POC | BREAKOUT_RETURN_MIN |
 
-Вход по **состоянию**: EMA20 > EMA50, close > EMA200 и ADX >= 25 (long;
-зеркально short) + опциональные RSI/Volume-фильтры. Выход: разворот
-состояния (EMA20/50 или close против EMA200) либо срабатывание
-ATR-стопа/тейка (SL/TP считает бэктест/биржа).
-
-Правило внедрения индикаторов: каждый новый индикатор включается флагом
-только после того, как улучшил PF на прогоне (см. SESSION_NOTES).
+Сетка: 3 уровня в каждом секторе [VAL..POC−зона] и [POC+зона..VAH],
+равномерно, только внутри VA. Сторона занята, пока позиции не закрыты
+полностью (on_position_closed) — максимум GRID_LEVELS одновременно.
 """
 
 from __future__ import annotations
@@ -22,10 +22,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from core.bybit_client import Candle
-from core.indicators import adx_di, atr, ema, rsi, sma
+from core.indicators import adx_di
 from core.strategies import BaseStrategy, Signal
-from robot_flat.config import _env_bool, _env_float, _env_int
+from core.volume_profile import compute_poc_va
+from robot_flat.config import _env_float, _env_int
 from robot_flat.state import OpenPosition
+
+MS_MIN = 60_000
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,7 @@ class Instruction:
 
     action: str  # "enter" | "exit"
     side: str = ""  # "long" | "short" (для enter)
+    price: float | None = None  # уровень входа — цена лимитки (для enter)
     stop: float | None = None  # уровень SL (для enter)
     take: float | None = None  # уровень TP (для enter)
     reason: str = ""
@@ -43,178 +47,267 @@ class Instruction:
 class FlatParams:
     """Параметры стратегии (из ``.env``, дефолты из таблицы в docstring)."""
 
-    # --- must-have: EMA (режим/направление) ---
-    ema_fast: int = 20
-    ema_slow: int = 50
-    ema_macro: int = 200
-    # --- must-have: ADX (тренд против флэта) ---
+    # --- профиль ---
+    poc_window_min: int = 30
+    poc_refresh_min: int = 60
+    value_area_pct: float = 0.7
+    profile_bins: int = 100
+    # --- тренд-гейт ---
     adx_period: int = 14
     adx_threshold: float = 25.0
-    # --- must-have: ATR (стоп/тейк) ---
-    atr_period: int = 14
-    atr_sl_mult: float = 1.5  # SL = k x ATR от цены входа
-    atr_tp_mult: float = 3.0  # TP = k x ATR (RR 1:2)
-    # --- опциональные фильтры (включаются флагом после проверки PF) ---
-    use_rsi: bool = False
-    rsi_period: int = 14
-    rsi_side: float = 50.0  # long: RSI >= 50, short: RSI < 50
-    use_volume: bool = False
-    vol_period: int = 20
-    vol_mult: float = 1.3  # volume >= 1.3 x SMA20
-    # --- риск-слой (BE/trail) выключен: стопы считает ATR ---
-    sl_pct: float = 0.0
-    be_trigger_pct: float = 0.0
-    be_offset_pct: float = 0.0
+    # --- сетка ---
+    grid_levels: int = 3
+    middle_pct: float = 0.5  # запрет: middle_pct ширины VA вокруг POC
+    # --- стоп/тейк ---
+    breakout_pct: float = 0.05  # SL = граница VA ± 5% цены
+    breakout_return_min: int = 10  # гвард: возврат в диапазон за 10 мин
+    tp_offset_pct: float = 0.01  # TP2: на 1% ближе к POC
+    tp_split: float = 0.5  # доля позиции на TP1 (POC)
+    # --- риск-слой (читают backtest.py / risk.on_price) ---
+    sl_pct: float = 0.0  # стоп считает стратегия (граница ±5%)
+    be_trigger_pct: float = 0.03  # BE через 3% от входа
+    be_offset_pct: float = 0.0  # стоп BE = вход
     trail_pct: float = 0.0
 
     @classmethod
     def from_env(cls) -> FlatParams:
-        """Собрать параметры из окружения (RSI_FILTER / VOLUME_FILTER — флаги)."""
+        """Собрать параметры из окружения."""
         return cls(
-            ema_fast=_env_int("EMA_FAST", 20),
-            ema_slow=_env_int("EMA_SLOW", 50),
-            ema_macro=_env_int("EMA_MACRO", 200),
+            poc_window_min=_env_int("POC_WINDOW_MIN", 30),
+            poc_refresh_min=_env_int("POC_REFRESH_MIN", 60),
+            value_area_pct=_env_float("VALUE_AREA_PCT", 0.7),
+            profile_bins=_env_int("PROFILE_BINS", 100),
             adx_period=_env_int("ADX_PERIOD", 14),
             adx_threshold=_env_float("ADX_THRESHOLD", 25.0),
-            atr_period=_env_int("ATR_PERIOD", 14),
-            atr_sl_mult=_env_float("ATR_SL_MULT", 1.5),
-            atr_tp_mult=_env_float("ATR_TP_MULT", 3.0),
-            use_rsi=_env_bool("RSI_FILTER", False),
-            rsi_period=_env_int("RSI_PERIOD", 14),
-            use_volume=_env_bool("VOLUME_FILTER", False),
-            vol_period=_env_int("VOL_PERIOD", 20),
-            vol_mult=_env_float("VOL_MULT", 1.3),
+            grid_levels=_env_int("GRID_LEVELS", 3),
+            middle_pct=_env_float("MIDDLE_PCT", 0.5),
+            breakout_pct=_env_float("BREAKOUT_PCT", 0.05),
+            breakout_return_min=_env_int("BREAKOUT_RETURN_MIN", 10),
+            tp_offset_pct=_env_float("TP_OFFSET_PCT", 0.01),
+            tp_split=_env_float("TP_SPLIT", 0.5),
+            be_trigger_pct=_env_float("BE_TRIGGER_PCT", 0.03),
         )
 
     def __post_init__(self) -> None:
-        periods = {
-            "EMA_FAST": self.ema_fast,
-            "EMA_SLOW": self.ema_slow,
-            "EMA_MACRO": self.ema_macro,
+        ints = {
+            "POC_WINDOW_MIN": self.poc_window_min,
+            "POC_REFRESH_MIN": self.poc_refresh_min,
+            "PROFILE_BINS": self.profile_bins,
             "ADX_PERIOD": self.adx_period,
-            "ATR_PERIOD": self.atr_period,
-            "RSI_PERIOD": self.rsi_period,
-            "VOL_PERIOD": self.vol_period,
+            "GRID_LEVELS": self.grid_levels,
+            "BREAKOUT_RETURN_MIN": self.breakout_return_min,
         }
-        for name, value in periods.items():
-            if value < 2:
-                raise ValueError(f"{name} должен быть >= 2")
-        if not self.ema_fast < self.ema_slow < self.ema_macro:
-            raise ValueError("нужен порядок EMA_FAST < EMA_SLOW < EMA_MACRO")
+        for name, value in ints.items():
+            if value < 1:
+                raise ValueError(f"{name} должен быть >= 1")
+        if not 0 < self.value_area_pct <= 1:
+            raise ValueError("VALUE_AREA_PCT должен быть в (0, 1]")
         if self.adx_threshold < 0:
             raise ValueError("ADX_THRESHOLD не может быть < 0")
-        if self.atr_sl_mult <= 0 or self.atr_tp_mult <= 0:
-            raise ValueError("ATR_SL_MULT / ATR_TP_MULT должны быть > 0")
+        if not 0 < self.middle_pct < 1:
+            raise ValueError("MIDDLE_PCT должен быть в (0, 1)")
+        if self.breakout_pct <= 0:
+            raise ValueError("BREAKOUT_PCT должен быть > 0")
+        if not 0 <= self.tp_offset_pct < 1:
+            raise ValueError("TP_OFFSET_PCT должен быть в [0, 1)")
+        if not 0 < self.tp_split < 1:
+            raise ValueError("TP_SPLIT должен быть в (0, 1)")
         if not 0 <= self.sl_pct < 1:
             raise ValueError("SL_PCT должен быть в [0, 1)")
         if min(self.be_trigger_pct, self.be_offset_pct, self.trail_pct) < 0:
             raise ValueError("BE_TRIGGER / BE_OFFSET / TRAIL_PCT не могут быть < 0")
-        if not 0 < self.rsi_side < 100:
-            raise ValueError("RSI_SIDE должен быть в (0, 100)")
-        if self.vol_mult <= 0:
-            raise ValueError("VOL_MULT должен быть > 0")
 
 
 @dataclass(frozen=True)
-class _Snapshot:
-    """Значения индикаторов на последней закрытой свече."""
+class _Profile:
+    """POC/VA на момент пересчёта (ts = open_time свечи)."""
 
-    close: float
-    ema_fast: float
-    ema_slow: float
-    ema_macro: float
-    adx: float
-    atr: float
-    rsi_v: float
-    vol_ratio: float  # volume / SMA20(volume)
+    ts: int
+    poc: float
+    val: float
+    vah: float
+
+
+@dataclass(frozen=True)
+class _Decision:
+    """Внутреннее решение _eval (hold либо вход по уровню)."""
+
+    kind: str  # "hold" | "enter"
+    side: str = ""
+    level: float = 0.0
+    stop: float = 0.0
+    tp1: float = 0.0
+    tp2: float = 0.0
+    reason: str = ""
 
 
 class FlatStrategy(BaseStrategy):
-    """EMA 20/50/200 + ADX 14/25 + ATR 14; опционально RSI и Volume."""
+    """Сетка вокруг POC в VA-диапазоне; ADX-гейт, гвард 5%/10 мин."""
 
     name = "flat"
     #: сколько закрытых свечей нужно бэктесту до первого решения
-    _min_warmup = 300
-    #: окно пересчёта индикаторов в бэктесте
-    _max_lookback = 600
+    _min_warmup = 60
+    #: окно индикаторов (ADX) в бэктесте
+    _max_lookback = 120
 
     def __init__(self, params: FlatParams | None = None) -> None:
         self.params = params if params is not None else FlatParams.from_env()
-        # память позиции для check_signal() (бэктест не знает про decide())
-        self._bt_side: str = ""
+        self._profile: _Profile | None = None
+        self._breakout_since: int | None = None
+        # занятые уровни по сторонам (сбрасываются при опустошении стороны)
+        self._book: dict[str, set[float]] = {"long": set(), "short": set()}
 
-    # ==================== индикаторы ====================
+    # ==================== профиль и сетка ====================
 
-    def _snapshot(self, candles: list[Candle]) -> _Snapshot | None:
-        """Свечи рабочего ТФ: EMA/ADX/ATR/RSI/объём (None — данных мало)."""
+    def _refresh(self, candles: list[Candle], t: int) -> bool:
+        """Пересчитать профиль из последних POC_WINDOW_MIN минут.
+
+        Returns:
+            True — профиль есть (или старый остался); False — данных нет.
+        """
+        window_ms = self.params.poc_window_min * MS_MIN
+        recent = [c for c in candles if c.open_time > t - window_ms]
+        levels = compute_poc_va(
+            recent,
+            num_bins=self.params.profile_bins,
+            pct=self.params.value_area_pct,
+        )
+        if levels is None:
+            return self._profile is not None
+        poc, val, vah = levels
+        self._profile = _Profile(ts=t, poc=poc, val=val, vah=vah)
+        self._breakout_since = None
+        return True
+
+    def _grid(self, p: _Profile) -> tuple[list[float], list[float]]:
+        """Уровни сетки: (longs, shorts) по возрастанию цены.
+
+        Секторы: [VAL..POC−зона] и [POC+зона..VAH]; middle_pct ширины
+        вокруг POC не торгуется; уровни равномерно, строго внутри VA.
+        """
+        n = self.params.grid_levels
+        width = p.vah - p.val
+        if width <= 0:
+            return [], []
+        half_middle = width * self.params.middle_pct / 2.0
+        longs: list[float] = []
+        shorts: list[float] = []
+        low_top = p.poc - half_middle
+        if low_top > p.val:
+            span = low_top - p.val
+            longs = [p.val + span * k / (n + 1) for k in range(1, n + 1)]
+        up_bottom = p.poc + half_middle
+        if p.vah > up_bottom:
+            span = p.vah - up_bottom
+            shorts = [up_bottom + span * k / (n + 1) for k in range(1, n + 1)]
+        return longs, shorts
+
+    # ==================== ядро решений ====================
+
+    def _eval(self, candles: list[Candle]) -> _Decision:
+        """Общая логика для check_signal (бэктест) и decide (живой цикл).
+
+        Сайд-эффект: при входе уровень добавляется в книгу стороны.
+        """
         p = self.params
-        if len(candles) < p.ema_macro + 2:
-            return None
-        closes = [c.close for c in candles]
+        if len(candles) < max(p.adx_period * 2, 12):
+            return _Decision("hold", reason="мало свечей")
+        bar = candles[-1]
+        t = bar.open_time
         highs = [c.high for c in candles]
         lows = [c.low for c in candles]
-        volumes = [c.volume for c in candles]
+        closes = [c.close for c in candles]
+        adx_s, _, _ = adx_di(highs, lows, closes, p.adx_period)
+        if len(adx_s) < 2:
+            return _Decision("hold", reason="ADX не посчитался")
+        adx = adx_s[-1]
 
-        fast, slow, macro = (
-            ema(closes, p.ema_fast),
-            ema(closes, p.ema_slow),
-            ema(closes, p.ema_macro),
+        # 1) часовой rolling-пересчёт профиля
+        need_refresh = self._profile is None or (
+            t - self._profile.ts >= p.poc_refresh_min * MS_MIN
         )
-        adx_v, _, _ = adx_di(highs, lows, closes, p.adx_period)
-        atr_v = atr(highs, lows, closes, p.atr_period)
-        rsi_v = rsi(closes, p.rsi_period)
-        vol_ma = sma(volumes, p.vol_period)
-        series = (fast, slow, macro, adx_v, atr_v, rsi_v, vol_ma)
-        if any(len(s) < 2 for s in series):
-            return None
-        if atr_v[-1] <= 0:
-            return None
+        if need_refresh and not self._refresh(candles, t):
+            return _Decision("hold", reason="профиль не построился")
+        prof = self._profile
+        if prof is None:
+            return _Decision("hold", reason="нет профиля")
 
-        return _Snapshot(
-            close=closes[-1],
-            ema_fast=fast[-1],
-            ema_slow=slow[-1],
-            ema_macro=macro[-1],
-            adx=adx_v[-1],
-            atr=atr_v[-1],
-            rsi_v=rsi_v[-1],
-            vol_ratio=volumes[-1] / vol_ma[-1] if vol_ma[-1] > 0 else 0.0,
+        # 2) гвард: вне диапазона дольше лимита → халт + форс-пересчёт
+        outside = bar.close < prof.val or bar.close > prof.vah
+        if outside:
+            if self._breakout_since is None:
+                self._breakout_since = t
+            elif t - self._breakout_since >= p.breakout_return_min * MS_MIN:
+                self._refresh(candles, t)
+                return _Decision(
+                    "hold",
+                    reason="халт: вне диапазона > 10м, POC пересчитан",
+                )
+            # входов вне VA нет — ждём возврата или халта
+            return _Decision("hold", reason=f"вне диапазона, ADX {adx:.1f}")
+        self._breakout_since = None
+
+        # 3) тренд-гейт: во флейте не торгуемся
+        if adx >= p.adx_threshold:
+            return _Decision(
+                "hold",
+                reason=f"тренд: ADX {adx:.1f} >= {p.adx_threshold}",
+            )
+
+        # 4) сетка: касание свободного уровня (ближайший к POC)
+        longs, shorts = self._grid(prof)
+        side = ""
+        level = 0.0
+        long_cands = [
+            lv
+            for lv in longs
+            if lv not in self._book["long"] and bar.low <= lv <= bar.high
+        ]
+        if long_cands and len(self._book["long"]) < p.grid_levels:
+            side, level = "long", max(long_cands)  # ближе к POC = выше
+        else:
+            short_cands = [
+                lv
+                for lv in shorts
+                if lv not in self._book["short"] and bar.low <= lv <= bar.high
+            ]
+            if short_cands and len(self._book["short"]) < p.grid_levels:
+                side, level = "short", min(short_cands)  # ближе к POC = ниже
+        if not side:
+            if (
+                len(self._book["long"]) >= p.grid_levels
+                or len(self._book["short"]) >= p.grid_levels
+            ):
+                return _Decision("hold", reason="сетка стороны заполнена")
+            return _Decision("hold", reason=f"уровней не коснулись, ADX {adx:.1f}")
+
+        # 5) стоп/тейки: SL за границей VA, TP1 = POC,
+        #    TP2 = ближайший уровень ОБРАТНОЙ сетки, сдвинутый к POC
+        if side == "long":
+            stop = prof.val * (1.0 - p.breakout_pct)
+            tp1 = prof.poc
+            tp2 = tp1
+            if shorts:
+                tp2 = max(min(shorts) * (1.0 - p.tp_offset_pct), tp1)
+        else:
+            stop = prof.vah * (1.0 + p.breakout_pct)
+            tp1 = prof.poc
+            tp2 = tp1
+            if longs:
+                tp2 = min(max(longs) * (1.0 + p.tp_offset_pct), tp1)
+        self._book[side].add(level)
+        return _Decision(
+            "enter",
+            side=side,
+            level=level,
+            stop=stop,
+            tp1=tp1,
+            tp2=tp2,
+            reason=(
+                f"grid {side} @ {level:.6g}, ADX {adx:.1f}, "
+                f"POC {prof.poc:.6g} [{prof.val:.6g}..{prof.vah:.6g}]"
+            ),
         )
-
-    # ==================== решения ====================
-
-    def _entry_side(self, s: _Snapshot) -> str | None:
-        """Сторона входа: состояние EMA (направление/режим) + ADX (тренд)."""
-        p = self.params
-        if s.adx < p.adx_threshold:
-            return None
-        side: str | None = None
-        if s.ema_fast > s.ema_slow and s.close > s.ema_macro:
-            side = "long"
-        elif s.ema_fast < s.ema_slow and s.close < s.ema_macro:
-            side = "short"
-        if side is None:
-            return None
-        if p.use_rsi:
-            long_ok = s.rsi_v >= p.rsi_side
-            if (side == "long") != long_ok:
-                return None
-        if p.use_volume and s.vol_ratio < p.vol_mult:
-            return None
-        return side
-
-    def _exit_for(self, s: _Snapshot, side: str) -> bool:
-        """Разворот состояния EMA против позиции — выход (SL/TP делает биржа)."""
-        if side == "long":
-            return s.ema_fast < s.ema_slow or s.close < s.ema_macro
-        return s.ema_fast > s.ema_slow or s.close > s.ema_macro
-
-    def _stop_take(self, s: _Snapshot, side: str) -> tuple[float, float]:
-        """ATR-стоп и тейк (RR = atr_tp_mult / atr_sl_mult)."""
-        p = self.params
-        if side == "long":
-            return (s.close - p.atr_sl_mult * s.atr, s.close + p.atr_tp_mult * s.atr)
-        return (s.close + p.atr_sl_mult * s.atr, s.close - p.atr_tp_mult * s.atr)
 
     # ==================== живой цикл ====================
 
@@ -223,35 +316,30 @@ class FlatStrategy(BaseStrategy):
         candles: list[Candle],
         position: OpenPosition | None,
     ) -> Instruction | None:
-        """Решение живого цикла order_flow.
+        """Решение живого цикла order_flow (одна позиция за раз).
 
         Args:
             candles: свечи рабочего ТФ (старые → новые, последняя закрытая).
             position: открытая позиция или None.
 
         Returns:
-            Instruction("enter"/"exit") либо None = hold.
+            Instruction("enter") либо None = hold (SL/TP делает биржа).
         """
-        s = self._snapshot(candles)
-        if s is None:
-            return None
         if position is not None:
-            if self._exit_for(s, position.side):
-                return Instruction(action="exit", reason="разворот EMA")
+            return None  # позиция под SL/TP/гвардом — не мешаем
+        # позиций нет → книги сторон чисты (в live закрытия приходят сюда)
+        self._book["long"].clear()
+        self._book["short"].clear()
+        d = self._eval(candles)
+        if d.kind != "enter":
             return None
-        side = self._entry_side(s)
-        if side is None:
-            return None
-        stop, take = self._stop_take(s, side)
         return Instruction(
             action="enter",
-            side=side,
-            stop=stop,
-            take=take,
-            reason=(
-                f"EMA state {side}, ADX {s.adx:.1f}, ATR {s.atr:.4f}"
-                + (f", RSI {s.rsi_v:.0f}" if self.params.use_rsi else "")
-            ),
+            side=d.side,
+            price=d.level,
+            stop=d.stop,
+            take=d.tp1,
+            reason=d.reason,
         )
 
     # ==================== бэктест ====================
@@ -263,31 +351,25 @@ class FlatStrategy(BaseStrategy):
             candles: свечи рабочего ТФ от старых к новым.
 
         Returns:
-            Signal(buy/sell/close_long/close_short/hold) с абсолютными SL/TP.
+            Signal(buy/sell/hold): entry_price = уровень сетки,
+            SL = граница VA ±5%, TP1 = POC (tp_split), TP2 = обратная
+            сетка −1% (остаток позиции).
         """
         if not candles:
             return Signal(action="hold", reason="нет свечей")
-        s = self._snapshot(candles)
-        if s is None:
-            return Signal(action="hold", reason="мало свечей")
-        if self._bt_side:
-            if self._exit_for(s, self._bt_side):
-                close = "close_long" if self._bt_side == "long" else "close_short"
-                self._bt_side = ""
-                return Signal(action=close, reason="разворот EMA", stop_loss=s.close)
-            return Signal(action="hold", reason="позиция открыта")
-        side = self._entry_side(s)
-        if side is None:
-            return Signal(action="hold", reason="нет сигнала")
-        stop, take = self._stop_take(s, side)
-        self._bt_side = side
+        d = self._eval(candles)
+        if d.kind != "enter":
+            return Signal(action="hold", reason=d.reason)
         return Signal(
-            action="buy" if side == "long" else "sell",
-            reason=f"EMA state {side}",
-            stop_loss=stop,
-            take_profit=take,
+            action="buy" if d.side == "long" else "sell",
+            reason=d.reason,
+            stop_loss=d.stop,
+            take_profit=d.tp1,
+            entry_price=d.level,
+            take_profit2=d.tp2,
+            tp_split=self.params.tp_split,
         )
 
     def on_position_closed(self, direction: str) -> None:
-        """Сброс памяти позиции бэктеста (SL/TP закрыли сделку)."""
-        self._bt_side = ""
+        """Сторона опустела (SL/TP) — освободить её книгу уровней."""
+        self._book[direction].clear()

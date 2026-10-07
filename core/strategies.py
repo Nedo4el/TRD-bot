@@ -29,12 +29,21 @@ class Signal:
         stop_loss: абсолютная цена стоп-лосса, если стратегия считает её
             сама (например, от ATR). None -> возьмётся % из .env.
         take_profit: абсолютная цена тейк-профита (аналогично).
+        entry_price: цена входа (лимит-эмуляция по уровню);
+            None -> вход по close свечи (как раньше).
+        take_profit2: второй тейк — закрывает остаток позиции;
+            None -> позиция целиком на take_profit.
+        tp_split: доля позиции, закрываемая по take_profit
+            (остальное — по take_profit2); 1.0 = без разделения.
     """
 
     action: str
     reason: str
     stop_loss: float | None = None
     take_profit: float | None = None
+    entry_price: float | None = None
+    take_profit2: float | None = None
+    tp_split: float = 1.0
 
 
 class BaseStrategy(ABC):
