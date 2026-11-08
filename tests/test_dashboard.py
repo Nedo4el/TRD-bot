@@ -1,4 +1,4 @@
-"""Тесты дашборда: конфиг, хранилище, планировщик, fetcher."""
+"""Тесты дашборда: конфиг, хранилище, планировщик, fetcher, settings."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from typing import Self
+from typing import Any, Self
 
 import pytest
 
@@ -23,6 +23,7 @@ from dashboard.config import (
 from dashboard.fetcher import DashboardFetcher
 from dashboard.models import Signal, make_signal
 from dashboard.scheduler import Scheduler
+from dashboard.settings import AllCoinsSettings
 from dashboard.store import SignalStore
 
 
@@ -69,6 +70,7 @@ def test_registry_matches_expected_screeners() -> None:
         "pump",
         "yrovni",
         "zakonomer",
+        "all",
     }
     assert all(spec.interval_sec >= MIN_INTERVAL_SEC for spec in SCREENERS)
 
@@ -233,6 +235,191 @@ def test_scheduler_wait_uses_absolute_clock(
     time.sleep(8.0)
     pause = clock.tick()
     assert 4.8 < pause < 5.2
+
+
+def test_settings_defaults_and_roundtrip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AllCoinsSettings: дефолты + save/load JSON round-trip."""
+    import dashboard.settings as settings_module
+
+    monkeypatch.setattr(settings_module, "SETTINGS_FILE", tmp_path / "settings.json")
+
+    s = AllCoinsSettings()
+    assert s.enabled is True
+    assert s.interval_sec == 60
+    assert s.atr_period == 14
+    assert s.sort_mode == "atr_desc"
+
+    s.min_turnover_24h = 5_000_000
+    s.max_symbols = 50
+    s.sort_mode = "turnover_desc"
+    s.volume_trend = "up"
+    s.exclude_symbols = ["BTCUSDT", "SOLUSDT"]
+    s.save()
+
+    loaded = AllCoinsSettings.load()
+    assert loaded.min_turnover_24h == 5_000_000
+    assert loaded.max_symbols == 50
+    assert loaded.sort_mode == "turnover_desc"
+    assert loaded.volume_trend == "up"
+    assert loaded.exclude_symbols == ["BTCUSDT", "SOLUSDT"]
+    assert loaded.enabled is True
+
+
+def test_settings_load_invalid_values_falls_back_to_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Некорректные значения в JSON → дефолты."""
+    import dashboard.settings as settings_module
+
+    monkeypatch.setattr(settings_module, "SETTINGS_FILE", tmp_path / "settings.json")
+    (tmp_path / "settings.json").write_text(
+        json.dumps(
+            {
+                "interval_sec": 999,
+                "sort_mode": "bad",
+                "volume_trend": "bad",
+                "max_symbols": 99999,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    s = AllCoinsSettings.load()
+    assert s.interval_sec == 60
+    assert s.sort_mode == "atr_desc"
+    assert s.volume_trend == "all"
+    assert s.max_symbols == 500
+
+
+def test_scan_all_coins_mocked(
+    store: SignalStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """scan_all_coins: фиктивный fetcher → сигналы с ATR и volume trend."""
+    import dashboard.adapters as adapters_module
+    import dashboard.settings as settings_module
+    from dashboard.adapters import scan_all_coins
+
+    monkeypatch.setattr(settings_module, "SETTINGS_FILE", tmp_path / "settings.json")
+    s = AllCoinsSettings(enabled=True, min_turnover_24h=1_000_000, max_symbols=10)
+    s.save()
+
+    fake_tickers = [
+        {
+            "symbol": "AAAUSDT",
+            "turnover24h": "5000000",
+            "priceChangePercent": "5.2",
+            "lastPrice": "10.5",
+        },
+        {
+            "symbol": "BBBUSDT",
+            "turnover24h": "3000000",
+            "priceChangePercent": "-3.1",
+            "lastPrice": "0.02",
+        },
+        {
+            "symbol": "BTCUSDT",
+            "turnover24h": "99999999",
+            "priceChangePercent": "1.0",
+            "lastPrice": "100000",
+        },
+    ]
+
+    class FakeFetcher:
+        async def get_tickers(self) -> list[dict]:
+            return fake_tickers
+
+        async def get_klines(
+            self, symbol: str, interval: str, limit: int = 100
+        ) -> list[dict]:
+            base = 10.0 if symbol == "AAAUSDT" else 0.02
+            return [
+                {
+                    "open_time": i,
+                    "open": base,
+                    "high": base * 1.02,
+                    "low": base * 0.98,
+                    "close": base,
+                    "volume": 1000.0 + i * 10,
+                    "turnover": base * (1000.0 + i * 10),
+                }
+                for i in range(limit)
+            ]
+
+    monkeypatch.setattr(
+        adapters_module, "DashboardFetcher", lambda *a, **kw: FakeFetcher()
+    )
+
+    spec = ScreenerSpec(
+        name="all", title="Все монеты", dir_name="all", interval_sec=60, max_symbols=10
+    )
+
+    async def run() -> list:
+        return await scan_all_coins(spec)
+
+    signals = asyncio.run(run())
+    symbols = [x.symbol for x in signals]
+    assert "BTCUSDT" not in symbols
+    assert "AAAUSDT" in symbols
+    aaa = next(x for x in signals if x.symbol == "AAAUSDT")
+    assert aaa.detail["change_24h_pct"] == 5.2
+    assert aaa.detail["atr_pct"] is not None
+    assert aaa.detail["volume_trend_pct"] is not None
+
+
+def test_settings_api_endpoints(
+    store: SignalStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """GET/POST /api/settings/all (прямые вызовы хендлеров)."""
+    import dashboard.settings as settings_module
+    from dashboard.server import api_settings_all_get, api_settings_all_post
+
+    monkeypatch.setattr(settings_module, "SETTINGS_FILE", tmp_path / "settings.json")
+
+    from types import SimpleNamespace
+
+    class FakeScheduler:
+        async def trigger(self, name: str | None = None) -> bool:
+            return True
+
+    app_state = SimpleNamespace(
+        scheduler=FakeScheduler(),
+        store=store,
+        config=DashboardConfig(enabled=("impulse",)),
+    )
+    fake_app = SimpleNamespace(state=app_state)
+
+    from dashboard.settings import AllCoinsSettings
+
+    # GET: дефолты
+    async def get_test() -> Any:
+        request: Any = SimpleNamespace(app=fake_app)
+        resp = await api_settings_all_get(request)
+        return resp
+
+    resp = asyncio.run(get_test())
+    data = resp.body
+    assert b"atr_desc" in data
+
+    # POST: сохранить и вернуть
+    async def post_test() -> Any:
+        async def fake_json() -> dict:
+            return {"max_symbols": 50, "sort_mode": "turnover_desc", "enabled": True}
+
+        request: Any = SimpleNamespace(app=fake_app, json=fake_json)
+        return await api_settings_all_post(request)
+
+    resp2 = asyncio.run(post_test())
+    body2 = json.loads(resp2.body)
+    assert body2["ok"] is True
+    assert body2["settings"]["max_symbols"] == 50
+    assert body2["settings"]["sort_mode"] == "turnover_desc"
+
+    # После save → load должен вернуть то же
+    loaded = AllCoinsSettings.load()
+    assert loaded.max_symbols == 50
+    assert loaded.sort_mode == "turnover_desc"
 
 
 def test_fetcher_retries_rate_limit(

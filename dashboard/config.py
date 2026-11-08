@@ -44,6 +44,7 @@ SCREENERS: tuple[ScreenerSpec, ...] = (
         12,
         True,
     ),
+    ScreenerSpec("all", "Все монеты", "all", 60, 100),
 )
 
 SCREENERS_BY_NAME = {spec.name: spec for spec in SCREENERS}

@@ -11,11 +11,14 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
+from typing import Any
 
+from core.indicators import atr as atr_ind
 from core.logger import get_logger
 from dashboard.config import PROJECT_ROOT, ScreenerEnv, ScreenerSpec
 from dashboard.fetcher import DashboardFetcher
 from dashboard.models import Signal, make_signal
+from dashboard.settings import AllCoinsSettings
 
 logger = get_logger(__name__)
 
@@ -521,6 +524,155 @@ async def scan_yrovni(spec: ScreenerSpec) -> list[Signal]:
     return await _batched(universe, 5, work)
 
 
+async def scan_all_coins(spec: ScreenerSpec) -> list[Signal]:
+    """Все монеты: ATR(14) + volume trend + Δ24ч, сортировка по ATR."""
+    settings = AllCoinsSettings.load()
+    if not settings.enabled:
+        return []
+
+    env = _env(spec)
+    fetcher = DashboardFetcher(
+        api_key=env.string("BYBIT_API_KEY"),
+        api_secret=env.string("BYBIT_API_SECRET"),
+        testnet=env.boolean("TESTNET", False),
+    )
+
+    tickers = await fetcher.get_tickers()
+    if not tickers:
+        return []
+
+    exclude = set(settings.exclude_symbols)
+    candidates: list[dict] = []
+    for t in tickers:
+        symbol = str(t.get("symbol", ""))
+        if not symbol.endswith("USDT") or symbol in exclude:
+            continue
+        try:
+            turnover = float(t.get("turnover24h", "0"))
+        except (ValueError, TypeError):
+            continue
+        if turnover < settings.min_turnover_24h:
+            continue
+        try:
+            change_pct = float(t.get("priceChangePercent", "0"))
+        except (ValueError, TypeError):
+            change_pct = 0.0
+        if abs(change_pct) < settings.min_abs_change_24h:
+            continue
+        last_price = float(t.get("lastPrice", "0"))
+        if last_price <= 0:
+            continue
+        candidates.append(
+            {
+                "symbol": symbol,
+                "turnover": turnover,
+                "change_pct": round(change_pct, 2),
+                "price": last_price,
+                "atr_pct": None,
+                "vol_trend": None,
+            }
+        )
+
+    candidates.sort(key=lambda x: x["turnover"], reverse=True)
+    candidates = candidates[: settings.max_symbols]
+
+    atr_period = settings.atr_period
+    tf = settings.timeframe
+    kline_limit = atr_period + 6
+
+    async def enrich_all() -> None:
+        """ATR + volume trend для всех кандидатов батчами по 10."""
+        items = list(candidates)
+        for start in range(0, len(items), 10):
+            batch = items[start : start + 10]
+
+            async def one(item: dict) -> None:
+                candles = await fetcher.get_klines(item["symbol"], tf, kline_limit)
+                if len(candles) >= atr_period + 1:
+                    highs = [float(c["high"]) for c in candles]
+                    lows = [float(c["low"]) for c in candles]
+                    closes = [float(c["close"]) for c in candles]
+                    atrs = atr_ind(highs, lows, closes, atr_period)
+                    if atrs:
+                        item["atr_pct"] = round(atrs[-1] / closes[-1] * 100, 2)
+                if len(candles) >= 2:
+                    prev_vol = float(candles[-2].get("volume", 0))
+                    cur_vol = float(candles[-1].get("volume", 0))
+                    if prev_vol > 0:
+                        item["vol_trend"] = round(
+                            (cur_vol - prev_vol) / prev_vol * 100, 1
+                        )
+
+            await asyncio.gather(*(one(item) for item in batch))
+
+    await enrich_all()
+
+    signals: list[Signal] = []
+    for item in candidates:
+        atr_pct = item.get("atr_pct")
+        vol_trend = item.get("vol_trend")
+        label = "—"
+        if atr_pct is not None:
+            label = f"ATR {atr_pct:.1f}%"
+            if vol_trend is not None:
+                label += f" · vol {vol_trend:+.0f}%"
+        label += f" · Δ{item['change_pct']:+.1f}%"
+        signals.append(
+            make_signal(
+                screener=spec.name,
+                title=spec.title,
+                symbol=item["symbol"],
+                side="NEUTRAL",
+                price=item["price"],
+                score=100.0,
+                label=label,
+                turnover_24h=item["turnover"],
+                found_at=_now_iso(),
+                detail={
+                    "change_24h_pct": item["change_pct"],
+                    "atr_pct": atr_pct,
+                    "volume_trend_pct": vol_trend,
+                    "timeframe": tf,
+                },
+            )
+        )
+
+    signals.sort(key=_all_coins_sort_key(settings.sort_mode))
+
+    if settings.volume_trend == "up":
+        signals = [s for s in signals if (s.detail.get("volume_trend_pct") or 0) > 0]
+    elif settings.volume_trend == "down":
+        signals = [s for s in signals if (s.detail.get("volume_trend_pct") or 0) < 0]
+
+    return signals
+
+
+def _all_coins_sort_key(sort_mode: str) -> Callable[[Signal], Any]:
+    """Ключ сортировки для «Все монеты»: None — в конец (desc) / начало (asc)."""
+
+    def _key(s: Signal) -> Any:
+        atr = s.detail.get("atr_pct")
+        chg = s.detail.get("change_24h_pct", 0)
+        vol = s.detail.get("volume_trend_pct")
+        if sort_mode == "atr_desc":
+            return (atr is None, -(atr or 0.0))
+        if sort_mode == "atr_asc":
+            return (atr is not None, atr if atr is not None else 999.0)
+        if sort_mode == "change_desc":
+            return -chg
+        if sort_mode == "change_asc":
+            return chg
+        if sort_mode == "turnover_desc":
+            return -s.turnover_24h
+        if sort_mode == "vol_trend_desc":
+            return (vol is None, -(vol or 0.0))
+        if sort_mode == "vol_trend_asc":
+            return (vol is not None, vol if vol is not None else 999.0)
+        return 0
+
+    return _key
+
+
 async def scan_zakonomer(spec: ScreenerSpec) -> list[Signal]:
     """Закономерность: частота прострелов >= SPIKE_PCT за период."""
     from bot_screener_zakonomer.scanner import SpikeConfig, analyze_symbol
@@ -609,4 +761,5 @@ ADAPTERS: dict[str, Callable[[ScreenerSpec], Awaitable[list[Signal]]]] = {
     "pump": scan_pump,
     "yrovni": scan_yrovni,
     "zakonomer": scan_zakonomer,
+    "all": scan_all_coins,
 }

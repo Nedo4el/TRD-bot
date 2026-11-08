@@ -18,6 +18,7 @@ from starlette.routing import Route
 from dashboard import tiger
 from dashboard.config import DashboardConfig
 from dashboard.scheduler import Scheduler
+from dashboard.settings import AllCoinsSettings
 from dashboard.store import SignalStore
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,28 @@ async def api_health(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+async def api_settings_all_get(request: Request) -> JSONResponse:
+    """Текущие настройки «Все монеты»."""
+    return JSONResponse(AllCoinsSettings.load().to_dict(), headers=_NO_CACHE)
+
+
+async def api_settings_all_post(request: Request) -> JSONResponse:
+    """Сохранить настройки «Все монеты» и пересканировать."""
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"ok": False, "error": "JSON object required"}, status_code=400
+        )
+    settings = AllCoinsSettings.from_dict(body)
+    settings.save()
+    scheduler: Scheduler = request.app.state.scheduler
+    await scheduler.trigger("all")
+    return JSONResponse({"ok": True, "settings": settings.to_dict()})
+
+
 def _bad_symbol(symbol: str) -> bool:
     """Тикер должен быть коротким алфанумерическим кодом."""
     return not symbol or len(symbol) > 24 or not symbol.isalnum()
@@ -139,6 +162,8 @@ def create_app() -> Starlette:
         Route("/api/scan/{name}", api_scan_one, methods=["POST"]),
         Route("/api/open-tiger", api_open_tiger, methods=["POST"]),
         Route("/api/health", api_health),
+        Route("/api/settings/all", api_settings_all_get),
+        Route("/api/settings/all", api_settings_all_post, methods=["POST"]),
         Route("/favicon.ico", lambda request: Response(status_code=204)),
     ]
     return Starlette(routes=routes, lifespan=lifespan)
