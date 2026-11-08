@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TRD Screener Dashboard</title>
+<style>
+  :root {
+    --bg: #0b0f17;
+    --panel: #121826;
+    --panel-2: #0f1420;
+    --border: #1e2638;
+    --text: #e6edf7;
+    --muted: #8b98ad;
+    --green: #2ecc71;
+    --red: #ff5c6c;
+    --yellow: #ffc857;
+    --blue: #4dabf7;
+    --accent: #6c8cff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+    font-size: 14px;
+  }
+  .wrap { max-width: 1500px; margin: 0 auto; padding: 18px 20px 40px; }
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding-bottom: 14px; border-bottom: 1px solid var(--border);
+  }
+  .logo {
+    display: flex; align-items: center; gap: 10px;
+    font-size: 20px; font-weight: 700; letter-spacing: .3px;
+  }
+  .logo .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--green); box-shadow: 0 0 12px var(--green);
+  }
+  .logo .dot.off { background: var(--red); box-shadow: 0 0 12px var(--red); }
+  .logo small { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .spacer { flex: 1; }
+  .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .muted { color: var(--muted); }
+  button, select, input {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 9px;
+    padding: 8px 11px; font-size: 13px; outline: none;
+  }
+  button { cursor: pointer; transition: .15s; }
+  button:hover { border-color: var(--accent); color: #fff; }
+  button.primary {
+    background: linear-gradient(180deg, #3b5bdb, #2f49b0);
+    border-color: #4c6ef5;
+  }
+  input { min-width: 180px; }
+  input:focus, select:focus { border-color: var(--accent); }
+
+  .stats {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px; margin: 16px 0;
+  }
+  .stat {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 16px;
+  }
+  .stat .label { color: var(--muted); font-size: 12px; }
+  .stat .value { font-size: 24px; font-weight: 700; margin-top: 4px; }
+  .stat .value.green { color: var(--green); }
+  .stat .value.red { color: var(--red); }
+
+  .filters {
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    margin-bottom: 12px;
+  }
+  .filters .grow { flex: 1; }
+  .filters input { width: 100%; }
+
+  .table-wrap {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; overflow: auto; max-height: 62vh;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    position: sticky; top: 0; z-index: 2;
+    background: var(--panel-2); color: var(--muted);
+    text-align: left; font-size: 12px; font-weight: 600;
+    padding: 11px 12px; border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  tbody td {
+    padding: 10px 12px; border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: #151c2b; }
+  tbody tr.new { animation: flash 1.6s ease-out; }
+  @keyframes flash {
+    0% { background: rgba(108, 140, 255, .28); }
+    100% { background: transparent; }
+  }
+  .sym {
+    font-weight: 700; letter-spacing: .3px; white-space: nowrap;
+    cursor: pointer;
+  }
+  .sym:hover { color: var(--accent); text-decoration: underline; }
+  .screen-name { color: var(--muted); font-size: 12px; }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 700; letter-spacing: .4px;
+  }
+  .badge.LONG { background: rgba(46, 204, 113, .16); color: var(--green); }
+  .badge.SHORT { background: rgba(255, 92, 108, .16); color: var(--red); }
+  .badge.NEUTRAL { background: rgba(139, 152, 173, .16); color: var(--muted); }
+  .score { min-width: 92px; }
+  .score .num { font-weight: 700; }
+  .score .bar {
+    height: 5px; background: #1d2436; border-radius: 999px;
+    margin-top: 5px; overflow: hidden;
+  }
+  .score .bar span {
+    display: block; height: 100%; border-radius: 999px;
+    background: linear-gradient(90deg, var(--blue), var(--accent));
+  }
+  .detail { color: var(--muted); font-size: 12px; max-width: 430px; }
+  .time { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .empty {
+    padding: 40px; text-align: center; color: var(--muted);
+  }
+
+  h2 { font-size: 15px; margin: 26px 0 12px; color: var(--muted);
+       text-transform: uppercase; letter-spacing: .8px; }
+  .cards {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 12px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px;
+  }
+  .card.running { border-color: var(--accent); }
+  .card.error { border-color: var(--red); }
+  .card .top { display: flex; align-items: center; gap: 8px; }
+  .card .top b { flex: 1; }
+  .card .rows { margin: 10px 0; display: grid; gap: 5px; font-size: 12px; }
+  .card .rows div { display: flex; justify-content: space-between; gap: 10px; }
+  .card .rows .k { color: var(--muted); }
+  .card .err { color: var(--red); font-size: 12px; word-break: break-word; }
+  .card button { width: 100%; margin-top: 6px; }
+  .pulse {
+    width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
+    animation: pulse 1s infinite;
+  }
+  @keyframes pulse { 50% { opacity: .25; } }
+
+  .toast {
+    position: fixed; right: 20px; bottom: 20px; z-index: 50;
+    background: #1a2233; border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 16px; opacity: 0;
+    transform: translateY(8px); transition: .2s; max-width: 340px;
+  }
+  .toast.show { opacity: 1; transform: none; }
+  .toast.err { border-color: var(--red); color: #ffd7db; }
+  @media (max-width: 900px) {
+    .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">
+      <span class="dot off" id="liveDot"></span>
+      TRD Screener Dashboard
+      <small>Bybit USDT-M</small>
+    </div>
+    <div class="spacer"></div>
+    <div class="controls">
+      <span class="muted" id="updated">—</span>
+      <select id="interval" title="Автообновление">
+        <option value="3000">3 сек</option>
+        <option value="5000" selected>5 сек</option>
+        <option value="10000">10 сек</option>
+        <option value="30000">30 сек</option>
+        <option value="0">выкл</option>
+      </select>
+      <button id="refresh">Обновить</button>
+      <button class="primary" id="scanAll">Сканировать всё</button>
+    </div>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><div class="label">Сигналов сейчас</div>
+      <div class="value green" id="mSignals">—</div></div>
+    <div class="stat"><div class="label">Скринеров</div>
+      <div class="value" id="mScreeners">—</div></div>
+    <div class="stat"><div class="label">С ошибкой</div>
+      <div class="value red" id="mErrors">—</div></div>
+    <div class="stat"><div class="label">Последнее обновление</div>
+      <div class="value" style="font-size:16px" id="mUpdated">—</div></div>
+  </div>
+
+  <div class="filters">
+    <div class="grow"><input id="search" placeholder="Поиск по монете (например, BRU)" /></div>
+    <select id="fScreener"><option value="">Все скринеры</option></select>
+    <select id="fSide">
+      <option value="">Любая сторона</option>
+      <option value="LONG">LONG</option>
+      <option value="SHORT">SHORT</option>
+      <option value="NEUTRAL">NEUTRAL</option>
+    </select>
+    <select id="fSort">
+      <option value="score_desc">Оценка ↓</option>
+      <option value="score_asc">Оценка ↑</option>
+      <option value="time_desc">Время ↓</option>
+      <option value="symbol">Монета</option>
+      <option value="screener">Скринер</option>
+    </select>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Монета</th><th>Скринер</th><th>Сторона</th><th>Цена</th>
+          <th>Оценка</th><th>Оборот 24ч</th><th>Детали</th><th>Найдено (МСК)</th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr><td colspan="8" class="empty">Загрузка…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Статус скринеров</h2>
+  <div class="cards" id="cards"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const MSK = "Europe/Moscow";
+const seen = new Set();
+let state = { signals: [], screeners: [] };
+let timer = null;
+let primed = false;
+
+const $ = (id) => document.getElementById(id);
+
+const LABELS = {
+  move_pct: "ход %", timeframe: "ТФ", hh: "HH", hl: "HL", lh: "LH", ll: "LL",
+  adx: "ADX", rsi: "RSI", atr_pct: "ATR %", bb_width: "BB", stop: "SL",
+  take: "TP", level: "уровень", distance_pct: "дист. %", up: "сверху",
+  down: "снизу", avg_width_pct: "ср. ширина %", max_width_pct: "макс. ширина %",
+  quiet: "тихих", range_pct: "диапазон %", spread_pct: "спред %",
+  longs: "лонгов", shorts: "шортов", days: "дней",
+  max_bar_range_pct: "макс. бар %", poc: "POC", daily: "день",
+  last_spike: "спайк"
+};
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+function fmtPrice(p) {
+  if (!p) return "—";
+  const a = Math.abs(p);
+  if (a >= 1000) return p.toFixed(2);
+  if (a >= 1) return p.toFixed(4);
+  if (a >= 0.01) return p.toFixed(5);
+  return p.toFixed(8);
+}
+
+function fmtTurnover(v) {
+  if (!v) return "—";
+  if (v >= 1e9) return "$" + (v / 1e9).toFixed(2) + "B";
+  if (v >= 1e6) return "$" + (v / 1e6).toFixed(1) + "M";
+  if (v >= 1e3) return "$" + (v / 1e3).toFixed(0) + "K";
+  return "$" + v.toFixed(0);
+}
+
+function fmtTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d)) return "—";
+  return d.toLocaleString("ru-RU", {
+    timeZone: MSK, day: "2-digit", month: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit"
+  });
+}
+
+function fmtClock(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d)) return "—";
+  return d.toLocaleTimeString("ru-RU", { timeZone: MSK, hour: "2-digit",
+    minute: "2-digit", second: "2-digit" });
+}
+
+function fmtArray(items) {
+  return items.map((x) => {
+    if (x && x.period) {
+      return `${x.period}: ${fmtPrice(x.price)} (${x.distance_pct}%)`;
+    }
+    if (x && x.type) {
+      return `${x.type}: ${fmtPrice(x.price)} (${x.distance_pct}%)`;
+    }
+    if (x && x.direction) {
+      return `${x.direction} ${x.move_pct}%`;
+    }
+    return JSON.stringify(x);
+  }).join(", ");
+}
+
+function detailText(detail) {
+  const parts = [];
+  for (const [key, value] of Object.entries(detail || {})) {
+    if (value === null || value === undefined || value === "") continue;
+    if (Array.isArray(value)) {
+      if (value.length) parts.push(fmtArray(value));
+      continue;
+    }
+    if (typeof value === "object") {
+      parts.push(fmtArray([value]));
+      continue;
+    }
+    parts.push(`${LABELS[key] || key}: ${value}`);
+  }
+  return parts.join(" · ") || "—";
+}
+
+function scoreColor(score) {
+  if (score === null || score === undefined) return "#8b98ad";
+  if (score >= 70) return "#2ecc71";
+  if (score >= 40) return "#ffc857";
+  return "#8b98ad";
+}
+
+function filtered() {
+  const q = $("search").value.trim().toUpperCase();
+  const screener = $("fScreener").value;
+  const side = $("fSide").value;
+  const sort = $("fSort").value;
+  let rows = state.signals.filter((s) => {
+    if (q && !String(s.symbol).toUpperCase().includes(q)) return false;
+    if (screener && s.screener !== screener) return false;
+    if (side && s.side !== side) return false;
+    return true;
+  });
+  const score = (s) => (s.score === null || s.score === undefined ? -1 : s.score);
+  rows.sort((a, b) => {
+    if (sort === "score_asc") return score(a) - score(b);
+    if (sort === "time_desc") return String(b.found_at).localeCompare(String(a.found_at));
+    if (sort === "symbol") return a.symbol.localeCompare(b.symbol);
+    if (sort === "screener") return a.screener.localeCompare(b.screener);
+    return score(b) - score(a);
+  });
+  return rows;
+}
+
+function renderTable() {
+  const rows = filtered();
+  const body = $("tbody");
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="8" class="empty">
+      Сигналов нет — ждём следующего сканирования.</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map((s) => {
+    const key = `${s.screener}:${s.symbol}`;
+    const isNew = !seen.has(key);
+    if (isNew) seen.add(key);
+    const sc = s.score === null || s.score === undefined ? null : Number(s.score);
+    const width = sc === null ? 0 : Math.max(0, Math.min(100, sc));
+    const side = esc(s.side || "NEUTRAL");
+    return `<tr class="${isNew ? "new" : ""}">
+      <td class="sym" data-symbol="${esc(s.symbol)}"
+          title="Открыть в Tiger Trade">${esc(s.symbol)}</td>
+      <td><div class="screen-name">${esc(s.title || s.screener)}</div>
+          <div class="screen-name">${esc(s.label || "")}</div></td>
+      <td><span class="badge ${side}">${side}</span></td>
+      <td>${fmtPrice(s.price)}</td>
+      <td class="score">
+        <div class="num" style="color:${scoreColor(sc)}">
+          ${sc === null ? "—" : sc.toFixed(1)}</div>
+        <div class="bar"><span style="width:${width}%;
+          background:${scoreColor(sc)}"></span></div>
+      </td>
+      <td>${fmtTurnover(s.turnover_24h)}</td>
+      <td class="detail">${esc(detailText(s.detail))}</td>
+      <td class="time">${fmtClock(s.found_at)}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderCards() {
+  const cards = $("cards");
+  if (!state.screeners.length) {
+    cards.innerHTML = `<div class="card muted">Скринеры не включены.</div>`;
+    return;
+  }
+  cards.innerHTML = state.screeners.map((s) => {
+    const cls = s.running ? "running" : (s.error ? "error" : "");
+    const status = s.running
+      ? '<span class="pulse"></span>'
+      : (s.error ? "ошибка" : "ожидание");
+    return `<div class="card ${cls}">
+      <div class="top">
+        <b>${esc(s.title)}</b>
+        <span class="muted">${status}</span>
+      </div>
+      <div class="rows">
+        <div><span class="k">Сигналов</span><span>${s.count ?? 0}</span></div>
+        <div><span class="k">Последний скан</span>
+          <span>${s.last_run_at ? fmtClock(s.last_run_at) : "—"}</span></div>
+        <div><span class="k">Длительность</span>
+          <span>${s.duration_sec ? s.duration_sec.toFixed(1) + "с" : "—"}</span></div>
+        <div><span class="k">Следующий</span>
+          <span>${s.next_run_at ? fmtClock(s.next_run_at) : "—"}</span></div>
+      </div>
+      ${s.error ? `<div class="err">${esc(s.error)}</div>` : ""}
+      <button data-scan="${esc(s.name)}" ${s.running ? "disabled" : ""}>
+        ${s.running ? "Сканирует…" : "Сканировать"}</button>
+    </div>`;
+  }).join("");
+  cards.querySelectorAll("button[data-scan]").forEach((btn) => {
+    btn.addEventListener("click", () => scanOne(btn.dataset.scan));
+  });
+}
+
+function render() {
+  $("mSignals").textContent = state.total_signals ?? 0;
+  $("mScreeners").textContent = state.screeners_total ?? 0;
+  $("mErrors").textContent = state.screeners_with_errors ?? 0;
+  $("mUpdated").textContent = fmtClock(state.generated_at);
+  $("updated").textContent = "обновлено " + fmtClock(state.generated_at);
+  $("liveDot").className = "dot";
+  renderTable();
+  renderCards();
+}
+
+function fillScreenerFilter() {
+  const select = $("fScreener");
+  const current = select.value;
+  const options = ['<option value="">Все скринеры</option>'];
+  for (const s of state.screeners) {
+    options.push(`<option value="${esc(s.name)}">${esc(s.title)}</option>`);
+  }
+  select.innerHTML = options.join("");
+  select.value = current;
+}
+
+async function load() {
+  try {
+    const res = await fetch("/api/signals", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    state = await res.json();
+    if (!primed) {
+      state.signals.forEach((s) => seen.add(`${s.screener}:${s.symbol}`));
+      primed = true;
+    }
+    fillScreenerFilter();
+    render();
+  } catch (err) {
+    $("liveDot").className = "dot off";
+    $("updated").textContent = "нет связи с сервером";
+    toast("Нет связи с сервером: " + err.message, true);
+  }
+}
+
+async function post(url) {
+  try {
+    const res = await fetch(url, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+    toast("Сканирование запущено");
+    setTimeout(load, 800);
+  } catch (err) {
+    toast("Не удалось запустить: " + err.message, true);
+  }
+}
+
+function scanOne(name) { post("/api/scan/" + encodeURIComponent(name)); }
+
+async function openTiger(symbol) {
+  try {
+    const res = await fetch("/api/open-tiger", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || data.message || "HTTP " + res.status);
+    }
+    toast(symbol + " — " + data.message);
+  } catch (err) {
+    toast("Tiger: " + err.message, true);
+  }
+}
+
+function toast(text, isError) {
+  const el = $("toast");
+  el.textContent = text;
+  el.className = "toast show" + (isError ? " err" : "");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.className = "toast"; }, 3200);
+}
+
+function schedule() {
+  if (timer) clearInterval(timer);
+  const ms = Number($("interval").value);
+  if (ms > 0) timer = setInterval(load, ms);
+}
+
+$("refresh").addEventListener("click", load);
+$("scanAll").addEventListener("click", () => post("/api/scan"));
+$("tbody").addEventListener("click", (e) => {
+  const cell = e.target.closest("td[data-symbol]");
+  if (cell) openTiger(cell.dataset.symbol);
+});
+$("interval").addEventListener("change", schedule);
+$("search").addEventListener("input", renderTable);
+$("fScreener").addEventListener("change", renderTable);
+$("fSide").addEventListener("change", renderTable);
+$("fSort").addEventListener("change", renderTable);
+
+schedule();
+load();
+</script>
+</body>
+</html>

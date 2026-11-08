@@ -249,7 +249,13 @@ def _detect_triangle_multi(
     if lookbacks is None:
         lookbacks = [300, 200, 100]
 
-    best = (0.0, 0.0, 0.0, None, 0)
+    best: tuple[float, float, float, SqueezeType | None, int] = (
+        0.0,
+        0.0,
+        0.0,
+        None,
+        0,
+    )
 
     for lb in lookbacks:
         norm_upper, norm_lower, comp, stype = _detect_triangle(

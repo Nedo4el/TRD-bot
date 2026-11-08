@@ -6,12 +6,15 @@ POC — цена с максимальным накопленным объемо
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from core.logger import get_logger
 
 logger = get_logger(__name__)
+
+MSK = timezone(timedelta(hours=3))
 
 # Периоды для POC-анализа: (таймфрейм, количество свечей)
 POC_PERIODS = {
@@ -128,11 +131,6 @@ def find_daily_levels(
     """
     if len(hourly_candles) < 24:
         return []
-
-    from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-
-MSK = timezone(timedelta(hours=3))
 
     days: dict[str, list[dict]] = defaultdict(list)
     for c in hourly_candles:
