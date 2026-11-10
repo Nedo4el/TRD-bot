@@ -208,10 +208,52 @@
     .chk-field { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
     .chk-field input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
     .chk-field label { color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer; }
-    @media (max-width: 900px) {
-      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-</style>
+     @media (max-width: 900px) {
+       .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+     }
+     .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin: 20px 0 0; }
+     .tab-btn { background: transparent; border: none; border-bottom: 2px solid transparent;
+       color: var(--muted); padding: 12px 16px; font-size: 13px; font-weight: 600;
+       cursor: pointer; transition: .2s; }
+     .tab-btn:hover { color: var(--text); }
+     .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+     .tab-content { display: none; }
+     .tab-content.active { display: block; }
+     .robots-table { width: 100%; border-collapse: collapse; }
+     .robots-table thead th { background: var(--panel-2); color: var(--muted);
+       text-align: left; font-size: 12px; font-weight: 600; padding: 11px 12px;
+       border-bottom: 1px solid var(--border); }
+     .robots-table tbody td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+     .robots-table tbody tr:hover { background: #151c2b; }
+     .robot-status { display: flex; align-items: center; gap: 8px; }
+     .robot-status .badge { padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
+     .robot-status .badge.on { background: rgba(46, 204, 113, .16); color: var(--green); }
+     .robot-status .badge.off { background: rgba(139, 152, 173, .16); color: var(--muted); }
+     .robot-actions { display: flex; gap: 6px; }
+     .robot-actions button { padding: 6px 12px; font-size: 12px; }
+     .stop-all-btn { margin-top: 12px; }
+   .modal-overlay {
+     position: fixed; inset: 0; background: rgba(5, 8, 14, .72);
+     display: none; align-items: center; justify-content: center; z-index: 60;
+   }
+   .modal-overlay.show { display: flex; }
+   .modal {
+     background: var(--panel); border: 1px solid var(--border);
+     border-radius: 14px; padding: 20px 22px; width: 420px; max-width: 92vw;
+     box-shadow: 0 18px 50px rgba(0,0,0,.5);
+   }
+   .modal h3 { margin: 0 0 14px; font-size: 15px; display: flex;
+     align-items: center; gap: 10px; }
+   .modal .imp-pct { font-size: 30px; font-weight: 800; }
+   .modal .imp-pct.up { color: var(--green); } .modal .imp-pct.dn { color: var(--red); }
+   .modal .rows { display: grid; gap: 8px; font-size: 13px; }
+   .modal .rows div { display: flex; justify-content: space-between; gap: 12px;
+     padding: 7px 10px; background: var(--panel-2); border-radius: 8px; }
+   .modal .rows .k { color: var(--muted); }
+   .modal .close-row { display: flex; justify-content: flex-end; margin-top: 14px; }
+   .modal .close-row button { min-width: 90px; }
+   tr.impulse-row { cursor: pointer; }
+   </style>
 </head>
 <body>
 <div class="wrap">
@@ -233,11 +275,52 @@
       </select>
       <button id="refresh">Обновить</button>
       <button class="primary" id="scanAll">Сканировать всё</button>
+      <button class="panel-toggle" id="toggleImpulsePanel">
+        <span>Импульс</span><span class="arrow">▸</span>
+      </button>
       <button class="panel-toggle" id="toggleAllPanel">
         <span>Все монеты</span><span class="arrow">▸</span>
       </button>
     </div>
   </header>
+
+   <div class="tabs">
+     <button class="tab-btn active" id="tabScreeners">Скринеры</button>
+     <button class="tab-btn" id="tabRobots">Роботы</button>
+   </div>
+
+   <div class="settings-panel" id="impulsePanel">
+    <h3><span class="dot"></span> Импульс — настройки</h3>
+    <div class="chk-field">
+      <input type="checkbox" id="impEnabled" checked />
+      <label for="impEnabled">Включить скринер «Импульс»</label>
+    </div>
+    <div class="sp-grid">
+      <div class="sp-field">
+        <label>Порог импульса % (срабатывать от)</label>
+        <input type="number" id="impMinPct" value="4" min="0.1" max="50" step="0.1" />
+      </div>
+      <div class="sp-field">
+        <label>Свечей подтверждения</label>
+        <input type="number" id="impConfirm" value="2" min="0" max="10" step="1" />
+      </div>
+      <div class="sp-field">
+        <label>Таймфрейм</label>
+        <select id="impTimeframe">
+          <option value="1" selected>1 мин</option>
+          <option value="3">3 мин</option>
+          <option value="5">5 мин</option>
+          <option value="15">15 мин</option>
+          <option value="30">30 мин</option>
+          <option value="60">1 час</option>
+        </select>
+      </div>
+    </div>
+    <div class="sp-actions">
+      <button class="primary" id="impApply">Применить и сканировать</button>
+      <button id="impReset">Сбросить</button>
+    </div>
+  </div>
 
   <div class="settings-panel" id="allPanel">
     <h3><span class="dot"></span> Все монеты — настройки</h3>
@@ -309,6 +392,7 @@
     </div>
   </div>
 
+  <div class="tab-content active" id="contentScreeners">
   <div class="stats">
     <div class="stat"><div class="label">Сигналов сейчас</div>
       <div class="value green" id="mSignals">—</div></div>
@@ -363,8 +447,58 @@
     </table>
   </div>
 
-  <h2>Статус скринеров</h2>
-  <div class="cards" id="cards"></div>
+   <h2>Статус скринеров</h2>
+   <div class="cards" id="cards"></div>
+   </div>
+
+   <div class="tab-content" id="contentRobots">
+     <h2>Управление роботами</h2>
+     <div style="margin-bottom: 12px;">
+       <button class="primary" id="robotRefresh">Обновить статус</button>
+       <button id="robotStopAll" class="stop-all-btn">⏹ Остановить все</button>
+     </div>
+     <div class="table-wrap">
+       <table class="robots-table">
+         <thead>
+           <tr>
+             <th>Робот</th>
+             <th>Статус</th>
+             <th>PID</th>
+             <th>Действия</th>
+           </tr>
+         </thead>
+         <tbody id="robotsBody">
+           <tr><td colspan="4" class="empty">Загрузка…</td></tr>
+         </tbody>
+       </table>
+     </div>
+   </div>
+ </div>
+
+<div class="modal-overlay" id="impulseModal">
+  <div class="modal">
+    <h3>
+      <span class="badge LONG" id="impSide">LONG</span>
+      <span id="impSym">—</span>
+    </h3>
+    <div style="margin-bottom:14px">
+      <span class="imp-pct up" id="impPct">—</span>
+      <span class="muted" style="margin-left:8px">движение импульса</span>
+    </div>
+    <div class="rows">
+      <div><span class="k">Монета</span><span id="impSym2">—</span></div>
+      <div><span class="k">Порог срабатывания</span><span id="impThreshold">—</span></div>
+      <div><span class="k">Сила импульса</span><span id="impLabel">—</span></div>
+      <div><span class="k">Цена</span><span id="impPrice">—</span></div>
+      <div><span class="k">Таймфрейм</span><span id="impTf">—</span></div>
+      <div><span class="k">Оценка</span><span id="impScore">—</span></div>
+      <div><span class="k">Оборот 24ч</span><span id="impTurnover">—</span></div>
+      <div><span class="k">Найдено (МСК)</span><span id="impFound">—</span></div>
+    </div>
+    <div class="close-row">
+      <button id="impClose">Закрыть</button>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -537,7 +671,7 @@ function renderTable() {
       Сигналов нет — ждём следующего сканирования.</td></tr>`;
     return;
   }
-  body.innerHTML = rows.map((s) => {
+  body.innerHTML = rows.map((s, i) => {
     const key = `${s.screener}:${s.symbol}`;
     const isNew = !seen.has(key);
     if (isNew) seen.add(key);
@@ -548,9 +682,10 @@ function renderTable() {
     const chg = d.change_24h_pct !== undefined && d.change_24h_pct !== null ? Number(d.change_24h_pct) : null;
     const atrV = d.atr_pct !== undefined && d.atr_pct !== null ? Number(d.atr_pct) : null;
     const vt = d.volume_trend_pct !== undefined && d.volume_trend_pct !== null ? Number(d.volume_trend_pct) : null;
-    return `<tr class="${isNew ? "new" : ""}">
+    const impCls = s.screener === "impulse" ? " impulse-row" : "";
+    return `<tr class="${isNew ? "new" : ""}${impCls}" data-idx="${i}">
       <td class="sym" data-symbol="${esc(s.symbol)}"
-          title="Открыть в Tiger Trade">${esc(s.symbol)}</td>
+          title="${s.screener === "impulse" ? "Инфо об импульсе" : "Открыть в Tiger Trade"}">${esc(s.symbol)}</td>
       <td><div class="screen-name">${esc(s.title || s.screener)}</div>
           <div class="screen-name">${esc(s.label || "")}</div></td>
       <td><span class="badge ${side}">${side}</span></td>
@@ -712,6 +847,90 @@ function toggleAllPanel() {
   if (show) loadSettings();
 }
 
+// Импульс: настройки + модальное окно
+let impulseSettings = { min_move_pct: 4.0, enabled: true };
+
+async function loadImpulseSettings() {
+  try {
+    const res = await fetch("/api/settings/impulse", { cache: "no-store" });
+    if (!res.ok) return;
+    const s = await res.json();
+    impulseSettings = s;
+    $("impEnabled").checked = s.enabled !== false;
+    $("impMinPct").value = s.min_move_pct ?? 4;
+    $("impConfirm").value = s.confirmation_candles ?? 2;
+    $("impTimeframe").value = s.timeframe || "1";
+  } catch { /* ignore */ }
+}
+
+async function applyImpulseSettings() {
+  const settings = {
+    enabled: $("impEnabled").checked,
+    min_move_pct: parseFloat($("impMinPct").value || "4"),
+    confirmation_candles: parseInt($("impConfirm").value || "2", 10),
+    timeframe: $("impTimeframe").value,
+  };
+  try {
+    const res = await fetch("/api/settings/impulse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(settings),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+    impulseSettings = data.settings;
+    toast("Настройки «Импульс» сохранены, сканирование запущено");
+    setTimeout(load, 800);
+  } catch (err) {
+    toast("Не удалось сохранить: " + err.message, true);
+  }
+}
+
+function resetImpulseSettings() {
+  $("impEnabled").checked = true;
+  $("impMinPct").value = 4;
+  $("impConfirm").value = 2;
+  $("impTimeframe").value = "1";
+}
+
+function toggleImpulsePanel() {
+  const panel = $("impulsePanel");
+  const btn = $("toggleImpulsePanel");
+  const show = !panel.classList.contains("show");
+  panel.classList.toggle("show", show);
+  btn.classList.toggle("active", show);
+  if (show) loadImpulseSettings();
+}
+
+function openImpulseModal(signal) {
+  const d = signal.detail || {};
+  const movePct = Number(d.move_pct ?? 0);
+  const side = signal.side || "NEUTRAL";
+  const badge = $("impSide");
+  badge.className = "badge " + esc(side);
+  badge.textContent = side;
+  $("impSym").textContent = signal.symbol;
+  $("impSym2").textContent = signal.symbol;
+  const pctEl = $("impPct");
+  pctEl.textContent = (movePct > 0 ? "+" : "") + movePct.toFixed(2) + "%";
+  pctEl.className = "imp-pct " + (side === "SHORT" ? "dn" : "up");
+  $("impThreshold").textContent = "≥ " + (impulseSettings.min_move_pct ?? 4) + "%";
+  $("impLabel").textContent = signal.label || "—";
+  $("impPrice").textContent = fmtPrice(signal.price);
+  $("impTf").textContent = (d.timeframe || "—") + " мин";
+  $("impScore").textContent =
+    signal.score === null || signal.score === undefined
+      ? "—"
+      : Number(signal.score).toFixed(0) + " / 100";
+  $("impTurnover").textContent = fmtTurnover(signal.turnover_24h);
+  $("impFound").textContent = fmtTime(signal.found_at);
+  $("impulseModal").classList.add("show");
+}
+
+function closeImpulseModal() {
+  $("impulseModal").classList.remove("show");
+}
+
 async function post(url) {
   try {
     const res = await fetch(url, { method: "POST" });
@@ -760,6 +979,14 @@ function schedule() {
 $("refresh").addEventListener("click", load);
 $("scanAll").addEventListener("click", () => post("/api/scan"));
 $("tbody").addEventListener("click", (e) => {
+  const row = e.target.closest("tr[data-idx]");
+  if (row) {
+    const sig = filtered()[Number(row.dataset.idx)];
+    if (sig && sig.screener === "impulse") {
+      openImpulseModal(sig);
+      return;
+    }
+  }
   const cell = e.target.closest("td[data-symbol]");
   if (cell) openTiger(cell.dataset.symbol);
 });
@@ -771,10 +998,125 @@ $("fSort").addEventListener("change", renderTable);
 $("toggleAllPanel").addEventListener("click", toggleAllPanel);
 $("spApply").addEventListener("click", applySettings);
 $("spReset").addEventListener("click", resetSettings);
+$("toggleImpulsePanel").addEventListener("click", toggleImpulsePanel);
+$("impApply").addEventListener("click", applyImpulseSettings);
+$("impReset").addEventListener("click", resetImpulseSettings);
+$("impClose").addEventListener("click", closeImpulseModal);
+$("impulseModal").addEventListener("click", (e) => {
+  if (e.target === $("impulseModal")) closeImpulseModal();
+});
+
+// Роботы
+let robots = [];
+
+async function loadRobots() {
+  try {
+    const res = await fetch("/api/robots", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    robots = data.robots || [];
+    renderRobots();
+  } catch (err) {
+    toast("Ошибка загрузки роботов: " + err.message, true);
+  }
+}
+
+function renderRobots() {
+  const body = $("robotsBody");
+  if (!robots.length) {
+    body.innerHTML = `<tr><td colspan="4" class="empty">Нет роботов</td></tr>`;
+    return;
+  }
+  body.innerHTML = robots.map((r) => {
+    const status = r.running ? "Запущен" : "Остановлен";
+    const badgeClass = r.running ? "on" : "off";
+    return `<tr>
+      <td><b>${esc(r.name)}</b></td>
+      <td><div class="robot-status">
+        <span class="badge ${badgeClass}">${status}</span></div></td>
+      <td>${r.pid || "—"}</td>
+      <td><div class="robot-actions">
+        ${r.running
+          ? `<button data-stop="${esc(r.name)}">⏹ Стоп</button>`
+          : `<button class="primary" data-start="${esc(r.name)}">▶ Запуск</button>`
+        }
+      </div></td>
+    </tr>`;
+  }).join("");
+  
+  body.querySelectorAll("[data-start]").forEach((btn) => {
+    btn.addEventListener("click", () => startRobot(btn.dataset.start));
+  });
+  body.querySelectorAll("[data-stop]").forEach((btn) => {
+    btn.addEventListener("click", () => stopRobot(btn.dataset.stop));
+  });
+}
+
+async function startRobot(name) {
+  try {
+    const res = await fetch("/api/robots/" + encodeURIComponent(name) + "/start", {
+      method: "POST",
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.message || data.error || "HTTP " + res.status);
+    toast("Робот " + name + " запущен");
+    setTimeout(loadRobots, 500);
+  } catch (err) {
+    toast("Ошибка запуска: " + err.message, true);
+  }
+}
+
+async function stopRobot(name) {
+  try {
+    const res = await fetch("/api/robots/" + encodeURIComponent(name) + "/stop", {
+      method: "POST",
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.message || data.error || "HTTP " + res.status);
+    toast("Робот " + name + " остановлен");
+    setTimeout(loadRobots, 500);
+  } catch (err) {
+    toast("Ошибка остановки: " + err.message, true);
+  }
+}
+
+async function stopAllRobots() {
+  if (!confirm("Остановить все роботы?")) return;
+  try {
+    const res = await fetch("/api/robots/stop-all", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+    const stopped = Object.values(data.results).filter((r) => r.success).length;
+    toast(`Остановлено ${stopped} робот(ов)`);
+    setTimeout(loadRobots, 500);
+  } catch (err) {
+    toast("Ошибка: " + err.message, true);
+  }
+}
+
+function switchTab(tabName) {
+  document.querySelectorAll(".tab-btn").forEach((btn) => btn.classList.remove("active"));
+  document.querySelectorAll(".tab-content").forEach((el) => el.classList.remove("active"));
+  
+  if (tabName === "screeners") {
+    $("tabScreeners").classList.add("active");
+    $("contentScreeners").classList.add("active");
+  } else if (tabName === "robots") {
+    $("tabRobots").classList.add("active");
+    $("contentRobots").classList.add("active");
+    loadRobots();
+  }
+}
+
+$("tabScreeners").addEventListener("click", () => switchTab("screeners"));
+$("tabRobots").addEventListener("click", () => switchTab("robots"));
+$("robotRefresh").addEventListener("click", loadRobots);
+$("robotStopAll").addEventListener("click", stopAllRobots);
 
 schedule();
 load();
 loadSettings();
+loadImpulseSettings();
 </script>
 </body>
 </html>

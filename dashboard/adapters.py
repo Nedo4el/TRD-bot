@@ -18,7 +18,7 @@ from core.logger import get_logger
 from dashboard.config import PROJECT_ROOT, ScreenerEnv, ScreenerSpec
 from dashboard.fetcher import DashboardFetcher
 from dashboard.models import Signal, make_signal
-from dashboard.settings import AllCoinsSettings
+from dashboard.settings import AllCoinsSettings, ImpulseSettings
 
 logger = get_logger(__name__)
 
@@ -98,11 +98,14 @@ async def scan_impulse(spec: ScreenerSpec) -> list[Signal]:
     from bot_screener_impulse.scanner import ImpulseConfig, analyze_symbol
 
     env = _env(spec)
+    dash = ImpulseSettings.load()
+    if not dash.enabled:
+        return []
     cfg = ImpulseConfig(
-        min_move_pct=env.number("MIN_MOVE_PCT", 4.0),
-        confirmation_candles=env.integer("CONFIRMATION_CANDLES", 2),
+        min_move_pct=dash.min_move_pct,
+        confirmation_candles=dash.confirmation_candles,
     )
-    timeframe = env.string("TIMEFRAME", "1")
+    timeframe = dash.timeframe or env.string("TIMEFRAME", "1")
     lookback = env.integer("LOOKBACK_BARS", 100)
     fetcher = _new_fetcher(env)
     universe = await _universe(fetcher, env, spec, 30_000_000)

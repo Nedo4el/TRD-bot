@@ -95,3 +95,59 @@ class AllCoinsSettings:
     def to_dict(self) -> dict[str, Any]:
         """Сериализовать для JSON-API."""
         return asdict(self)
+
+
+IMPULSE_SETTINGS_FILE = DATA_DIR / "impulse_settings.json"
+
+_MIN_PCT_LIMIT = (0.1, 50.0)
+_MAX_CONFIRM = 10
+
+
+@dataclass(slots=True)
+class ImpulseSettings:
+    """Настройки скринера «Импульс» (порог срабатывания %)."""
+
+    min_move_pct: float = 4.0
+    confirmation_candles: int = 2
+    timeframe: str = "1"
+    enabled: bool = True
+
+    @classmethod
+    def load(cls) -> ImpulseSettings:
+        """Прочитать JSON, при ошибке — дефолты."""
+        try:
+            raw = json.loads(IMPULSE_SETTINGS_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return cls()
+        return cls.from_dict(raw)
+
+    def save(self) -> None:
+        """Атомарно записать JSON."""
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        temp = IMPULSE_SETTINGS_FILE.with_suffix(".tmp")
+        payload = json.dumps(asdict(self), ensure_ascii=False, indent=2)
+        temp.write_text(payload, encoding="utf-8")
+        temp.replace(IMPULSE_SETTINGS_FILE)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> ImpulseSettings:
+        """Собрать настройки из произвольного dict (API-вход)."""
+        defaults = cls()
+        min_pct = float(raw.get("min_move_pct", defaults.min_move_pct))
+        min_pct = max(_MIN_PCT_LIMIT[0], min(_MIN_PCT_LIMIT[1], min_pct))
+        confirm = int(raw.get("confirmation_candles", defaults.confirmation_candles))
+        confirm = max(0, min(_MAX_CONFIRM, confirm))
+        timeframe = str(raw.get("timeframe", defaults.timeframe))
+        if timeframe not in ("1", "3", "5", "15", "30", "60"):
+            timeframe = defaults.timeframe
+        enabled = bool(raw.get("enabled", defaults.enabled))
+        return cls(
+            min_move_pct=round(min_pct, 2),
+            confirmation_candles=confirm,
+            timeframe=timeframe,
+            enabled=enabled,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Сериализовать для JSON-API."""
+        return asdict(self)
