@@ -1,27 +1,18 @@
-"""Стратегия robot_trend: мульти-ТФ — 30м (режим) + 5м (триггер).
+"""Стратегия robot_trend: вход на откате к EMA_FAST (без Supertrend).
 
-| # | Индикатор      | ТФ  | Параметры (.env)                | Роль                          |
-|---|----------------|-----|---------------------------------|-------------------------------|
-| 1 | EMA            | 30м | 20 / 50 / 200                   | направление тренда            |
-| 2 | ADX (+DI/-DI)  | 30м | period=14, threshold=25         | сила тренда / допустимая сторона |
-| 3 | Supertrend     | 5м  | ATR=10, factor=3.0 (альты);     | триггер входа + трейлинг-стоп |
-|   |                |     | ATR=55, factor=2.0 (BTC/ETH)    |                               |
-| 4 | Volume SMA     | 5м  | period=20, multiplier=1.3       | подтверждение пробоя          |
-
-Вход (5м флип Supertrend + объём) только в направлении и при силе тренда
-старшего ТФ (EMA + ADX/DI на 30м). Выход: разворот Supertrend на 5м против
-позиции (серверный SL/TP — страховка).
+HTF (старший ТФ) — фильтр направления и силы тренда: EMA + ADX/DI.
+LTF (рабочий ТФ) — вход на откате к EMA_FAST с подтверждением объёмом.
+Выход только по фиксированному стопу или тейку (SL / TAKE).
 """
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
 from core.bybit_client import Candle
-from core.indicators import adx_di, ema, sma, supertrend
+from core.indicators import adx_di, ema, sma
 from core.strategies import BaseStrategy, Signal
-from robot_trend.config import _env_float, _env_int
+from robot_trend.config import _env_bool, _env_float, _env_int
 from robot_trend.state import OpenPosition
 
 
@@ -38,57 +29,47 @@ class Instruction:
 
 @dataclass(frozen=True)
 class TrendParams:
-    """Параметры стратегии (из ``.env``, дефолты из таблицы в docstring)."""
+    """Параметры стратегии (из ``.env``)."""
 
-    timeframe_min: int = 5  # рабочий ТФ (минуты) — триггер входа
-    htf_min: int = 30  # старший ТФ (минуты) — направление + сила
-    htf_warmup: int = 250  # сколько свечей старшего ТФ держим/грузим
-    ema_fast: int = 20
+    timeframe_min: int = 5
+    htf_min: int = 60
+    htf_warmup: int = 250
+    ema_fast: int = 23
     ema_slow: int = 50
     ema_macro: int = 200
     adx_period: int = 14
     adx_threshold: float = 25.0
-    st_atr_period: int = 10
-    st_factor: float = 3.0
-    sl_pct: float = 0.02  # стоп в % от входа
-    tp_pct: float = 0.05  # тейк в % от входа
-    be_trigger_pct: float = 0.02  # BE/trail включаются после +2%
-    be_offset_pct: float = 0.0  # уровень безубытка = вход + offset
-    trail_pct: float = 0.02  # трейлинг: стоп = пик - 2%
+    sl_pct: float = 0.02
+    take_pct: float = 0.10
+    be_trigger_pct: float = 0.0
+    be_offset_pct: float = 0.0
+    trail_pct: float = 0.0
     vol_period: int = 20
     vol_mult: float = 1.3
+    ema_min_spread_pct: float = 0.1
+    entry_on_pullback: bool = True
 
     @classmethod
     def from_env(cls, symbol: str | None = None) -> TrendParams:
-        """Собрать параметры из окружения; профиль Supertrend по символу.
-
-        BTC/ETH — длинный ATR (55) с factor 2.0, остальное — короткий (10/3.0).
-        """
-        sym = (symbol if symbol is not None else os.getenv("SYMBOL", "")).upper()
-        major = sym.startswith(("BTC", "ETH"))
+        """Собрать параметры из окружения."""
         return cls(
             timeframe_min=_env_int("TIMEFRAME", 5),
-            htf_min=_env_int("HTF_TIMEFRAME", 30),
+            htf_min=_env_int("HTF_TIMEFRAME", 60),
             htf_warmup=_env_int("HTF_WARMUP", 250),
-            ema_fast=_env_int("EMA_FAST", 20),
+            ema_fast=_env_int("EMA_FAST", 23),
             ema_slow=_env_int("EMA_SLOW", 50),
             ema_macro=_env_int("EMA_MACRO", 200),
             adx_period=_env_int("ADX_PERIOD", 14),
             adx_threshold=_env_float("ADX_THRESHOLD", 25.0),
-            st_atr_period=_env_int(
-                "ST_ATR_PERIOD_MAJOR" if major else "ST_ATR_PERIOD",
-                55 if major else 10,
-            ),
-            st_factor=_env_float(
-                "ST_FACTOR_MAJOR" if major else "ST_FACTOR", 2.0 if major else 3.0
-            ),
             sl_pct=_env_float("SL_PCT", 0.02),
-            tp_pct=_env_float("TP_PCT", 0.05),
-            be_trigger_pct=_env_float("BE_TRIGGER", 0.02),
+            take_pct=_env_float("TAKE_PCT", 0.10),
+            be_trigger_pct=_env_float("BE_TRIGGER", 0.0),
             be_offset_pct=_env_float("BE_OFFSET", 0.0),
-            trail_pct=_env_float("TRAIL_PCT", 0.02),
-            vol_period=_env_int("VOL_PERIOD", 20),
-            vol_mult=_env_float("VOL_MULT", 1.3),
+            trail_pct=_env_float("TRAIL_PCT", 0.0),
+            vol_period=_env_int("VOLUME_SMA_PERIOD", 20),
+            vol_mult=_env_float("VOLUME_MULTIPLIER", 1.3),
+            ema_min_spread_pct=_env_float("EMA_MIN_SPREAD_PCT", 0.1),
+            entry_on_pullback=_env_bool("ENTRY_ON_PULLBACK", True),
         )
 
     def __post_init__(self) -> None:
@@ -97,7 +78,6 @@ class TrendParams:
             "EMA_SLOW": self.ema_slow,
             "EMA_MACRO": self.ema_macro,
             "ADX_PERIOD": self.adx_period,
-            "ST_ATR_PERIOD": self.st_atr_period,
             "VOL_PERIOD": self.vol_period,
         }
         for name, value in periods.items():
@@ -111,31 +91,34 @@ class TrendParams:
             raise ValueError("HTF_WARMUP должен быть >= EMA_MACRO + 2")
         if self.adx_threshold < 0:
             raise ValueError("ADX_THRESHOLD не может быть < 0")
-        if self.st_factor <= 0:
-            raise ValueError("ST_FACTOR должен быть > 0")
-        if not 0 < self.sl_pct < 1 or not 0 < self.tp_pct < 1:
-            raise ValueError("SL_PCT / TP_PCT должны быть в (0, 1)")
+        if not 0 < self.sl_pct < 1 or not 0 <= self.take_pct < 1:
+            raise ValueError("SL_PCT должен быть в (0, 1), TAKE_PCT — в [0, 1)")
         if min(self.be_trigger_pct, self.be_offset_pct, self.trail_pct) < 0:
             raise ValueError("BE_TRIGGER / BE_OFFSET / TRAIL_PCT не могут быть < 0")
         if self.vol_mult <= 0:
             raise ValueError("VOL_MULT должен быть > 0")
+        if self.ema_min_spread_pct < 0:
+            raise ValueError("EMA_MIN_SPREAD_PCT не может быть < 0")
 
 
 @dataclass(frozen=True)
 class _Snapshot:
-    """Значения 5м-индикаторов на последней закрытой свече."""
+    """Значения рабочего ТФ на последней закрытой свече."""
 
     close: float
-    st_dir: int  # +1 / -1
-    st_flip: int  # смена направления Supertrend на этой свече, иначе 0
+    ema_fast: float
+    ema_slow: float
+    spread_pct: float  # зазор EMA_FAST / EMA_SLOW, %
     vol_ratio: float  # volume / SMA(volume)
+    pullback_long: bool  # отскок от EMA_FAST снизу (лонг)
+    pullback_short: bool  # отскок от EMA_FAST сверху (шорт)
 
 
 @dataclass(frozen=True)
 class _HTFSnapshot:
-    """Значения старшего ТФ (30м): направление и сила тренда."""
+    """Значения старшего ТФ: направление и сила тренда."""
 
-    trend_up: bool  # fast > slow и close > macro
+    trend_up: bool
     trend_down: bool
     adx: float
     di_plus: float
@@ -143,12 +126,21 @@ class _HTFSnapshot:
 
 
 class TrendStrategy(BaseStrategy):
-    """Мульти-ТФ: режим по 30м (EMA + ADX/DI), вход по 5м (ST + объём)."""
+    """Тренд на откате к EMA_FAST: HTF-фильтр + LTF-отскок + объём.
+
+    Вход LONG, когда одновременно:
+      * HTF: EMA_FAST > EMA_SLOW, цена > EMA_MACRO, ADX >= порог, +DI > -DI
+      * LTF: EMA_FAST > EMA_SLOW, зазор >= ema_min_spread_pct, объём >= vol_mult x SMA
+      * Цена откатилась к EMA_FAST (предыдущая свеча дотронулась до него снизу)
+        и отскочила (закрылась выше EMA_FAST).
+
+    Вход SHORT — зеркально.
+
+    Выход: только по серверному SL / TP. Стратегия не закрывает по своему сигналу.
+    """
 
     name = "trend"
-    #: сколько закрытых свечей нужно бэктесту до первого решения
     _min_warmup = 300
-    #: окно пересчёта индикаторов в бэктесте
     _max_lookback = 600
 
     def __init__(self, params: TrendParams | None = None) -> None:
@@ -161,29 +153,45 @@ class TrendStrategy(BaseStrategy):
     # ==================== индикаторы ====================
 
     def _snapshot(self, candles: list[Candle]) -> _Snapshot | None:
-        """Свечи рабочего ТФ: Supertrend и объём (None — данных мало)."""
+        """Рабочий ТФ: EMA, объём, откат к EMA_FAST."""
         p = self.params
-        if len(candles) < max(p.st_atr_period, p.vol_period) + 2:
+        need = max(p.ema_slow, p.vol_period) + 2
+        if len(candles) < need:
             return None
         closes = [c.close for c in candles]
         highs = [c.high for c in candles]
         lows = [c.low for c in candles]
         volumes = [c.volume for c in candles]
 
-        _, st_dir = supertrend(highs, lows, closes, p.st_atr_period, p.st_factor)
+        ema_fast = ema(closes, p.ema_fast)
+        ema_slow = ema(closes, p.ema_slow)
         vol_ma = sma(volumes, p.vol_period)
-        if len(st_dir) < 2 or len(vol_ma) < 2:
+        if len(ema_fast) < 2 or len(ema_slow) < 2 or len(vol_ma) < 2:
             return None
 
+        close = closes[-1]
+        f, s = ema_fast[-1], ema_slow[-1]
+        spread_pct = abs(f - s) / s * 100.0 if s > 0 else 0.0
+        vol_ratio = volumes[-1] / vol_ma[-1] if vol_ma[-1] > 0 else 0.0
+
+        # Откат к EMA_FAST и отскок (на последней закрытой свече):
+        # лонг: дно свечи коснулось EMA_FAST (откат к ней), закрытие выше EMA_FAST (отскок)
+        pullback_long = lows[-1] <= f and close > f
+        # шорт: верх свечи коснулся EMA_FAST, закрытие ниже EMA_FAST
+        pullback_short = highs[-1] >= f and close < f
+
         return _Snapshot(
-            close=closes[-1],
-            st_dir=st_dir[-1],
-            st_flip=st_dir[-1] if st_dir[-1] != st_dir[-2] else 0,
-            vol_ratio=volumes[-1] / vol_ma[-1] if vol_ma[-1] > 0 else 0.0,
+            close=close,
+            ema_fast=f,
+            ema_slow=s,
+            spread_pct=spread_pct,
+            vol_ratio=vol_ratio,
+            pullback_long=pullback_long,
+            pullback_short=pullback_short,
         )
 
     def _htf_snapshot(self, candles: list[Candle]) -> _HTFSnapshot | None:
-        """Свечи старшего ТФ: направление (EMA) и сила (ADX/DI) тренда."""
+        """Старший ТФ: направление (EMA) и сила (ADX/DI) тренда."""
         p = self.params
         if len(candles) < p.ema_macro + 2:
             return None
@@ -212,28 +220,48 @@ class TrendStrategy(BaseStrategy):
         )
 
     def _entry(self, ltf: _Snapshot, htf: _HTFSnapshot) -> str | None:
-        """Сторона входа: триггер 5м в направлении/силе тренда 30м."""
+        """Сторона входа: отскок от EMA_FAST в направлении тренда HTF."""
         p = self.params
-        if ltf.vol_ratio < p.vol_mult or htf.adx < p.adx_threshold:
+        if ltf.vol_ratio < p.vol_mult:
             return None
-        if ltf.st_flip == 1 and htf.trend_up and htf.di_plus > htf.di_minus:
+        if htf.adx < p.adx_threshold:
+            return None
+        if p.ema_min_spread_pct > 0 and ltf.spread_pct < p.ema_min_spread_pct:
+            return None
+
+        if (
+            p.entry_on_pullback
+            and ltf.pullback_long
+            and htf.trend_up
+            and htf.di_plus > htf.di_minus
+            and ltf.ema_fast > ltf.ema_slow
+        ):
             return "long"
-        if ltf.st_flip == -1 and htf.trend_down and htf.di_minus > htf.di_plus:
+        if (
+            p.entry_on_pullback
+            and ltf.pullback_short
+            and htf.trend_down
+            and htf.di_minus > htf.di_plus
+            and ltf.ema_fast < ltf.ema_slow
+        ):
             return "short"
         return None
 
     def _stop_take(self, ltf: _Snapshot, side: str) -> tuple[float, float]:
-        """SL/TP в процентах от цены входа (close свечи сигнала 5м)."""
+        """SL/TP от цены сигнала; TAKE_PCT=0 отключает фиксированный тейк."""
         p = self.params
+        take = (
+            0.0
+            if p.take_pct == 0
+            else ltf.close * (1.0 + p.take_pct if side == "long" else 1.0 - p.take_pct)
+        )
         if side == "long":
-            return (ltf.close * (1.0 - p.sl_pct), ltf.close * (1.0 + p.tp_pct))
-        return (ltf.close * (1.0 + p.sl_pct), ltf.close * (1.0 - p.tp_pct))
+            return (ltf.close * (1.0 - p.sl_pct), take)
+        return (ltf.close * (1.0 + p.sl_pct), take)
 
     def _exit_for(self, ltf: _Snapshot, side: str) -> bool:
-        """Supertrend на 5м развернулся против позиции — выход (трейлинг)."""
-        return (side == "long" and ltf.st_dir == -1) or (
-            side == "short" and ltf.st_dir == 1
-        )
+        """Выход только по стопу/тейку (биржевой). Стратегия не закрывает по сигналу."""
+        return False
 
     # ==================== живой цикл ====================
 
@@ -245,19 +273,9 @@ class TrendStrategy(BaseStrategy):
     ) -> Instruction | None:
         """Решение живого цикла order_flow.
 
-        Args:
-            candles: свечи рабочего ТФ (старые → новые, последняя закрытая).
-            htf_candles: закрытые свечи старшего ТФ.
-            position: открытая позиция или None.
-
-        Returns:
-            Instruction("enter"/"exit") либо None = hold.
+        При открытой позиции возвращает None — выход только по серверному SL/TP.
         """
         if position is not None:
-            # выход не зависит от старшего ТФ — страховка работает всегда
-            ltf = self._snapshot(candles)
-            if ltf is not None and self._exit_for(ltf, position.side):
-                return Instruction(action="exit", reason="supertrend развернулся")
             return None
         ltf = self._snapshot(candles)
         htf = self._htf_snapshot(htf_candles)
@@ -272,7 +290,10 @@ class TrendStrategy(BaseStrategy):
             side=side,
             stop=stop,
             take=take,
-            reason=(f"ST flip {side}, HTF ADX {htf.adx:.1f}, vol {ltf.vol_ratio:.2f}x"),
+            reason=(
+                f"EMA pullback {side}, HTF ADX {htf.adx:.1f}, "
+                f"vol {ltf.vol_ratio:.2f}x, spread {ltf.spread_pct:.2f}%"
+            ),
         )
 
     # ==================== бэктест ====================
@@ -286,30 +307,16 @@ class TrendStrategy(BaseStrategy):
         p = self.params
         deadline = bar.open_time + p.timeframe_min * 60_000
         closed = [c for c in self._htf if c.open_time + p.htf_min * 60_000 <= deadline]
-        # то же окно, что видит live (HTF_WARMUP последних закрытых свечей)
         return closed[-p.htf_warmup :]
 
     def check_signal(self, candles: list[Candle]) -> Signal:
-        """Хук ``backtest.py --strategy trend``.
-
-        Args:
-            candles: свечи рабочего ТФ от старых к новым.
-
-        Returns:
-            Signal(buy/sell/close_long/close_short/hold) с абсолютными SL/TP.
-        """
+        """Хук ``backtest.py --strategy trend``."""
         if not candles:
             return Signal(action="hold", reason="мало свечей")
         ltf = self._snapshot(candles)
         if ltf is None:
             return Signal(action="hold", reason="мало свечей")
         if self._bt_side:
-            if self._exit_for(ltf, self._bt_side):
-                close = "close_long" if self._bt_side == "long" else "close_short"
-                self._bt_side = ""
-                return Signal(
-                    action=close, reason="supertrend развернулся", stop_loss=ltf.close
-                )
             return Signal(action="hold", reason="позиция открыта")
         htf = self._htf_snapshot(self._closed_htf(candles[-1]))
         if htf is None:
@@ -321,7 +328,7 @@ class TrendStrategy(BaseStrategy):
         self._bt_side = side
         return Signal(
             action="buy" if side == "long" else "sell",
-            reason=f"ST flip {side}",
+            reason=f"EMA pullback {side}",
             stop_loss=stop,
             take_profit=take,
         )

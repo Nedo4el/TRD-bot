@@ -222,10 +222,10 @@ def run_backtest(
         for pos in open_positions:
             if pos.side == "Buy":
                 hit_sl = bar.low <= pos.stop_price
-                hit_tp = bar.high >= pos.take_price
+                hit_tp = pos.take_price > 0 and bar.high >= pos.take_price
             else:
                 hit_sl = bar.high >= pos.stop_price
-                hit_tp = bar.low <= pos.take_price
+                hit_tp = pos.take_price > 0 and bar.low <= pos.take_price
 
             if hit_sl:
                 exit_price = pos.stop_price

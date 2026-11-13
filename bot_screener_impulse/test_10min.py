@@ -1,4 +1,4 @@
-"""Быстрый тест: ищет свечи > 3% на 10 минут."""
+"""Быстрый тест: ищет импульсы > 3% на 10 минут."""
 
 from __future__ import annotations
 
@@ -9,13 +9,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bot_screener_impulse.scanner import ImpulseSignal, analyze_symbol
+from bot_screener_impulse.scanner import ImpulseConfig, ImpulseSignal, analyze_symbol
 from bot_screener_klin.fetcher import Fetcher
 from core.config import load_bot_env
 
 load_bot_env(Path("bot_screener_impulse"))
 
-MIN_RANGE_PCT = 3.0
+MIN_MOVE_PCT = 3.0
 RUN_SECONDS = 600
 TIMEFRAME = "5"
 LOOKBACK = 5
@@ -47,22 +47,35 @@ async def scan_once(
 
 
 async def _check_one(
-    fetcher: Fetcher, symbol: str, turnover: float,
+    fetcher: Fetcher,
+    symbol: str,
+    turnover: float,
 ) -> ImpulseSignal | None:
     candles = await fetcher.get_klines(
-        symbol=symbol, interval=TIMEFRAME, limit=LOOKBACK,
+        symbol=symbol,
+        interval=TIMEFRAME,
+        limit=LOOKBACK,
     )
     if not candles:
         return None
+    cfg = ImpulseConfig(
+        min_move_pct=MIN_MOVE_PCT,
+        confirmation_candles=0,
+        window_sec=60,
+        impulse_type="price",
+    )
     return analyze_symbol(
-        symbol, f"{TIMEFRAME}m", candles,
-        min_range_pct=MIN_RANGE_PCT,
+        symbol,
+        f"{TIMEFRAME}m",
+        candles,
+        cfg=cfg,
         turnover_24h=turnover,
     )
 
 
 async def main() -> None:
     import os
+
     api_key = os.getenv("BYBIT_API_KEY", "")
     api_secret = os.getenv("BYBIT_API_SECRET", "")
     testnet = os.getenv("TESTNET", "true").lower() == "true"
@@ -73,12 +86,14 @@ async def main() -> None:
     exclude = {s.strip() for s in raw_exclude.split(",") if s.strip()}
     min_turnover = 500_000.0
 
-    print("")
+    print()
     print("=" * 90)
-    print("  IMPULSE SCREENER: свечи > %.1f%% | TF=%sm | %d сек" % (
-        MIN_RANGE_PCT, TIMEFRAME, RUN_SECONDS))
+    print(
+        "  IMPULSE SCREENER: импульс > %.1f%% | TF=%sm | %d сек"
+        % (MIN_MOVE_PCT, TIMEFRAME, RUN_SECONDS)
+    )
     print("=" * 90)
-    print("")
+    print()
 
     all_signals: list[ImpulseSignal] = []
     seen: set[str] = set()
@@ -101,15 +116,25 @@ async def main() -> None:
                     new += 1
                     arrow = "UP " if s.direction == "LONG" else "DN "
                     print(
-                        "  [%5.0fs] %s %-14s %s %6.2f%%  $%-12.4f turnover=$%.1fM" % (
-                            elapsed, arrow, s.symbol, s.direction,
-                            s.range_percent, s.price, s.turnover_24h / 1e6,
+                        "  [%5.0fs] %s %-14s %s %6.2f%%  $%-12.4f turnover=$%.1fM"
+                        % (
+                            elapsed,
+                            arrow,
+                            s.symbol,
+                            s.direction,
+                            s.move_pct,
+                            s.price,
+                            s.turnover_24h / 1e6,
                         )
                     )
 
             print(
-                "  --- Run #%d: scanned, new=%d, total=%d, remaining %.0fs ---" % (
-                    scan_num, new, len(all_signals), remaining,
+                "  --- Run #%d: scanned, new=%d, total=%d, remaining %.0fs ---"
+                % (
+                    scan_num,
+                    new,
+                    len(all_signals),
+                    remaining,
                 )
             )
 
@@ -119,29 +144,37 @@ async def main() -> None:
         await asyncio.sleep(60)
 
     # Итоговая таблица
-    print("")
+    print()
     print("=" * 90)
-    print("  TOTAL: %d impulses in %ds (%d runs)" % (
-        len(all_signals), RUN_SECONDS, scan_num))
+    print(
+        "  TOTAL: %d impulses in %ds (%d runs)"
+        % (len(all_signals), RUN_SECONDS, scan_num)
+    )
     print("=" * 90)
 
     if all_signals:
-        all_signals.sort(key=lambda s: s.range_percent, reverse=True)
-        print("")
+        all_signals.sort(key=lambda s: s.move_pct, reverse=True)
+        print()
         print("  #   Монета          Направл     Цена       Свеча%%     Оборот")
         print("  " + "-" * 60)
         for i, s in enumerate(all_signals, 1):
             arrow = "UP " if s.direction == "LONG" else "DN "
             print(
-                "  %2d  %-14s  %s %s  $%-10.4f  %5.2f%%  $%.1fM" % (
-                    i, s.symbol, arrow, s.direction,
-                    s.price, s.range_percent, s.turnover_24h / 1e6,
+                "  %2d  %-14s  %s %s  $%-10.4f  %5.2f%%  $%.1fM"
+                % (
+                    i,
+                    s.symbol,
+                    arrow,
+                    s.direction,
+                    s.price,
+                    s.move_pct,
+                    s.turnover_24h / 1e6,
                 )
             )
     else:
         print("\n  No signals found.")
 
-    print("")
+    print()
     print("=" * 90)
 
 

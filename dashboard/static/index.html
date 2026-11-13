@@ -69,7 +69,22 @@
   .stat .label { color: var(--muted); font-size: 12px; }
   .stat .value { font-size: 24px; font-weight: 700; margin-top: 4px; }
   .stat .value.green { color: var(--green); }
-  .stat .value.red { color: var(--red); }
+    .stat .value.red { color: var(--red); }
+    .stat-metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin: 12px 0;
+    }
+    .stat-metric {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px;
+    }
+    .stat-metric .label { color: var(--muted); font-size: 12px; }
+    .stat-metric .value { font-size: 20px; font-weight: 700; margin-top: 4px; }
+    .stat-metric .value.pos { color: var(--green); }
+    .stat-metric .value.neg { color: var(--red); }
+    .stat-metric .value.neutral { color: var(--muted); }
 
   .filters {
     display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
@@ -285,42 +300,57 @@
   </header>
 
    <div class="tabs">
-     <button class="tab-btn active" id="tabScreeners">Скринеры</button>
-     <button class="tab-btn" id="tabRobots">Роботы</button>
-   </div>
+      <button class="tab-btn active" id="tabScreeners">Скринеры</button>
+      <button class="tab-btn" id="tabRobots">Роботы</button>
+      <button class="tab-btn" id="tabStats">Статистика сделок</button>
+    </div>
 
-   <div class="settings-panel" id="impulsePanel">
-    <h3><span class="dot"></span> Импульс — настройки</h3>
-    <div class="chk-field">
-      <input type="checkbox" id="impEnabled" checked />
-      <label for="impEnabled">Включить скринер «Импульс»</label>
-    </div>
-    <div class="sp-grid">
-      <div class="sp-field">
-        <label>Порог импульса % (срабатывать от)</label>
-        <input type="number" id="impMinPct" value="4" min="0.1" max="50" step="0.1" />
-      </div>
-      <div class="sp-field">
-        <label>Свечей подтверждения</label>
-        <input type="number" id="impConfirm" value="2" min="0" max="10" step="1" />
-      </div>
-      <div class="sp-field">
-        <label>Таймфрейм</label>
-        <select id="impTimeframe">
-          <option value="1" selected>1 мин</option>
-          <option value="3">3 мин</option>
-          <option value="5">5 мин</option>
-          <option value="15">15 мин</option>
-          <option value="30">30 мин</option>
-          <option value="60">1 час</option>
-        </select>
-      </div>
-    </div>
-    <div class="sp-actions">
-      <button class="primary" id="impApply">Применить и сканировать</button>
-      <button id="impReset">Сбросить</button>
-    </div>
-  </div>
+  <div class="settings-panel" id="impulsePanel">
+     <h3><span class="dot"></span> Импульс — настройки</h3>
+     <div class="chk-field">
+       <input type="checkbox" id="impEnabled" checked />
+       <label for="impEnabled">Включить скринер «Импульс»</label>
+     </div>
+     <div class="chk-field">
+       <input type="checkbox" id="impNotify" checked />
+       <label for="impNotify">Всплывающее окно при импульсе</label>
+     </div>
+     <div class="sp-grid">
+       <div class="sp-field">
+         <label>Порог импульса % (1–15)</label>
+         <input type="number" id="impMinPct" value="4" min="1" max="15" step="0.1" />
+       </div>
+       <div class="sp-field">
+         <label>Окно анализа</label>
+         <select id="impWindow">
+           <option value="5">5 секунд</option>
+           <option value="60" selected>1 минута</option>
+         </select>
+       </div>
+       <div class="sp-field">
+         <label>Тип импульса</label>
+         <select id="impType">
+           <option value="price" selected>Цена за окно</option>
+           <option value="candle">Тело свечи</option>
+         </select>
+       </div>
+       <div class="sp-field">
+         <label>Таймфрейм (для свечей)</label>
+         <select id="impTimeframe">
+           <option value="1" selected>1 мин</option>
+           <option value="3">3 мин</option>
+           <option value="5">5 мин</option>
+           <option value="15">15 мин</option>
+           <option value="30">30 мин</option>
+           <option value="60">1 час</option>
+         </select>
+       </div>
+     </div>
+     <div class="sp-actions">
+       <button class="primary" id="impApply">Применить и сканировать</button>
+       <button id="impReset">Сбросить</button>
+     </div>
+   </div>
 
   <div class="settings-panel" id="allPanel">
     <h3><span class="dot"></span> Все монеты — настройки</h3>
@@ -452,28 +482,64 @@
    </div>
 
    <div class="tab-content" id="contentRobots">
-     <h2>Управление роботами</h2>
-     <div style="margin-bottom: 12px;">
-       <button class="primary" id="robotRefresh">Обновить статус</button>
-       <button id="robotStopAll" class="stop-all-btn">⏹ Остановить все</button>
-     </div>
-     <div class="table-wrap">
-       <table class="robots-table">
-         <thead>
-           <tr>
-             <th>Робот</th>
-             <th>Статус</th>
-             <th>PID</th>
-             <th>Действия</th>
-           </tr>
-         </thead>
-         <tbody id="robotsBody">
-           <tr><td colspan="4" class="empty">Загрузка…</td></tr>
-         </tbody>
-       </table>
-     </div>
+      <h2>Управление роботами</h2>
+      <div style="margin-bottom: 12px;">
+        <button class="primary" id="robotRefresh">Обновить статус</button>
+        <button id="robotStopAll" class="stop-all-btn">⏹ Остановить все</button>
+      </div>
+      <div class="table-wrap">
+        <table class="robots-table">
+          <thead>
+            <tr>
+              <th>Робот</th>
+              <th>Статус</th>
+              <th>PID</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody id="robotsBody">
+            <tr><td colspan="4" class="empty">Загрузка…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="tab-content" id="contentStats">
+      <h2>Статистика сделок роботов</h2>
+      <div style="margin-bottom: 12px; display: flex; gap: 12px; flex-wrap: wrap; align-items: end;">
+        <div class="sp-field" style="min-width: 160px;">
+          <label>Робот</label>
+          <select id="statRobot">
+            <option value="all">Все роботы</option>
+          </select>
+        </div>
+        <div class="sp-field" style="min-width: 140px;">
+          <label>Период</label>
+          <select id="statDays">
+            <option value="7">7 дней</option>
+            <option value="30" selected>30 дней</option>
+            <option value="90">90 дней</option>
+          </select>
+        </div>
+        <button class="primary" id="statRefresh">Обновить статистику</button>
+        <button id="statClear" style="background: transparent; color: var(--muted);">Очистить историю</button>
+      </div>
+      <div class="stats" id="statMetrics" style="margin-bottom: 16px;"></div>
+      <div class="table-wrap" style="max-height: 50vh;">
+        <table>
+          <thead>
+            <tr>
+              <th>Робот</th><th>Монета</th><th>Сторона</th><th>Цена входа</th>
+              <th>Цена выхода</th><th>PnL</th><th>PnL %</th><th>Причина</th><th>Закрыто (МСК)</th>
+            </tr>
+          </thead>
+          <tbody id="statBody">
+            <tr><td colspan="9" class="empty">Нет данных о сделках.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
    </div>
- </div>
 
 <div class="modal-overlay" id="impulseModal">
   <div class="modal">
@@ -848,7 +914,15 @@ function toggleAllPanel() {
 }
 
 // Импульс: настройки + модальное окно
-let impulseSettings = { min_move_pct: 4.0, enabled: true };
+let impulseSettings = {
+  min_move_pct: 4.0,
+  confirmation_candles: 0,
+  timeframe: "1",
+  window_sec: 60,
+  impulse_type: "price",
+  enabled: true,
+  notify_popup: true,
+};
 
 async function loadImpulseSettings() {
   try {
@@ -857,8 +931,10 @@ async function loadImpulseSettings() {
     const s = await res.json();
     impulseSettings = s;
     $("impEnabled").checked = s.enabled !== false;
+    $("impNotify").checked = s.notify_popup !== false;
     $("impMinPct").value = s.min_move_pct ?? 4;
-    $("impConfirm").value = s.confirmation_candles ?? 2;
+    $("impWindow").value = s.window_sec ?? 60;
+    $("impType").value = s.impulse_type ?? "price";
     $("impTimeframe").value = s.timeframe || "1";
   } catch { /* ignore */ }
 }
@@ -866,9 +942,12 @@ async function loadImpulseSettings() {
 async function applyImpulseSettings() {
   const settings = {
     enabled: $("impEnabled").checked,
+    notify_popup: $("impNotify").checked,
     min_move_pct: parseFloat($("impMinPct").value || "4"),
-    confirmation_candles: parseInt($("impConfirm").value || "2", 10),
+    confirmation_candles: 0,
     timeframe: $("impTimeframe").value,
+    window_sec: parseInt($("impWindow").value || "60", 10),
+    impulse_type: $("impType").value,
   };
   try {
     const res = await fetch("/api/settings/impulse", {
@@ -888,8 +967,10 @@ async function applyImpulseSettings() {
 
 function resetImpulseSettings() {
   $("impEnabled").checked = true;
+  $("impNotify").checked = true;
   $("impMinPct").value = 4;
-  $("impConfirm").value = 2;
+  $("impWindow").value = 60;
+  $("impType").value = "price";
   $("impTimeframe").value = "1";
 }
 
@@ -917,7 +998,7 @@ function openImpulseModal(signal) {
   $("impThreshold").textContent = "≥ " + (impulseSettings.min_move_pct ?? 4) + "%";
   $("impLabel").textContent = signal.label || "—";
   $("impPrice").textContent = fmtPrice(signal.price);
-  $("impTf").textContent = (d.timeframe || "—") + " мин";
+  $("impTf").textContent = (d.timeframe || "—") + (d.window_sec ? " (" + d.window_sec + "с)" : "") + " мин";
   $("impScore").textContent =
     signal.score === null || signal.score === undefined
       ? "—"
@@ -1105,13 +1186,111 @@ function switchTab(tabName) {
     $("tabRobots").classList.add("active");
     $("contentRobots").classList.add("active");
     loadRobots();
+  } else if (tabName === "stats") {
+    $("tabStats").classList.add("active");
+    $("contentStats").classList.add("active");
+    loadStats();
   }
 }
 
 $("tabScreeners").addEventListener("click", () => switchTab("screeners"));
 $("tabRobots").addEventListener("click", () => switchTab("robots"));
+$("tabStats").addEventListener("click", () => switchTab("stats"));
 $("robotRefresh").addEventListener("click", loadRobots);
 $("robotStopAll").addEventListener("click", stopAllRobots);
+
+// ==================== Статистика сделок ====================
+
+let statRobot = "all";
+let statDays = 30;
+
+async function loadStats() {
+  try {
+    const robotSel = $("statRobot");
+    const daysSel = $("statDays");
+    // Заполняем список роботов
+    const resRobots = await fetch("/api/robots", { cache: "no-store" });
+    if (resRobots.ok) {
+      const data = await resRobots.json();
+      const robots = data.robots || [];
+      let options = '<option value="all">Все роботы</option>';
+      for (const r of robots) {
+        options += `<option value="${esc(r.name)}">${esc(r.name)}</option>`;
+      }
+      robotSel.innerHTML = options;
+      robotSel.value = statRobot;
+    }
+    statDays = parseInt(daysSel.value || "30", 10);
+
+    const res = await fetch(
+      `/api/robots/statistics?robot=${encodeURIComponent(statRobot)}&days=${statDays}`,
+      { cache: "no-store" },
+    );
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "ошибка статистики");
+    renderStatMetrics(data.metrics);
+    renderStatTable(data.trades);
+  } catch (err) {
+    $("statBody").innerHTML = `<tr><td colspan="9" class="empty">Ошибка загрузки статистики: ${esc(err.message)}</td></tr>`;
+    $("statMetrics").innerHTML = "";
+    toast("Ошибка статистики: " + err.message, true);
+  }
+}
+
+const fmtSigned = (v) => (v > 0 ? "+" : "") + v.toFixed(2);
+const fmtSignedPct = (v) => (v > 0 ? "+" : "") + v.toFixed(2) + "%";
+const pnlValCls = (v) => (v > 0 ? "pos" : (v < 0 ? "neg" : "neutral"));
+
+function renderStatMetrics(m) {
+  const pf = m.profit_factor === null || m.profit_factor === undefined
+    ? "—"
+    : m.profit_factor === Infinity ? "∞" : m.profit_factor.toFixed(2);
+
+  $("statMetrics").innerHTML = `
+    <div class="stat-metric"><div class="label">Сделок</div><div class="value">${m.trades ?? 0}</div></div>
+    <div class="stat-metric"><div class="label">Винрейт</div><div class="value ${pnlValCls(m.win_rate ?? 0)}">${fmtSignedPct(m.win_rate ?? 0)}</div></div>
+    <div class="stat-metric"><div class="label">Чистый PnL</div><div class="value ${pnlValCls(m.net_pnl ?? 0)}">${fmtSigned(m.net_pnl ?? 0)} USDT</div></div>
+    <div class="stat-metric"><div class="label">Профит-фактор</div><div class="value neutral">${pf}</div></div>
+    <div class="stat-metric"><div class="label">Прибыльных</div><div class="value pos">${m.wins ?? 0}</div></div>
+    <div class="stat-metric"><div class="label">Убыточных</div><div class="value neg">${m.losses ?? 0}</div></div>
+    <div class="stat-metric"><div class="label">Макс. просадка</div><div class="value neg">${fmtSigned(-(m.max_drawdown ?? 0))} USDT</div></div>
+    <div class="stat-metric"><div class="label">Серия выигрышей</div><div class="value neutral">${m.max_win_streak ?? 0}</div></div>
+  `;
+}
+
+function renderStatTable(trades) {
+  const body = $("statBody");
+  if (!trades || !trades.length) {
+    body.innerHTML = `<tr><td colspan="9" class="empty">Нет данных о сделках.</td></tr>`;
+    return;
+  }
+  body.innerHTML = trades.map((t) => {
+    const pnlCls = t.pnl > 0 ? "chg-up" : (t.pnl < 0 ? "chg-dn" : "chg-flat");
+    const sideCls = t.side === "long" ? "LONG" : "SHORT";
+    return `<tr>
+      <td>${esc(t.robot)}</td>
+      <td><b>${esc(t.symbol)}</b></td>
+      <td><span class="badge ${sideCls}">${sideCls}</span></td>
+      <td>${fmtPrice(t.entry_price)}</td>
+      <td>${fmtPrice(t.exit_price)}</td>
+      <td class="${pnlCls}">${fmtSigned(t.pnl)}</td>
+      <td class="${pnlCls}">${fmtSignedPct(t.pnl_pct)}</td>
+      <td class="muted" style="font-size:12px">${esc(t.exit_reason)}</td>
+      <td class="time">${fmtClock(t.closed_at)}</td>
+    </tr>`;
+  }).join("");
+}
+
+$("statRefresh").addEventListener("click", loadStats);
+$("statDays").addEventListener("change", () => {
+  statDays = parseInt($("statDays").value || "30", 10);
+  loadStats();
+});
+$("statRobot").addEventListener("change", () => {
+  statRobot = $("statRobot").value;
+  loadStats();
+});
 
 schedule();
 load();

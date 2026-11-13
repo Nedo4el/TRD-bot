@@ -59,16 +59,18 @@ def print_results(
         arrow = _direction_icon(r.direction)
         strength = _strength_label(r.move_pct)
 
-        rows.append([
-            rank,
-            r.symbol,
-            f"{r.price:.6f}" if r.price < 0.01 else f"{r.price:.4f}",
-            f"{arrow} {r.direction}",
-            f"{r.move_pct:.2f}%",
-            strength,
-            f"${r.turnover_24h / 1_000_000:.0f}M",
-            r.signal_time,
-        ])
+        rows.append(
+            [
+                rank,
+                r.symbol,
+                f"{r.price:.6f}" if r.price < 0.01 else f"{r.price:.4f}",
+                f"{arrow} {r.direction}",
+                f"{r.move_pct:.2f}%",
+                strength,
+                f"${r.turnover_24h / 1_000_000:.0f}M",
+                r.signal_time,
+            ]
+        )
 
     headers = ["#", "Монета", "Цена", "Направл.", "Движение", "Сила", "Оборот", "Время"]
 

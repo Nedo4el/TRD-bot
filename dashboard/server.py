@@ -7,6 +7,7 @@ import threading
 import webbrowser
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from pathlib import Path
 
 import uvicorn
@@ -26,6 +27,7 @@ from dashboard.robots import (
 from dashboard.scheduler import Scheduler
 from dashboard.settings import AllCoinsSettings, ImpulseSettings
 from dashboard.store import SignalStore
+from dashboard.trade_store import TradeStore
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +42,11 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     specs = config.resolved_specs()
     store = SignalStore(specs)
     scheduler = Scheduler(specs, store, config)
+    trade_store = TradeStore()
     app.state.config = config
     app.state.store = store
     app.state.scheduler = scheduler
+    app.state.trade_store = trade_store
     scheduler.start()
     try:
         yield
@@ -200,6 +204,32 @@ async def api_robots_stop_all(request: Request) -> JSONResponse:
     )
 
 
+async def api_robot_statistics(request: Request) -> JSONResponse:
+    """Статистика сделок робота за период."""
+    trade_store: TradeStore = request.app.state.trade_store
+    robot = request.query_params.get("robot", "all")
+    days_raw = request.query_params.get("days", "30")
+    try:
+        days = int(days_raw)
+    except ValueError:
+        days = 30
+    if days < 1 or days > 365:
+        days = 30
+    robot_param: str | None = None if robot == "all" else robot
+    stats = trade_store.stats(robot_param, days)
+    trades = trade_store.get_trades(robot_param, days)
+    return JSONResponse(
+        {
+            "ok": True,
+            "robot": robot or "all",
+            "days": days,
+            "metrics": asdict(stats),
+            "trades": [t.to_dict() for t in trades[:200]],
+        },
+        headers=_NO_CACHE,
+    )
+
+
 async def api_open_tiger(request: Request) -> JSONResponse:
     """Открыть инструмент в терминале Tiger Trade через его локальный API."""
     config: DashboardConfig = request.app.state.config
@@ -265,6 +295,7 @@ def create_app() -> Starlette:
         Route("/api/robots/{name}/start", api_robot_start, methods=["POST"]),
         Route("/api/robots/{name}/stop", api_robot_stop, methods=["POST"]),
         Route("/api/robots/stop-all", api_robots_stop_all, methods=["POST"]),
+        Route("/api/robots/statistics", api_robot_statistics, methods=["GET"]),
         Route("/favicon.ico", lambda request: Response(status_code=204)),
     ]
     return Starlette(routes=routes, lifespan=lifespan)

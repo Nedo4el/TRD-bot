@@ -94,7 +94,7 @@ async def _batched(
 
 
 async def scan_impulse(spec: ScreenerSpec) -> list[Signal]:
-    """Импульс: движение тела свечи >= MIN_MOVE_PCT с подтверждением."""
+    """Импульс: движение цены за rolling-окно >= min_move_pct."""
     from bot_screener_impulse.scanner import ImpulseConfig, analyze_symbol
 
     env = _env(spec)
@@ -104,6 +104,8 @@ async def scan_impulse(spec: ScreenerSpec) -> list[Signal]:
     cfg = ImpulseConfig(
         min_move_pct=dash.min_move_pct,
         confirmation_candles=dash.confirmation_candles,
+        window_sec=dash.window_sec,
+        impulse_type=dash.impulse_type,
     )
     timeframe = dash.timeframe or env.string("TIMEFRAME", "1")
     lookback = env.integer("LOOKBACK_BARS", 100)
@@ -136,6 +138,8 @@ async def scan_impulse(spec: ScreenerSpec) -> list[Signal]:
                 detail={
                     "move_pct": round(result.move_pct, 2),
                     "timeframe": timeframe,
+                    "window_sec": result.window_sec,
+                    "impulse_type": cfg.impulse_type,
                 },
             )
         ]

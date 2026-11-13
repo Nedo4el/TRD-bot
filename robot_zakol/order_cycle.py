@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from core.config import PROJECT_ROOT
+from dashboard.trade_store import TradeStore
 from robot_zakol.config import ZakolConfig
 from robot_zakol.risk import (
     cooldown_remaining,
@@ -37,6 +38,8 @@ from robot_zakol.state import (
 )
 
 logger = logging.getLogger(__name__)
+
+ROBOT_NAME = Path(__file__).resolve().parent.name
 
 
 class FeedProtocol(Protocol):
@@ -96,6 +99,7 @@ class OrderCycle:
         self._ttl_backoff = 0.0
         # последняя причина запрета входа (чтобы не спамить лог каждый цикл)
         self._gate_reason: str | None = None
+        self._trades = TradeStore()
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -777,12 +781,28 @@ class OrderCycle:
         st.last_close_at = time.time()
         st.position = None
         st.phase = PHASE_IDLE
+        self._record_trade(pos, pnl, reason)
         if not st.kill and self._kill_by_equity():
             await self._trigger_kill(reason)
         else:
             logger.info("close %s pnl=%.2f", reason, pnl)
             self._notify(f"zakol close {reason}: pnl={pnl:+.2f}")
         await self.store.save()
+
+    def _record_trade(self, pos: OpenPosition, pnl: float, reason: str) -> None:
+        """Записать закрытую сделку в хранилище дашборда (статистика)."""
+        try:
+            self._trades.add_closed(
+                robot=ROBOT_NAME,
+                symbol=self.cfg.symbol,
+                side=pos.side,
+                entry_price=pos.entry_price,
+                qty=pos.qty,
+                pnl=pnl,
+                exit_reason=reason,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("trade record: %s", exc)
 
     async def _exit_pnl(self, pos: OpenPosition, reason: str) -> float:
         """PnL закрытия: для exchange_exit берём факт с биржи, не текущую цену."""
@@ -1001,6 +1021,8 @@ class OrderCycle:
                 st.day_pnl += realized
                 st.day_trades += 1
                 st.last_close_at = time.time()
+                if st.position is not None:
+                    self._record_trade(st.position, realized, "external")
                 logger.warning(
                     "позиция закрыта вне бота: pnl=%.4f (closedPnl, REST)",
                     realized,

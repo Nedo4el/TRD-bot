@@ -108,9 +108,12 @@ class ImpulseSettings:
     """Настройки скринера «Импульс» (порог срабатывания %)."""
 
     min_move_pct: float = 4.0
-    confirmation_candles: int = 2
+    confirmation_candles: int = 0
     timeframe: str = "1"
+    window_sec: int = 60
+    impulse_type: str = "price"
     enabled: bool = True
+    notify_popup: bool = True
 
     @classmethod
     def load(cls) -> ImpulseSettings:
@@ -140,12 +143,22 @@ class ImpulseSettings:
         timeframe = str(raw.get("timeframe", defaults.timeframe))
         if timeframe not in ("1", "3", "5", "15", "30", "60"):
             timeframe = defaults.timeframe
+        window_sec = int(raw.get("window_sec", defaults.window_sec))
+        if window_sec not in (5, 60):
+            window_sec = defaults.window_sec
+        impulse_type = str(raw.get("impulse_type", defaults.impulse_type))
+        if impulse_type not in ("price", "candle"):
+            impulse_type = defaults.impulse_type
         enabled = bool(raw.get("enabled", defaults.enabled))
+        notify_popup = bool(raw.get("notify_popup", defaults.notify_popup))
         return cls(
             min_move_pct=round(min_pct, 2),
             confirmation_candles=confirm,
             timeframe=timeframe,
+            window_sec=window_sec,
+            impulse_type=impulse_type,
             enabled=enabled,
+            notify_popup=notify_popup,
         )
 
     def to_dict(self) -> dict[str, Any]:

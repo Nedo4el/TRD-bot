@@ -24,6 +24,7 @@ from typing import Any
 
 from core.bybit_client import BybitClient, Candle, Position
 from core.notifier import Notifier
+from dashboard.trade_store import TradeStore
 from robot_flat.config import FlatConfig
 from robot_flat.data_feed import DataFeed
 from robot_flat.risk import (
@@ -51,6 +52,8 @@ FILL_RETRIES = 5
 FILL_DELAY = 0.2
 # входная лимитка может ждать касания уровня — ждём дольше
 ENTRY_FILL_RETRIES = 15
+
+ROBOT_NAME = Path(__file__).resolve().parent.name
 
 
 def _utc_day() -> str:
@@ -80,6 +83,7 @@ class OrderFlow:
         self._stop = asyncio.Event()
         self._last_decided: float = 0.0
         self._gate_logged: str | None = None
+        self._trades = TradeStore()
 
     # ==================== жизненный цикл ====================
 
@@ -483,6 +487,7 @@ class OrderFlow:
     async def _finalize_close(self, pnl: float, reason: str) -> None:
         """Сбросить позицию в state и обновить счётчики (день/сессия)."""
         st = self.store.state
+        pos = st.position
         st.position = None
         st.phase = PHASE_IDLE
         st.last_close_at = time.time()
@@ -491,6 +496,8 @@ class OrderFlow:
         st.session_pnl += pnl
         st.peak_session_pnl = max(st.peak_session_pnl, st.session_pnl)
         await self.store.save()
+        if pos is not None:
+            self._record_trade(pos, pnl, reason)
         logger.info(
             "позиция закрыта (%s): pnl=%+.2f день=%+.2f/%d",
             reason,
@@ -499,6 +506,21 @@ class OrderFlow:
             st.day_trades,
         )
         self._notify(f"flat: закрыта ({reason}), PnL {pnl:+.2f} USDT")
+
+    def _record_trade(self, pos: OpenPosition, pnl: float, reason: str) -> None:
+        """Записать закрытую сделку в хранилище дашборда (статистика)."""
+        try:
+            self._trades.add_closed(
+                robot=ROBOT_NAME,
+                symbol=self.cfg.symbol,
+                side=pos.side,
+                entry_price=pos.entry_price,
+                qty=pos.qty,
+                pnl=pnl,
+                exit_reason=reason,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("trade record: %s", exc)
 
     # ==================== kill-switch / день ====================
 

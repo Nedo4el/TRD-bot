@@ -7,8 +7,6 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-
-MSK = timezone(timedelta(hours=3))
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -21,13 +19,15 @@ from dotenv import load_dotenv
 
 load_dotenv(PROJECT_ROOT / "bot_screener_impulse" / ".env")
 
-from bot_screener_impulse.scanner import analyze_symbol
+from bot_screener_impulse.scanner import ImpulseConfig, analyze_symbol
 from bot_screener_klin.fetcher import Fetcher
+
+MSK = timezone(timedelta(hours=3))
 
 
 async def scan_all(
     fetcher: Fetcher,
-    min_range_pct: float = 1.0,
+    min_move_pct: float = 1.0,
     lookback: int = 50,
     min_turnover: float = 500_000,
     max_price: float = 100.0,
@@ -40,13 +40,20 @@ async def scan_all(
     filtered = await fetcher.get_filtered_symbols(min_turnover)
     filtered = [(s, t) for s, t in filtered if s not in exclude][:scan_limit]
 
+    cfg = ImpulseConfig(
+        min_move_pct=min_move_pct,
+        confirmation_candles=0,
+        window_sec=60,
+        impulse_type="price",
+    )
+
     signals = []
     batch_size = 15
     for i in range(0, len(filtered), batch_size):
         batch = filtered[i : i + batch_size]
         tasks = []
         for sym, turnover in batch:
-            tasks.append(_scan_one(fetcher, sym, turnover, lookback, min_range_pct))
+            tasks.append(_scan_one(fetcher, sym, turnover, lookback, cfg))
         batch_results = await asyncio.gather(*tasks)
         for r in batch_results:
             if r and (max_price <= 0 or r["price"] <= max_price):
@@ -60,12 +67,14 @@ async def _scan_one(
     symbol: str,
     turnover: float,
     lookback: int,
-    min_range_pct: float,
+    cfg: ImpulseConfig,
 ) -> dict | None:
     """Скан одной монеты."""
     try:
         candles = await fetcher.get_klines(
-            symbol=symbol, interval="5", limit=lookback,
+            symbol=symbol,
+            interval="5",
+            limit=lookback,
         )
         if not candles or len(candles) < 2:
             return None
@@ -74,9 +83,8 @@ async def _scan_one(
             symbol=symbol,
             timeframe="5m",
             candles=candles,
-            min_range_pct=min_range_pct,
+            cfg=cfg,
             turnover_24h=turnover,
-            freshness=5,
         )
         if not sig:
             return None
@@ -85,8 +93,8 @@ async def _scan_one(
             "symbol": sig.symbol,
             "price": sig.price,
             "direction": sig.direction,
-            "range_percent": sig.range_percent,
-            "candles_ago": sig.candles_ago,
+            "range_percent": sig.move_pct,
+            "candles_ago": 0,
             "turnover_24h": sig.turnover_24h,
             "signal_time": sig.signal_time,
         }
@@ -138,7 +146,9 @@ def format_report(
         dirs = [s["direction"] for s in sigs]
         long_count = dirs.count("LONG")
         short_count = dirs.count("SHORT")
-        dir_str = f"L:{long_count} S:{short_count}" if long_count and short_count else dirs[0]
+        dir_str = (
+            f"L:{long_count} S:{short_count}" if long_count and short_count else dirs[0]
+        )
         lines.append(f"{symbol:<16} {len(sigs):>8} {max_pct:>7.1f}% {dir_str:>12}")
 
     lines.append("-" * 70)
@@ -170,7 +180,7 @@ def format_report(
     return "\n".join(lines)
 
 
-async def main():
+async def main() -> None:
     """Основной цикл: сканировать 2 часа."""
     api_key = os.getenv("BYBIT_API_KEY", "")
     api_secret = os.getenv("BYBIT_API_SECRET", "")
@@ -178,7 +188,7 @@ async def main():
 
     fetcher = Fetcher(api_key=api_key, api_secret=api_secret, testnet=testnet)
 
-    min_range_pct = 3.0
+    min_move_pct = 3.0
     lookback = 50
     min_turnover = 10_000_000
     scan_interval = 15
@@ -190,9 +200,9 @@ async def main():
     end_time_scan = time.time() + duration_sec
 
     print(f"Старт: {start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    print(f"Длительность: 90 минут")
+    print("Длительность: 90 минут")
     print(f"Интервал: {scan_interval} сек")
-    print(f"Мин. импульс: {min_range_pct}%")
+    print(f"Мин. импульс: {min_move_pct}%")
     print(f"Мин. оборот: ${min_turnover:,.0f}")
     print(f"Монет: до {scan_limit}")
     print()
@@ -209,7 +219,7 @@ async def main():
         try:
             signals = await scan_all(
                 fetcher,
-                min_range_pct=min_range_pct,
+                min_move_pct=min_move_pct,
                 lookback=lookback,
                 min_turnover=min_turnover,
                 max_price=max_price,
@@ -225,7 +235,9 @@ async def main():
                     all_signals.append(s)
                     new_count += 1
 
-            print(f"найдено: {len(signals)}, новых: {new_count}, всего: {len(all_signals)}")
+            print(
+                f"найдено: {len(signals)}, новых: {new_count}, всего: {len(all_signals)}"
+            )
         except Exception as e:
             print(f"ошибка: {e}")
 

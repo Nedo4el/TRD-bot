@@ -333,10 +333,10 @@ def _trend_candles(
     resume: int = 4,
     vol: float = 600.0,
 ) -> list[Candle]:
-    """Флэт → рост → откат (Supertrend вниз) → возобновление (вверх).
+    """Флэт → рост → откат → возобновление.
 
-    На последней свече resume=4 происходит флип Supertrend вверх при
-    выполненном ADX/EMA/объёме — стратегия даёт вход long.
+    На последних двух свечах происходит отскок от EMA_FAST:
+    précédente свеча падает к EMA_FAST (откат), текущая закрывается выше неё.
     """
     out: list[Candle] = []
     price = 100.0
@@ -358,6 +358,10 @@ def _trend_candles(
         add(price, price * 0.99, 150.0)
     for _ in range(resume):
         add(price, price * 1.012, vol)
+    # отскок от EMA_FAST: свеча падает глубоко (дотрагивается до EMA),
+    # затем закрывается nettement выше неё
+    add(price, price * 0.95, vol)
+    add(price * 0.95, price * 0.95 * 1.08, vol)
     return out
 
 
@@ -389,13 +393,14 @@ def _htf_candles(direction: int = 1, flat: int = 200, trend: int = 30) -> list[C
 
 def test_params_defaults_match_table() -> None:
     p = TrendParams()
-    assert (p.timeframe_min, p.htf_min, p.htf_warmup) == (5, 30, 250)
-    assert (p.ema_fast, p.ema_slow, p.ema_macro) == (20, 50, 200)
+    assert (p.timeframe_min, p.htf_min, p.htf_warmup) == (5, 60, 250)
+    assert (p.ema_fast, p.ema_slow, p.ema_macro) == (23, 50, 200)
     assert (p.adx_period, p.adx_threshold) == (14, 25.0)
-    assert (p.st_atr_period, p.st_factor) == (10, 3.0)
-    assert (p.sl_pct, p.tp_pct) == (0.02, 0.05)
-    assert (p.be_trigger_pct, p.be_offset_pct, p.trail_pct) == (0.02, 0.0, 0.02)
+    assert (p.sl_pct, p.take_pct) == (0.02, 0.10)
+    assert (p.be_trigger_pct, p.be_offset_pct, p.trail_pct) == (0.0, 0.0, 0.0)
     assert (p.vol_period, p.vol_mult) == (20, 1.3)
+    assert p.ema_min_spread_pct == 0.1
+    assert p.entry_on_pullback is True
 
 
 def test_params_validation() -> None:
@@ -405,6 +410,8 @@ def test_params_validation() -> None:
         TrendParams(vol_period=1)
     with pytest.raises(ValueError, match="SL_PCT"):
         TrendParams(sl_pct=0.0)
+    with pytest.raises(ValueError, match="TAKE_PCT"):
+        TrendParams(take_pct=-0.01)
     with pytest.raises(ValueError, match="TRAIL_PCT"):
         TrendParams(trail_pct=-0.01)
     with pytest.raises(ValueError, match="ADX_THRESHOLD"):
@@ -416,29 +423,15 @@ def test_params_validation() -> None:
 
 
 def test_params_from_env_symbol_profile(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in (
-        "ST_ATR_PERIOD",
-        "ST_FACTOR",
-        "ST_ATR_PERIOD_MAJOR",
-        "ST_FACTOR_MAJOR",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    # BTC/ETH — длинный профиль
-    assert TrendParams.from_env("BTCUSDT").st_atr_period == 55
-    assert TrendParams.from_env("ETHUSDT").st_factor == 2.0
-    # альты — короткий
-    assert TrendParams.from_env("ADAUSDT").st_atr_period == 10
-    assert TrendParams.from_env("ADAUSDT").st_factor == 3.0
-    # override из окружения
-    monkeypatch.setenv("ST_ATR_PERIOD", "14")
-    assert TrendParams.from_env("SOLUSDT").st_atr_period == 14
-    monkeypatch.setenv("ADX_THRESHOLD", "30")
-    assert TrendParams.from_env("SOLUSDT").adx_threshold == 30.0
     # ТФ берутся из окружения
     monkeypatch.setenv("TIMEFRAME", "15")
     monkeypatch.setenv("HTF_TIMEFRAME", "60")
     p = TrendParams.from_env("SOLUSDT")
     assert (p.timeframe_min, p.htf_min) == (15, 60)
+    monkeypatch.setenv("ADX_THRESHOLD", "30")
+    assert TrendParams.from_env("SOLUSDT").adx_threshold == 30.0
+    monkeypatch.setenv("TAKE_PCT", "0.15")
+    assert TrendParams.from_env("SOLUSDT").take_pct == 0.15
 
 
 def test_decide_hold_on_insufficient_data() -> None:
@@ -451,11 +444,13 @@ def test_decide_hold_on_insufficient_data() -> None:
     assert strat.decide(_trend_candles(), [], None) is None
 
 
-def test_decide_enter_long_on_supertrend_flip() -> None:
+def test_decide_enter_long_on_ema_pullback() -> None:
     strat = TrendStrategy()
     candles = _trend_candles()
     ltf = strat._snapshot(candles)
-    assert ltf is not None and ltf.st_flip == 1
+    assert ltf is not None
+    # после отката и возобновления роста цена выше EMA_FAST, предыдущая дотронулась до него
+    assert ltf.pullback_long
     htf = strat._htf_snapshot(_htf_candles())
     assert htf is not None and htf.trend_up
     assert strat._entry(ltf, htf) == "long"
@@ -463,10 +458,10 @@ def test_decide_enter_long_on_supertrend_flip() -> None:
     ins = strat.decide(candles, _htf_candles(), None)
     assert ins is not None and ins.action == "enter"
     assert ins.side == "long"
-    # стоп/тейк в процентах от цены входа: -2% / +5%
+    # стоп -2%, тейк +10% от цены входа
     assert ins.stop == pytest.approx(ltf.close * 0.98)
-    assert ins.take == pytest.approx(ltf.close * 1.05)
-    assert "ST flip long" in ins.reason
+    assert ins.take == pytest.approx(ltf.close * 1.10)
+    assert "EMA pullback long" in ins.reason
     assert "HTF ADX" in ins.reason
 
 
@@ -488,14 +483,14 @@ def test_htf_snapshot_direction_and_strength() -> None:
 
 def test_entry_requires_htf_direction() -> None:
     strat = TrendStrategy()
-    ltf = strat._snapshot(_trend_candles())  # флип Supertrend вверх
-    assert ltf is not None and ltf.st_flip == 1
+    ltf = strat._snapshot(_trend_candles())
+    assert ltf is not None and ltf.pullback_long
     up = strat._htf_snapshot(_htf_candles(1))
     down = strat._htf_snapshot(_htf_candles(-1))
     assert up is not None and down is not None
-    # направление 30м совпадает — вход есть
+    # направление HTF совпадает — вход есть
     assert strat._entry(ltf, up) == "long"
-    # 30м вниз — лонг запрещён
+    # HTF вниз — лонг запрещён
     assert strat._entry(ltf, down) is None
     # слабый тренд старшего ТФ (ADX < порога) — входа нет
     weak = dataclasses.replace(up, adx=10.0)
@@ -528,8 +523,16 @@ def test_decide_no_entry_when_adx_filter_blocks() -> None:
 
 
 def test_entry_short_and_stop_take_mirror() -> None:
-    # зеркальный путь: разворот вниз + медвежий режим старшего ТФ
-    ltf = _Snapshot(close=100.0, st_dir=-1, st_flip=-1, vol_ratio=2.0)
+    # зеркальный путь: отскок вниз + медвежий режим старшего ТФ
+    ltf = _Snapshot(
+        close=100.0,
+        ema_fast=99.0,
+        ema_slow=100.0,
+        spread_pct=1.0,
+        vol_ratio=2.0,
+        pullback_long=False,
+        pullback_short=True,
+    )
     htf = _HTFSnapshot(
         trend_up=False, trend_down=True, adx=30.0, di_plus=5.0, di_minus=50.0
     )
@@ -537,40 +540,34 @@ def test_entry_short_and_stop_take_mirror() -> None:
     assert strat._entry(ltf, htf) == "short"
     stop, take = strat._stop_take(ltf, "short")
     assert stop == pytest.approx(100.0 * 1.02)
-    assert take == pytest.approx(100.0 * 0.95)
-    # тот же триггер без флипа/объёма — входа нет
-    assert strat._entry(dataclasses.replace(ltf, st_flip=0), htf) is None
+    assert take == pytest.approx(100.0 * 0.90)
+    # без отскака — входа нет
+    assert strat._entry(dataclasses.replace(ltf, pullback_short=False), htf) is None
     assert strat._entry(dataclasses.replace(ltf, vol_ratio=0.5), htf) is None
     # старший ТФ вверх — шорт запрещён
     up = dataclasses.replace(htf, trend_up=True, trend_down=False)
     assert strat._entry(ltf, up) is None
 
 
-def test_decide_exit_on_supertrend_flip_against_position() -> None:
-    # выход живёт на 5м и не зависит от старшего ТФ (передаём [])
+def test_decide_hold_when_position_open() -> None:
+    # с открытой позицией стратегия не закрывает по сигналу:
+    # выход только по серверному SL / TP биржи
     strat = TrendStrategy()
     pos = OpenPosition(entry_price=110.0, qty=0.1, side="long")
-    # откат перевёл Supertrend вниз → выход
-    crash = _trend_candles(resume=0)
-    ins = strat.decide(crash, [], pos)
-    assert ins is not None and ins.action == "exit"
-    assert "supertrend" in ins.reason
-    # тренд жив — выхода нет
     assert strat.decide(_trend_candles(), [], pos) is None
-    # шорт: рост против него → выход, падение в пользу → hold
+    assert strat.decide(_trend_candles(resume=0), [], pos) is None
     short = OpenPosition(entry_price=110.0, qty=0.1, side="short")
-    assert strat.decide(_trend_candles(), [], short) is not None
-    assert strat.decide(crash, [], short) is None
+    assert strat.decide(_trend_candles(), [], short) is None
 
 
-def test_check_signal_entry_then_exit() -> None:
+def test_check_signal_entry_then_hold() -> None:
     strat = TrendStrategy()
     assert strat.check_signal([]).action == "hold"
     # без свечей старшего ТФ вход невозможен
     no_htf = strat.check_signal(_trend_candles())
     assert no_htf.action == "hold" and "старшего ТФ" in no_htf.reason
 
-    # длинный рабочий ряд: к концу накопилось достаточно закрытых 30м свечей
+    # длинный рабочий ряд: к концу накопилось достаточно закрытых HTF свечей
     strat.set_htf(_htf_candles())
     candles = _trend_candles(flat=1300)
     sig = strat.check_signal(candles)
@@ -579,24 +576,22 @@ def test_check_signal_entry_then_exit() -> None:
     # позиция в памяти — повторного входа нет
     assert strat.check_signal(candles).action == "hold"
 
-    close = strat.check_signal(_trend_candles(flat=1300, resume=0))
-    assert close.action == "close_long"
-    # сброс памяти после закрытия сделки
+    # после закрытия сделки память сбрасывается и тот же сигнал снова валиден
     strat.on_position_closed("long")
-    after = strat.check_signal(_trend_candles(flat=1300, resume=0))
-    assert after.action == "hold"
+    after = strat.check_signal(candles)
+    assert after.action == "buy"
 
 
 def test_closed_htf_no_hindsight() -> None:
-    # свечи30м считаются закрытыми только к моменту закрытия5м-свечи
+    # свечи HTF считаются закрытыми только к моменту закрытия рабочей свечи
     strat = TrendStrategy()
     strat.set_htf(_htf_candles())
-    # закрытие первой5м-свечи (t=300с):30м-свеча [0..30м) ещё открыта
+    # закрытие первой 5м-свечи (t=300с): HTF-свеча [0..60м) ещё открыта
     assert strat._closed_htf(Candle(0, 100.0, 101.0, 99.0, 100.0, 1.0)) == []
-    # закрытие в t=30м: свеча [0..30м) закрыта и включается, [30м..60м) — нет
-    closed = strat._closed_htf(Candle(1_500_000, 100.0, 101.0, 99.0, 100.0, 1.0))
+    # закрытие в t=60м: HTF-свеча [0..60м) закрыта и включается
+    closed = strat._closed_htf(Candle(3_600_000, 100.0, 101.0, 99.0, 100.0, 1.0))
     assert closed and closed[-1].open_time == 0
-    assert all(c.open_time + 1_800_000 <= 1_800_000 for c in closed)
+    assert all(c.open_time + 3_600_000 <= 3_600_000 for c in closed)
 
 
 # ============================== фейки для order_flow ==============================
