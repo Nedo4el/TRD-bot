@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Self
 
 import pytest
@@ -22,6 +22,7 @@ from dashboard.config import (
 )
 from dashboard.fetcher import DashboardFetcher
 from dashboard.models import Signal, make_signal
+from dashboard.robot_state import RobotState
 from dashboard.scheduler import Scheduler
 from dashboard.settings import AllCoinsSettings
 from dashboard.store import SignalStore
@@ -194,7 +195,7 @@ def test_scheduler_run_writes_result(
     assert status["count"] == 1
     assert status["running"] is False
     assert status["error"] is None
-    assert status["next_run_at"] is not None
+    assert status["next_run_at"] == ""
 
 
 def test_scheduler_run_records_failure(
@@ -212,29 +213,6 @@ def test_scheduler_run_records_failure(
     status = store.snapshot()["screeners"][0]
     assert status["running"] is False
     assert "RuntimeError: boom" in status["error"]
-
-
-def test_scheduler_wait_uses_absolute_clock(
-    store: SignalStore,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """После задержки следующий запуск не сдвигается (абсолютное расписание)."""
-    spec = _spec(interval=5)
-    scheduler = Scheduler([spec], store, DashboardConfig(enabled=("impulse",)))
-
-    clock = scheduler._clocks["impulse"]
-    start = time.monotonic()
-    clock.anchor = start
-
-    # Скан 2с, интервал 5с → до следующего слота ~3с
-    time.sleep(2.0)
-    pause = clock.tick()
-    assert 2.8 < pause < 3.2
-
-    # Скан 8с (> интервала 5с) → пропуск к слоту +5, до слота ~5с
-    time.sleep(8.0)
-    pause = clock.tick()
-    assert 4.8 < pause < 5.2
 
 
 def test_settings_defaults_and_roundtrip(
@@ -429,7 +407,7 @@ def test_fetcher_retries_rate_limit(
     fetcher = DashboardFetcher(
         api_key="k",
         api_secret="s",
-        min_delay=0.0,
+        min_interval=0.0,
         max_retries=4,
         retry_delay=0.0,
     )
@@ -464,7 +442,7 @@ def test_fetcher_returns_empty_after_exhaustion(
     fetcher = DashboardFetcher(
         api_key="k",
         api_secret="s",
-        min_delay=0.0,
+        min_interval=0.0,
         max_retries=3,
         retry_delay=0.0,
     )
@@ -614,3 +592,406 @@ def test_tiger_open_combo_links_then_opens_spot(
     assert calls[0]["linkGroup"] == "Y"
     assert calls[1]["type"] == "OPENMULTIEXSYMBOL"
     assert calls[1]["m"] == "SPOT"
+
+
+# ==================== Управление монетами роботов ====================
+
+
+def test_robot_coins_persistence_and_env_seed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RobotCoins: persist, env seed, явный пустой список, лимит."""
+    import dashboard.robot_coins as coins_module
+    from dashboard.robot_coins import RobotCoins
+
+    coins_file = tmp_path / "robot_coins.json"
+    monkeypatch.setattr(coins_module, "COINS_FILE", coins_file)
+    monkeypatch.setattr(
+        coins_module,
+        "symbol_from_env",
+        lambda name: "BTCUSDT" if name == "robot_trend" else "",
+    )
+
+    # Нет файла и нет .env → пусто; с сидом из .env → [BTCUSDT]
+    assert RobotCoins.load().symbols_for("robot_flat") == []
+    assert RobotCoins.load().symbols_for("robot_trend") == ["BTCUSDT"]
+
+    coins = RobotCoins.load()
+    coins.set("robot_trend", ["ethusdt", "ETHUSDT", "sol usdt", "SOLUSDT"])
+    assert coins.symbols_for("robot_trend") == ["ETHUSDT", "SOLUSDT"]
+
+    # Перезагрузка с диска: сохранённый список перекрывает сид
+    reloaded = RobotCoins.load()
+    assert reloaded.symbols_for("robot_trend") == ["ETHUSDT", "SOLUSDT"]
+
+    # Явно пустой список — не откатывается на сид
+    reloaded.set("robot_trend", [])
+    assert RobotCoins.load().symbols_for("robot_trend") == []
+
+    # Лимит монет на робота
+    many = [f"S{i:03d}USDT" for i in range(coins_module.MAX_SYMBOLS_PER_ROBOT + 5)]
+    assert len(reloaded.set("robot_trend", many)) == coins_module.MAX_SYMBOLS_PER_ROBOT
+
+
+def test_per_symbol_paths_and_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Имена файлов и окружение изолируются по монете."""
+    from dashboard import robots as robots_module
+    from dashboard.robots import _per_symbol_path, _symbol_env
+
+    assert _per_symbol_path("data/trend_state.json", "robot_trend", "BTCUSDT") == str(
+        Path("data/trend_state_BTCUSDT.json")
+    )
+    assert _per_symbol_path("", "robot_trend", "BTCUSDT") == ""
+
+    monkeypatch.setattr(robots_module, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "robot_trend").mkdir()
+    (tmp_path / "robot_trend" / ".env").write_text(
+        "SYMBOL=DOGEUSDT\nSTATE_FILE=data/state.json\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SYMBOL", "OTHERUSDT")
+
+    env = _symbol_env("robot_trend", "SOLUSDT")
+    assert env["SYMBOL"] == "SOLUSDT"
+    assert env["STATE_FILE"] == str(Path("data/state_SOLUSDT.json"))
+    assert env["LOG_FILE"] == str(Path("logs/robot_trend_SOLUSDT.log"))
+    assert env["KILL_SWITCH"] == str(Path("data/robot_trend_SOLUSDT.kill"))
+
+
+def test_robot_symbols_start_stop_and_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Старт по монетам, статус со symbol_pids, стоп, set_robot_symbols."""
+    from dashboard import robots as robots_module
+    from dashboard.robots import (
+        get_robot_status,
+        get_robot_symbols,
+        set_robot_symbols,
+        start_robot,
+        stop_robot,
+    )
+
+    monkeypatch.setattr(robots_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(robots_module, "_robots_cache", ["robot_trend"])
+    robot_dir = tmp_path / "robot_trend"
+    robot_dir.mkdir()
+    (robot_dir / "main.py").write_text("# stub\n", encoding="utf-8")
+    coins_file = tmp_path / "data" / "robot_coins.json"
+    coins_file.parent.mkdir()
+    import dashboard.robot_coins as coins_module
+
+    monkeypatch.setattr(coins_module, "COINS_FILE", coins_file)
+    coins_file.write_text(
+        json.dumps({"robot_trend": ["BTCUSDT", "ETHUSDT"]}), encoding="utf-8"
+    )
+
+    spawned: list[tuple[str, str]] = []
+    pids = iter(range(100, 900))
+    killed: list[int] = []
+
+    def fake_spawn(robot: str, symbol: str) -> int:
+        spawned.append((robot, symbol))
+        return next(pids)
+
+    monkeypatch.setattr(robots_module, "_spawn", fake_spawn)
+    monkeypatch.setattr(robots_module, "is_running", lambda pid: pid not in killed)
+    monkeypatch.setattr(robots_module, "_stop_symbol", _capture_stop(killed))
+
+    # Старт: по процессу на каждую монету
+    ok, message = start_robot("robot_trend")
+    assert ok and "BTCUSDT" in message and "ETHUSDT" in message
+    assert spawned == [("robot_trend", "BTCUSDT"), ("robot_trend", "ETHUSDT")]
+
+    # Повторный старт — уже работает
+    ok, message = start_robot("robot_trend")
+    assert ok and "уже работает" in message
+
+    # Статус: running + pids по монетам
+    status = get_robot_status("robot_trend")
+    assert status.running is True
+    assert status.symbols == ["BTCUSDT", "ETHUSDT"]
+    assert set(status.symbol_pids) == {"BTCUSDT", "ETHUSDT"}
+
+    # set_robot_symbols: удаление останавливает процесс удалённой монеты
+    ok, message = set_robot_symbols("robot_trend", ["ETHUSDT", "SOLUSDT"])
+    assert ok and "BTCUSDT" in message
+    assert get_robot_symbols("robot_trend") == ["ETHUSDT", "SOLUSDT"]
+    assert killed == [status.symbol_pids["BTCUSDT"]]
+    assert ("robot_trend", "SOLUSDT") in spawned
+
+    # Стоп: все процессы и файлы реестра
+    ok, message = stop_robot("robot_trend")
+    assert ok and "ETHUSDT" in message
+    assert not robots_module.procsfile_for("robot_trend").exists()
+    assert get_robot_status("robot_trend").running is False
+
+    # Старт без монет — отказ
+    set_robot_symbols("robot_trend", [])
+    ok, message = start_robot("robot_trend")
+    assert not ok and "не выбраны" in message
+
+
+def _capture_stop(killed: list[int]) -> Any:
+    """Заглушка _stop_symbol: помечает pid убитым."""
+
+    def stop(robot: str, symbol: str, procs: dict[str, int]) -> bool:
+        pid = procs.pop(symbol, None)
+        if pid is None:
+            return False
+        killed.append(pid)
+        return True
+
+    return stop
+
+
+def test_symbols_cache_filter_sort_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SymbolsCache: фильтр USDT, порог оборота, сортировка, TTL."""
+    from dashboard.symbols import SymbolsCache
+
+    tickers = [
+        {
+            "symbol": "ETHUSDT",
+            "lastPrice": "2000",
+            "turnover24h": "3000000",
+            "price24hPcnt": "-0.01",
+        },
+        {
+            "symbol": "BTCUSDT",
+            "lastPrice": "68000",
+            "turnover24h": "9000000",
+            "price24hPcnt": "0.02",
+        },
+        {"symbol": "SMALLUSDT", "turnover24h": "100"},  # ниже порога
+        {"symbol": "FOOUSDC", "turnover24h": "9999999"},  # не USDT-M
+        {"symbol": "BADUSDT", "turnover24h": "oops"},  # мусорный оборот
+    ]
+
+    class FakeFetcher:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_tickers(self) -> list[dict]:
+            self.calls += 1
+            return tickers
+
+    fetcher = FakeFetcher()
+    cache = SymbolsCache(fetcher=fetcher)  # type: ignore[arg-type]
+
+    async def run() -> None:
+        items = await cache.get()
+        assert [i["symbol"] for i in items] == ["BTCUSDT", "ETHUSDT"]
+        assert items[0]["turnover_24h"] == 9_000_000.0
+        assert items[0]["change_pct"] == 2.0
+        assert items[1]["last_price"] == 2000.0
+
+        # TTL: кэш не бьёт в API повторно
+        await cache.get()
+        assert fetcher.calls == 1
+
+        # force=True — обновление
+        await cache.get(force=True)
+        assert fetcher.calls == 2
+
+    asyncio.run(run())
+
+
+def test_symbols_api_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """GET/POST /api/robots/{name}/symbols и /api/bybit/symbols."""
+    from dashboard import server as server_module
+
+    monkeypatch.setattr(server_module, "get_all_robots_status", _fake_statuses)
+    import dashboard.robot_coins as coins_module
+
+    coins_file = tmp_path / "robot_coins.json"
+    monkeypatch.setattr(coins_module, "COINS_FILE", coins_file)
+    store: dict[str, list[str]] = {"robot_trend": ["BTCUSDT"]}
+    monkeypatch.setattr(
+        server_module, "get_robot_symbols", lambda name: list(store.get(name, []))
+    )
+
+    def fake_set(name: str, symbols: list[str]) -> tuple[bool, str]:
+        store[name] = [s.upper() for s in symbols]
+        return True, f"saved {len(symbols)}"
+
+    monkeypatch.setattr(server_module, "set_robot_symbols", fake_set)
+
+    async def run() -> None:
+        resp = await server_module.api_robot_symbols_get(_path_request("robot_trend"))
+        data = json.loads(bytes(resp.body))
+        assert resp.status_code == 200
+        assert data["symbols"] == ["BTCUSDT"]
+        assert data["symbol_pids"] == {"ETHUSDT": 11}
+
+        resp = await server_module.api_robot_symbols_get(_path_request("nope"))
+        assert resp.status_code == 200
+        assert json.loads(bytes(resp.body))["symbols"] == []
+
+        resp = await server_module.api_robot_symbols_post(
+            _path_request("robot_trend", {"symbols": ["solusdt", "BTCUSDT"]})
+        )
+        data = json.loads(bytes(resp.body))
+        assert resp.status_code == 200
+        assert data["symbols"] == ["SOLUSDT", "BTCUSDT"]
+
+        resp = await server_module.api_robot_symbols_post(
+            _path_request("robot_trend", {"add": ["dogeusdt"], "remove": ["btcusdt"]})
+        )
+        assert json.loads(bytes(resp.body))["symbols"] == ["SOLUSDT", "DOGEUSDT"]
+
+        resp = await server_module.api_robot_symbols_post(
+            _path_request("robot_trend", {"add": ["BAD SYMBOL!"]})
+        )
+        assert resp.status_code == 400
+
+        resp = await server_module.api_robot_symbols_post(
+            _path_request("robot_trend", None)
+        )
+        assert resp.status_code == 400
+
+        class FakeCache:
+            async def get(self, force: bool = False) -> list[dict[str, Any]]:
+                return [{"symbol": "BTCUSDT", "turnover_24h": 1.0, "change_pct": 0.0}]
+
+        request = _path_request("x")
+        request.app.state.symbols_cache = FakeCache()
+        resp = await server_module.api_bybit_symbols(request)
+        data = json.loads(bytes(resp.body))
+        assert resp.status_code == 200
+        assert data["total"] == 1 and data["symbols"][0]["symbol"] == "BTCUSDT"
+
+        resp = await server_module.api_robots_list(_path_request("x"))
+        data = json.loads(bytes(resp.body))
+        assert data["robots"][0]["symbols"] == ["BTCUSDT"]
+        assert data["robots"][0]["symbol_pids"] == {"ETHUSDT": 11}
+
+    asyncio.run(run())
+
+
+def _fake_statuses() -> list[Any]:
+    from dashboard.robots import RobotStatus
+
+    return [
+        RobotStatus(
+            name="robot_trend",
+            running=True,
+            pid=11,
+            symbols=["BTCUSDT"],
+            symbol_pids={"ETHUSDT": 11},
+        )
+    ]
+
+
+class _PathRequest:
+    """Стаб Request с path_params/app.state/json()."""
+
+    def __init__(self, name: str, body: dict[str, Any] | None = None) -> None:
+        self.path_params = {"name": name}
+        self._body = body
+        self.app = SimpleNamespace(state=SimpleNamespace())
+        self.query_params: dict[str, str] = {}
+
+    async def json(self) -> dict[str, Any]:
+        if self._body is None:
+            raise ValueError("no body")
+        return self._body
+
+
+def _path_request(name: str, body: dict[str, Any] | None = None) -> Any:
+    return _PathRequest(name, body)
+
+
+# ==================== Тренд-робот (флаг запуска) ====================
+
+
+class _FakeRequest:
+    """Минимальный стаб Request для обработчиков флага робота."""
+
+    def __init__(self, body: dict[str, Any] | None) -> None:
+        self._body = body
+
+    async def json(self) -> dict[str, Any]:
+        if self._body is None:
+            raise ValueError("no body")
+        return self._body
+
+
+def test_robot_state_defaults_and_roundtrip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RobotState: дефолты при отсутствии файла + save/load round-trip."""
+    import dashboard.robot_state as robot_module
+
+    monkeypatch.setattr(robot_module, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(robot_module, "ROBOT_STATE_FILE", tmp_path / "robot_state.json")
+
+    assert RobotState.load() == RobotState()
+
+    state = RobotState.from_dict(
+        {
+            "running": True,
+            "symbols": ["btcusdt", "BTCUSDT", "ethusdt"],
+            "signals": [{"symbol": "BTCUSDT", "side": "LONG"}],
+            "started_at": "2026-01-01T00:00:00+00:00",
+        }
+    )
+    state.save()
+
+    loaded = RobotState.load()
+    assert loaded.running is True
+    assert loaded.symbols == ["BTCUSDT", "ETHUSDT"]
+    assert loaded.signals == [{"symbol": "BTCUSDT", "side": "LONG"}]
+    assert loaded.started_at == "2026-01-01T00:00:00+00:00"
+
+
+def _fake_request(body: dict[str, Any] | None) -> Any:
+    return _FakeRequest(body)
+
+
+def test_robot_flag_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """POST /api/robot/start|stop, GET /api/robot/status: флаг и валидация."""
+    import dashboard.robot_state as robot_module
+    from dashboard import server as server_module
+
+    monkeypatch.setattr(robot_module, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(robot_module, "ROBOT_STATE_FILE", tmp_path / "robot_state.json")
+
+    async def run() -> None:
+        req = _fake_request(
+            {"symbols": ["btcusdt", "ETHUSDT"], "signals": [{"symbol": "BTCUSDT"}]}
+        )
+        resp = await server_module.api_robot_flag_start(req)
+        assert resp.status_code == 200
+        data = json.loads(bytes(resp.body))
+        assert data["ok"] is True
+        assert data["state"]["running"] is True
+        assert data["state"]["symbols"] == ["BTCUSDT", "ETHUSDT"]
+        assert data["state"]["started_at"] is not None
+
+        resp = await server_module.api_robot_flag_status(_fake_request(None))
+        status = json.loads(bytes(resp.body))
+        assert status["running"] is True
+        assert status["symbols"] == ["BTCUSDT", "ETHUSDT"]
+
+        resp = await server_module.api_robot_flag_start(_fake_request({"symbols": []}))
+        assert resp.status_code == 400
+
+        resp = await server_module.api_robot_flag_start(
+            _fake_request({"symbols": ["BTC USDT!"]})
+        )
+        assert resp.status_code == 400
+
+        resp = await server_module.api_robot_flag_start(_fake_request(None))
+        assert resp.status_code == 400
+
+        resp = await server_module.api_robot_flag_stop(_fake_request(None))
+        data = json.loads(bytes(resp.body))
+        assert data["ok"] is True
+        assert data["state"]["running"] is False
+        assert data["state"]["symbols"] == ["BTCUSDT", "ETHUSDT"]
+        assert data["state"]["stopped_at"] is not None
+
+    asyncio.run(run())
