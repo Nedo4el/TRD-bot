@@ -244,19 +244,74 @@
      .robot-status .badge { padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; }
      .robot-status .badge.on { background: rgba(46, 204, 113, .16); color: var(--green); }
      .robot-status .badge.off { background: rgba(139, 152, 173, .16); color: var(--muted); }
-     .robot-actions { display: flex; gap: 6px; }
-     .robot-actions button { padding: 6px 12px; font-size: 12px; }
-     .stop-all-btn { margin-top: 12px; }
+    .robot-actions { display: flex; gap: 6px; }
+    .robot-actions button { padding: 6px 12px; font-size: 12px; }
+    .stop-all-btn { margin-top: 12px; }
+    .robots-table tbody tr.robot-row { cursor: pointer; }
+    .robot-coins-cell { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+    .coin-badge {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 6px; padding: 2px 7px; font-size: 11px; font-weight: 600;
+      white-space: nowrap;
+    }
+    .coin-badge.live { border-color: rgba(46, 204, 113, .45); color: var(--green); }
+    .robots-table tbody tr.robot-detail td { background: var(--panel-2); }
+    .robot-detail-inner {
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+      justify-content: space-between;
+    }
+    .coin-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .coin-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 999px; padding: 3px 5px 3px 11px;
+      font-size: 12px; font-weight: 600; white-space: nowrap;
+    }
+    .coin-chip.live { border-color: rgba(46, 204, 113, .45); }
+    .coin-chip button {
+      background: transparent; border: none; color: var(--muted);
+      cursor: pointer; font-size: 13px; line-height: 1;
+      padding: 2px 6px; border-radius: 999px;
+    }
+    .coin-chip button:hover { color: var(--red); background: rgba(255, 92, 108, .14); }
+    .coins-list {
+      max-height: 46vh; overflow-y: auto; overflow-x: hidden; display: grid; gap: 6px;
+      grid-template-columns: 1fr; margin-bottom: 10px;
+    }
+    .coin-row {
+      display: flex; align-items: center; gap: 10px; padding: 7px 10px;
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 8px; cursor: pointer; font-size: 13px; min-width: 0;
+    }
+    .coin-row:hover { border-color: var(--accent); }
+    .coin-row.on { border-color: rgba(46, 204, 113, .45); }
+    .coin-row b { flex: none; min-width: 110px; }
+    .coin-row .turn { flex: 1; min-width: 0; text-align: right; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .coin-row .mark { flex: none; font-size: 12px; color: var(--green); min-width: 72px; text-align: right; }
+    @media (max-width: 520px) {
+      .coin-row { gap: 6px; padding: 7px 8px; font-size: 12px; }
+      .coin-row b { min-width: 0; }
+      .coin-row .mark { min-width: 0; }
+    }
+    .coin-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+    .coin-tabs .coin-tab-btn {
+      background: var(--panel-2); border: 1px solid var(--border);
+      border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600;
+      color: var(--text); cursor: pointer;
+    }
+    .coin-tabs .coin-tab-btn.active { border-color: var(--accent); color: var(--accent); }
    .modal-overlay {
-     position: fixed; inset: 0; background: rgba(5, 8, 14, .72);
-     display: none; align-items: center; justify-content: center; z-index: 60;
-   }
-   .modal-overlay.show { display: flex; }
-   .modal {
-     background: var(--panel); border: 1px solid var(--border);
-     border-radius: 14px; padding: 20px 22px; width: 420px; max-width: 92vw;
-     box-shadow: 0 18px 50px rgba(0,0,0,.5);
-   }
+      position: fixed; inset: 0; background: rgba(5, 8, 14, .72);
+      display: none; align-items: center; justify-content: center; z-index: 60;
+      overflow-y: auto;
+    }
+    .modal-overlay.show { display: flex; }
+    .modal {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 14px; padding: 20px 22px; width: 420px; max-width: 92vw;
+      box-shadow: 0 18px 50px rgba(0,0,0,.5);
+      margin: auto;
+    }
    .modal h3 { margin: 0 0 14px; font-size: 15px; display: flex;
      align-items: center; gap: 10px; }
    .modal .imp-pct { font-size: 30px; font-weight: 800; }
@@ -265,8 +320,20 @@
    .modal .rows div { display: flex; justify-content: space-between; gap: 12px;
      padding: 7px 10px; background: var(--panel-2); border-radius: 8px; }
    .modal .rows .k { color: var(--muted); }
-   .modal .close-row { display: flex; justify-content: flex-end; margin-top: 14px; }
-   .modal .close-row button { min-width: 90px; }
+.modal .close-row { display: flex; justify-content: flex-end; margin-top: 14px; }
+.modal .close-row button { min-width: 90px; }
+.robot-sig-list { max-height: 55vh; overflow-y: auto; display: grid; gap: 8px;
+  grid-template-columns: 1fr; margin-bottom: 4px; }
+.robot-sig { display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  cursor: pointer; font-size: 13px; }
+.robot-sig input { width: 16px; height: 16px; flex: none; margin: 0; padding: 0;
+  border: none; appearance: auto; }
+.robot-sig b { flex: none; }
+.robot-sig .badge { flex: none; }
+.robot-sig .muted { flex: 1; min-width: 0; text-align: right; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.robot-foot { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
    tr.impulse-row { cursor: pointer; }
    </style>
 </head>
@@ -280,6 +347,8 @@
     </div>
     <div class="spacer"></div>
     <div class="controls">
+      <span class="badge off" id="robotBadge" title="Тренд-робот">Робот: стоп</span>
+      <button id="newSignalsBtn" title="Открыть окно запуска робота">Новые сигналы</button>
       <span class="muted" id="updated">—</span>
       <select id="interval" title="Автообновление">
         <option value="3000">3 сек</option>
@@ -493,12 +562,13 @@
             <tr>
               <th>Робот</th>
               <th>Статус</th>
+              <th>Монеты</th>
               <th>PID</th>
               <th>Действия</th>
             </tr>
           </thead>
           <tbody id="robotsBody">
-            <tr><td colspan="4" class="empty">Загрузка…</td></tr>
+            <tr><td colspan="5" class="empty">Загрузка…</td></tr>
           </tbody>
         </table>
       </div>
@@ -567,6 +637,42 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="robotModal">
+  <div class="modal" style="width: min(880px, 94vw);">
+    <h3 id="robotModalTitle">Новые сигналы — запуск робота</h3>
+    <div class="robot-sig-list" id="robotSigList"></div>
+    <div class="robot-foot">
+      <button id="robotStopBtn" style="display:none">Остановить</button>
+      <button class="primary" id="robotStartBtn" disabled>Запустить робота</button>
+      <button id="robotClose">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="coinsModal">
+  <div class="modal" style="width: min(760px, 94vw);">
+    <h3 id="coinsModalTitle">Монеты робота</h3>
+    <div class="filters" style="margin-bottom: 10px;">
+      <input id="coinsSearch" placeholder="Поиск монеты (например ZEC)" />
+      <div class="grow"></div>
+      <button id="coinsReload">Обновить список</button>
+    </div>
+    <div class="coin-tabs">
+      <button class="coin-tab-btn active" data-coins-tab="all">Все Bybit</button>
+      <button class="coin-tab-btn" data-coins-tab="selected">Выбранные</button>
+      <button class="coin-tab-btn" data-coins-tab="signals">Из сигналов</button>
+    </div>
+    <div class="coins-list" id="coinsList">
+      <div class="empty">Загрузка списка монет…</div>
+    </div>
+    <div class="robot-foot">
+      <button id="coinsStartBtn" class="primary">▶ Запустить робота</button>
+      <button id="coinsStopBtn" style="display:none">⏹ Остановить</button>
+      <button id="coinsClose">Закрыть</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -579,7 +685,9 @@ let primed = false;
 const $ = (id) => document.getElementById(id);
 
 const LABELS = {
-  move_pct: "ход %", timeframe: "ТФ", hh: "HH", hl: "HL", lh: "LH", ll: "LL",
+  move_pct: "ход %", timeframe: "ТФ",
+  ema_fast: "EMA fast", ema_slow: "EMA slow",
+  di_plus: "+DI", di_minus: "-DI",
   adx: "ADX", rsi: "RSI", atr_pct: "ATR %", bb_width: "BB", stop: "SL",
   take: "TP", level: "уровень", distance_pct: "дист. %", up: "сверху",
   down: "снизу", avg_width_pct: "ср. ширина %", max_width_pct: "макс. ширина %",
@@ -830,10 +938,13 @@ async function load() {
     state = await res.json();
     if (!primed) {
       state.signals.forEach((s) => seen.add(`${s.screener}:${s.symbol}`));
+      lastSeenAt = new Date().toISOString();
       primed = true;
     }
     fillScreenerFilter();
     render();
+    updateNewSignalsBtn();
+    maybeAutoPopup();
   } catch (err) {
     $("liveDot").className = "dot off";
     $("updated").textContent = "нет связи с сервером";
@@ -1012,6 +1123,126 @@ function closeImpulseModal() {
   $("impulseModal").classList.remove("show");
 }
 
+// ==================== Тренд-робот ====================
+let robotState = { running: false, symbols: [], signals: [] };
+let lastSeenAt = new Date(0).toISOString();
+let robotModalFilter = null;
+let robotModalList = [];
+
+async function loadRobotStatus() {
+  try {
+    const res = await fetch("/api/robot/status", { cache: "no-store" });
+    if (!res.ok) return;
+    robotState = await res.json();
+    renderRobotBadge();
+  } catch { /* ignore */ }
+}
+
+function renderRobotBadge() {
+  const b = $("robotBadge");
+  b.className = "badge " + (robotState.running ? "on" : "off");
+  b.textContent = robotState.running ? "Робот: работает" : "Робот: стоп";
+}
+
+function newSignalsCount() {
+  const t = new Date(lastSeenAt).getTime();
+  return state.signals.filter((s) => new Date(s.found_at).getTime() > t).length;
+}
+
+function updateNewSignalsBtn() {
+  const n = newSignalsCount();
+  $("newSignalsBtn").textContent = n > 0 ? `Новые сигналы (${n})` : "Новые сигналы";
+}
+
+function renderRobotModal() {
+  robotModalList = robotModalFilter
+    ? state.signals.filter((s) => s.screener === robotModalFilter)
+    : state.signals;
+  $("robotModalTitle").textContent = robotModalFilter
+    ? "Тренд EMA/ADX — запуск робота"
+    : "Новые сигналы — запуск робота";
+  const list = $("robotSigList");
+  if (!robotModalList.length) {
+    list.innerHTML = '<div class="empty">Сигналов нет — запустите сканирование.</div>';
+  } else {
+    list.innerHTML = robotModalList.map((s, i) => {
+      const side = esc(s.side || "NEUTRAL");
+      const checked = robotState.symbols.includes(s.symbol) ? "checked" : "";
+      const strat = esc((s.title || s.screener) + (s.label ? " · " + s.label : ""));
+      return `<label class="robot-sig">
+        <input type="checkbox" data-idx="${i}" ${checked} />
+        <b>${esc(s.symbol)}</b>
+        <span class="badge ${side}">${side}</span>
+        <span class="muted">${strat}</span>
+      </label>`;
+    }).join("");
+  }
+  list.querySelectorAll("input[type=checkbox]").forEach((cb) =>
+    cb.addEventListener("change", updateRobotButtons));
+  updateRobotButtons();
+}
+
+function updateRobotButtons() {
+  const any = $("robotSigList").querySelectorAll("input:checked").length > 0;
+  $("robotStartBtn").disabled = !any;
+  $("robotStartBtn").style.display = robotState.running ? "none" : "";
+  $("robotStopBtn").style.display = robotState.running ? "" : "none";
+}
+
+function openRobotModal(filter) {
+  robotModalFilter = filter || null;
+  lastSeenAt = new Date().toISOString();
+  updateNewSignalsBtn();
+  renderRobotModal();
+  $("robotModal").classList.add("show");
+}
+
+function closeRobotModal() {
+  $("robotModal").classList.remove("show");
+}
+
+async function startRobotFromModal() {
+  const idxs = [...$("robotSigList").querySelectorAll("input:checked")]
+    .map((cb) => Number(cb.dataset.idx));
+  const symbols = idxs.map((i) => robotModalList[i].symbol);
+  const signals = idxs.map((i) => robotModalList[i]);
+  try {
+    const res = await fetch("/api/robot/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbols, signals }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+    robotState = data.state;
+    renderRobotBadge();
+    closeRobotModal();
+    toast("Робот запущен: " + symbols.join(", "));
+  } catch (err) {
+    toast("Не удалось запустить робота: " + err.message, true);
+  }
+}
+
+async function stopRobotFlag() {
+  try {
+    const res = await fetch("/api/robot/stop", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+    robotState = data.state;
+    renderRobotBadge();
+    updateRobotButtons();
+    toast("Робот остановлен");
+  } catch (err) {
+    toast("Не удалось остановить робота: " + err.message, true);
+  }
+}
+
+function maybeAutoPopup() {
+  if (!primed || robotState.running) return;
+  if ($("robotModal").classList.contains("show")) return;
+  if (newSignalsCount() > 0) openRobotModal();
+}
+
 async function post(url) {
   try {
     const res = await fetch(url, { method: "POST" });
@@ -1024,7 +1255,35 @@ async function post(url) {
   }
 }
 
-function scanOne(name) { post("/api/scan/" + encodeURIComponent(name)); }
+function scanOne(name) {
+  post("/api/scan/" + encodeURIComponent(name));
+  if (name === "trend") waitTrendScanAndOpenModal();
+}
+
+function waitTrendScanAndOpenModal() {
+  const before =
+    (state.screeners.find((x) => x.name === "trend") || {}).last_run_at || "";
+  const started = Date.now();
+  const poll = setInterval(async () => {
+    try {
+      const res = await fetch("/api/signals", { cache: "no-store" });
+      const s = await res.json();
+      const t = s.screeners.find((x) => x.name === "trend");
+      if (t && !t.running && t.last_run_at && t.last_run_at !== before) {
+        clearInterval(poll);
+        state = s;
+        render();
+        updateNewSignalsBtn();
+        openRobotModal("trend");
+        return;
+      }
+    } catch { /* ignore */ }
+    if (Date.now() - started > 180000) {
+      clearInterval(poll);
+      toast("Скан «Тренд EMA/ADX» не завершился — окно не открыто", true);
+    }
+  }, 2000);
+}
 
 async function openTiger(symbol) {
   try {
@@ -1086,9 +1345,22 @@ $("impClose").addEventListener("click", closeImpulseModal);
 $("impulseModal").addEventListener("click", (e) => {
   if (e.target === $("impulseModal")) closeImpulseModal();
 });
+$("newSignalsBtn").addEventListener("click", openRobotModal);
+$("robotClose").addEventListener("click", closeRobotModal);
+$("robotModal").addEventListener("click", (e) => {
+  if (e.target === $("robotModal")) closeRobotModal();
+});
+$("robotStartBtn").addEventListener("click", startRobotFromModal);
+$("robotStopBtn").addEventListener("click", stopRobotFlag);
 
 // Роботы
 let robots = [];
+let robotSymbolsMap = {};
+let robotPidsMap = {};
+let expandedRobots = new Set();
+let bybitSymbols = [];
+let coinsModalRobot = "";
+let coinsTab = "all";
 
 async function loadRobots() {
   try {
@@ -1096,40 +1368,219 @@ async function loadRobots() {
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
     robots = data.robots || [];
+    for (const r of robots) {
+      robotSymbolsMap[r.name] = r.symbols || [];
+      robotPidsMap[r.name] = r.symbol_pids || {};
+    }
     renderRobots();
+    if (coinsModalRobot) updateCoinsModalButtons();
   } catch (err) {
     toast("Ошибка загрузки роботов: " + err.message, true);
   }
 }
 
+function coinChipsHtml(name, symbols, pids) {
+  if (!symbols.length) {
+    return `<span class="muted">Монеты не выбраны — нажмите «Выбрать монеты»</span>`;
+  }
+  return symbols
+    .map(
+      (s) => `<span class="coin-chip ${pids[s] ? "live" : ""}">${esc(s)}
+        <button data-remove-coin="${esc(s)}" data-robot="${esc(name)}"
+          title="Убрать монету">✕</button></span>`
+    )
+    .join("");
+}
+
 function renderRobots() {
   const body = $("robotsBody");
   if (!robots.length) {
-    body.innerHTML = `<tr><td colspan="4" class="empty">Нет роботов</td></tr>`;
+    body.innerHTML = `<tr><td colspan="5" class="empty">Нет роботов</td></tr>`;
     return;
   }
-  body.innerHTML = robots.map((r) => {
+  const rows = [];
+  for (const r of robots) {
     const status = r.running ? "Запущен" : "Остановлен";
     const badgeClass = r.running ? "on" : "off";
-    return `<tr>
+    const symbols = robotSymbolsMap[r.name] || [];
+    const pids = robotPidsMap[r.name] || {};
+    const preview = symbols.length
+      ? symbols
+          .slice(0, 3)
+          .map(
+            (s) =>
+              `<span class="coin-badge ${pids[s] ? "live" : ""}">${esc(s)}</span>`
+          )
+          .join("") +
+        (symbols.length > 3
+          ? `<span class="coin-badge">+${symbols.length - 3}</span>`
+          : "")
+      : `<span class="muted">не выбраны</span>`;
+    rows.push(`<tr class="robot-row" data-robot="${esc(r.name)}">
       <td><b>${esc(r.name)}</b></td>
       <td><div class="robot-status">
         <span class="badge ${badgeClass}">${status}</span></div></td>
+      <td><div class="robot-coins-cell">${preview}</div></td>
       <td>${r.pid || "—"}</td>
       <td><div class="robot-actions">
         ${r.running
           ? `<button data-stop="${esc(r.name)}">⏹ Стоп</button>`
-          : `<button class="primary" data-start="${esc(r.name)}">▶ Запуск</button>`
-        }
+          : `<button class="primary" data-start="${esc(r.name)}">▶ Запуск</button>`}
+        <button data-coins="${esc(r.name)}">🪙 Монеты</button>
       </div></td>
-    </tr>`;
-  }).join("");
-  
+    </tr>`);
+    if (expandedRobots.has(r.name)) {
+      rows.push(`<tr class="robot-detail"><td colspan="5">
+        <div class="robot-detail-inner">
+          <div class="coin-chips">${coinChipsHtml(r.name, symbols, pids)}</div>
+          <div class="robot-actions">
+            <button data-coins="${esc(r.name)}">🪙 Выбрать монеты</button>
+          </div>
+        </div></td></tr>`);
+    }
+  }
+  body.innerHTML = rows.join("");
+
   body.querySelectorAll("[data-start]").forEach((btn) => {
     btn.addEventListener("click", () => startRobot(btn.dataset.start));
   });
   body.querySelectorAll("[data-stop]").forEach((btn) => {
     btn.addEventListener("click", () => stopRobot(btn.dataset.stop));
+  });
+  body.querySelectorAll("[data-coins]").forEach((btn) => {
+    btn.addEventListener("click", () => openCoinsModal(btn.dataset.coins));
+  });
+  body.querySelectorAll("tr.robot-row").forEach((row) => {
+    row.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      const name = row.dataset.robot;
+      if (expandedRobots.has(name)) expandedRobots.delete(name);
+      else expandedRobots.add(name);
+      renderRobots();
+    });
+  });
+  body.querySelectorAll("[data-remove-coin]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      changeRobotCoins(btn.dataset.robot, { remove: [btn.dataset.removeCoin] });
+    });
+  });
+}
+
+async function changeRobotCoins(name, payload) {
+  try {
+    const res = await fetch(
+      "/api/robots/" + encodeURIComponent(name) + "/symbols",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }
+    );
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+    robotSymbolsMap[name] = data.symbols || [];
+    renderRobots();
+    renderCoinsList();
+    const action =
+      payload.remove && payload.remove.length ? "убрана" : "добавлена";
+    const symbol = (payload.remove || payload.add || [""])[0];
+    toast(symbol + " — " + action);
+    loadRobots();
+  } catch (err) {
+    toast("Не удалось изменить монеты: " + err.message, true);
+  }
+}
+
+function openCoinsModal(name) {
+  coinsModalRobot = name;
+  coinsTab = "all";
+  document.querySelectorAll("[data-coins-tab]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.coinsTab === coinsTab);
+  });
+  $("coinsModalTitle").textContent = "Монеты робота — " + name;
+  $("coinsSearch").value = "";
+  updateCoinsModalButtons();
+  renderCoinsList();
+  $("coinsModal").classList.add("show");
+  if (!bybitSymbols.length) loadBybitSymbols();
+}
+
+function closeCoinsModal() {
+  $("coinsModal").classList.remove("show");
+}
+
+function updateCoinsModalButtons() {
+  const robot = robots.find((r) => r.name === coinsModalRobot);
+  const running = Boolean(robot && robot.running);
+  $("coinsStartBtn").style.display = running ? "none" : "";
+  $("coinsStopBtn").style.display = running ? "" : "none";
+}
+
+async function loadBybitSymbols(force) {
+  const list = $("coinsList");
+  list.innerHTML = `<div class="empty">Загрузка списка монет…</div>`;
+  try {
+    const res = await fetch(
+      "/api/bybit/symbols" + (force ? "?refresh=1" : ""),
+      { cache: "no-store" }
+    );
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+    bybitSymbols = data.symbols || [];
+    renderCoinsList();
+  } catch (err) {
+    list.innerHTML = `<div class="empty">Список монет недоступен: ${esc(
+      err.message
+    )}</div>`;
+  }
+}
+
+function renderCoinsList() {
+  const list = $("coinsList");
+  const q = $("coinsSearch").value.trim().toUpperCase();
+  const selected = new Set(robotSymbolsMap[coinsModalRobot] || []);
+  const bybitMap = new Map(bybitSymbols.map((s) => [s.symbol, s]));
+  let items = bybitSymbols;
+  if (coinsTab === "selected") {
+    items = Array.from(selected).map(
+      (sym) => bybitMap.get(sym) || { symbol: sym, change_pct: 0, turnover_24h: 0 }
+    );
+  } else if (coinsTab === "signals") {
+    const sig = Array.from(new Set((state.signals || []).map((s) => s.symbol)));
+    items = sig.map(
+      (sym) => bybitMap.get(sym) || { symbol: sym, change_pct: 0, turnover_24h: 0 }
+    );
+  }
+  if (q) items = items.filter((s) => s.symbol.includes(q));
+  if (!items.length) {
+    list.innerHTML = `<div class="empty">Монет не найдено</div>`;
+    return;
+  }
+  list.innerHTML = items
+    .slice(0, 500)
+    .map((s) => {
+      const on = selected.has(s.symbol);
+      const chg = s.change_pct || 0;
+      const cls = chg > 0 ? "vol-up" : chg < 0 ? "vol-dn" : "muted";
+      const sign = chg > 0 ? "+" : "";
+      return `<div class="coin-row ${on ? "on" : ""}" data-coin="${esc(s.symbol)}">
+        <b>${esc(s.symbol)}</b>
+        <span class="${cls}">${sign}${chg.toFixed(2)}%</span>
+        <span class="turn">оборот $${((s.turnover_24h || 0) / 1e6).toFixed(1)}M</span>
+        <span class="mark">${on ? "✓ в списке" : ""}</span>
+      </div>`;
+    })
+    .join("");
+  list.querySelectorAll("[data-coin]").forEach((row) => {
+    row.addEventListener("click", () => {
+      const symbol = row.dataset.coin;
+      const has = (robotSymbolsMap[coinsModalRobot] || []).includes(symbol);
+      changeRobotCoins(
+        coinsModalRobot,
+        has ? { remove: [symbol] } : { add: [symbol] }
+      );
+    });
   });
 }
 
@@ -1142,6 +1593,7 @@ async function startRobot(name) {
     if (!res.ok || !data.ok) throw new Error(data.message || data.error || "HTTP " + res.status);
     toast("Робот " + name + " запущен");
     setTimeout(loadRobots, 500);
+    updateCoinsModalButtons();
   } catch (err) {
     toast("Ошибка запуска: " + err.message, true);
   }
@@ -1156,6 +1608,7 @@ async function stopRobot(name) {
     if (!res.ok || !data.ok) throw new Error(data.message || data.error || "HTTP " + res.status);
     toast("Робот " + name + " остановлен");
     setTimeout(loadRobots, 500);
+    updateCoinsModalButtons();
   } catch (err) {
     toast("Ошибка остановки: " + err.message, true);
   }
@@ -1198,6 +1651,29 @@ $("tabRobots").addEventListener("click", () => switchTab("robots"));
 $("tabStats").addEventListener("click", () => switchTab("stats"));
 $("robotRefresh").addEventListener("click", loadRobots);
 $("robotStopAll").addEventListener("click", stopAllRobots);
+
+$("coinsSearch").addEventListener("input", renderCoinsList);
+$("coinsReload").addEventListener("click", () => loadBybitSymbols(true));
+$("coinsClose").addEventListener("click", closeCoinsModal);
+$("coinsModal").addEventListener("click", (e) => {
+  if (e.target === $("coinsModal")) closeCoinsModal();
+});
+$("coinsStartBtn").addEventListener("click", () => {
+  const name = coinsModalRobot;
+  if (name) startRobot(name);
+});
+$("coinsStopBtn").addEventListener("click", () => {
+  const name = coinsModalRobot;
+  if (name) stopRobot(name);
+});
+document.querySelectorAll("[data-coins-tab]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    coinsTab = btn.dataset.coinsTab;
+    document.querySelectorAll("[data-coins-tab]").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    renderCoinsList();
+  });
+});
 
 // ==================== Статистика сделок ====================
 
@@ -1283,6 +1759,21 @@ function renderStatTable(trades) {
 }
 
 $("statRefresh").addEventListener("click", loadStats);
+
+async function clearTradeHistory() {
+  if (!confirm("Удалить всю историю сделок? Действие необратимо.")) return;
+  try {
+    const res = await fetch("/api/robots/statistics/clear", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+    toast("История очищена: удалено " + data.removed + " записей");
+    loadStats();
+  } catch (err) {
+    toast("Не удалось очистить историю: " + err.message, true);
+  }
+}
+
+$("statClear").addEventListener("click", clearTradeHistory);
 $("statDays").addEventListener("change", () => {
   statDays = parseInt($("statDays").value || "30", 10);
   loadStats();
@@ -1296,6 +1787,7 @@ schedule();
 load();
 loadSettings();
 loadImpulseSettings();
+loadRobotStatus();
 </script>
 </body>
 </html>
