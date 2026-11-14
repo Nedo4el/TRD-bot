@@ -1,16 +1,32 @@
-"""Управление роботами: запуск, остановка, статус."""
+"""Управление роботами: запуск, остановка, статус, список монет.
+
+Каждый робот торгует набор монет (список живёт в ``dashboard.robot_coins``).
+Для каждой монеты запускается отдельный процесс робота: так состояние,
+логи и kill-switch не пересекаются между монетами.
+"""
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from dotenv import dotenv_values
+
+from dashboard.robot_coins import RobotCoins, normalize_symbols
+
+logger = logging.getLogger(__name__)
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Значение кода завершения процесса, который ещё работает (Windows).
+_STILL_ACTIVE = 259
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 
 @dataclass
@@ -21,20 +37,52 @@ class RobotStatus:
     running: bool
     pid: int | None = None
     error: str | None = None
+    symbols: list[str] = field(default_factory=list)
+    symbol_pids: dict[str, int] = field(default_factory=dict)
 
 
 def pidfile_for(robot_name: str) -> Path:
-    """Путь к pid-файлу робота."""
+    """Путь к pid-файлу робота (legacy, первый живой процесс)."""
     return PROJECT_ROOT / "data" / f"{robot_name}.pid"
 
 
+def procsfile_for(robot_name: str) -> Path:
+    """Путь к реестру процессов робота (символ -> pid)."""
+    return PROJECT_ROOT / "data" / f"{robot_name}.procs.json"
+
+
 def is_running(pid: int) -> bool:
-    """Жив ли процесс с таким PID."""
+    """Жив ли процесс с таким PID.
+
+    На Windows ``os.kill(pid, 0)`` вызывает TerminateProcess и убивает
+    процесс, поэтому там проверка идёт через WinAPI.
+    """
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        return _is_running_win(pid)
     try:
         os.kill(pid, 0)
-        return True
     except OSError:
         return False
+    return True
+
+
+def _is_running_win(pid: int) -> bool:
+    """Проверка живости процесса на Windows (без убийства)."""
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == _STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 _robots_cache: list[str] | None = None
@@ -48,60 +96,176 @@ def get_available_robots() -> list[str]:
     return _robots_cache
 
 
+def get_robot_symbols(robot_name: str) -> list[str]:
+    """Список торгуемых монет робота."""
+    return RobotCoins.load().symbols_for(robot_name)
+
+
+def _read_procs(robot_name: str) -> dict[str, int]:
+    """Прочитать реестр процессов робота (символ -> pid)."""
+    import json
+
+    path = procsfile_for(robot_name)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    procs: dict[str, int] = {}
+    for symbol, pid in raw.items():
+        try:
+            procs[str(symbol).upper()] = int(pid)
+        except (TypeError, ValueError):
+            continue
+    return procs
+
+
+def _write_procs(robot_name: str, procs: dict[str, int]) -> None:
+    """Записать реестр процессов робота."""
+    import json
+
+    path = procsfile_for(robot_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(procs, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.replace(path)
+
+
+def _per_symbol_path(raw: str, robot_name: str, symbol: str) -> str:
+    """Вставить символ в имя файла: data/trend_state.json -> data/trend_state_BTCUSDT.json."""
+    text = raw.strip()
+    if not text:
+        return text
+    path = Path(text)
+    if path.suffix:
+        return str(path.with_name(f"{path.stem}_{symbol}{path.suffix}"))
+    return f"{text}_{symbol}"
+
+
+def _symbol_env(robot_name: str, symbol: str) -> dict[str, str]:
+    """Окружение процесса робота для конкретной монеты."""
+    env = os.environ.copy()
+    env["SYMBOL"] = symbol
+    env_file = PROJECT_ROOT / robot_name / ".env"
+    raw: dict[str, str | None] = {}
+    if env_file.exists():
+        try:
+            raw = dict(dotenv_values(env_file))
+        except OSError:
+            raw = {}
+    env["STATE_FILE"] = _per_symbol_path(
+        str(raw.get("STATE_FILE") or f"data/{robot_name}_state.json"),
+        robot_name,
+        symbol,
+    )
+    env["LOG_FILE"] = _per_symbol_path(
+        str(raw.get("LOG_FILE") or f"logs/{robot_name}.log"), robot_name, symbol
+    )
+    env["KILL_SWITCH"] = _per_symbol_path(
+        str(raw.get("KILL_SWITCH") or f"data/{robot_name}.kill"), robot_name, symbol
+    )
+    return env
+
+
+def _spawn(robot_name: str, symbol: str) -> int:
+    """Запустить процесс робота для монеты, вернуть pid."""
+    robot_path = PROJECT_ROOT / robot_name / "main.py"
+    proc = subprocess.Popen(
+        [sys.executable, str(robot_path)],
+        cwd=str(PROJECT_ROOT),
+        env=_symbol_env(robot_name, symbol),
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc.pid
+
+
+def _write_legacy_pid(robot_name: str, procs: dict[str, int]) -> None:
+    """Обновить legacy pid-файл (первый живой процесс) для старых инструментов."""
+    pidfile = pidfile_for(robot_name)
+    alive = [pid for pid in procs.values() if is_running(pid)]
+    if alive:
+        pidfile.parent.mkdir(exist_ok=True)
+        pidfile.write_text(str(alive[0]))
+    else:
+        pidfile.unlink(missing_ok=True)
+
+
 def start_robot(robot_name: str) -> tuple[bool, str]:
-    """Запустить робота. Возвращает (успех, сообщение)."""
+    """Запустить робота на всех его монетах. Возвращает (успех, сообщение)."""
     robot_path = PROJECT_ROOT / robot_name / "main.py"
     if not robot_path.exists():
         return False, f"Робот {robot_name} не найден"
 
-    pidfile = pidfile_for(robot_name)
-    pidfile.parent.mkdir(exist_ok=True)
+    symbols = get_robot_symbols(robot_name)
+    if not symbols:
+        return False, f"У робота {robot_name} не выбраны монеты"
 
+    procs = _read_procs(robot_name)
+    started: list[str] = []
     try:
-        proc = subprocess.Popen(
-            [sys.executable, str(robot_path)],
-            cwd=str(PROJECT_ROOT),
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        pidfile.write_text(str(proc.pid))
-        return True, f"Робот {robot_name} запущен (PID {proc.pid})"
+        for symbol in symbols:
+            pid = procs.get(symbol)
+            if pid and is_running(pid):
+                continue
+            procs[symbol] = _spawn(robot_name, symbol)
+            started.append(symbol)
     except (OSError, ValueError) as e:
+        for symbol in started:
+            _stop_symbol(robot_name, symbol, procs)
+        _write_procs(robot_name, procs)
         return False, f"Ошибка запуска: {e}"
+
+    _write_procs(robot_name, procs)
+    _write_legacy_pid(robot_name, procs)
+    if started:
+        logger.info("Робот %s запущен: %s", robot_name, ", ".join(started))
+        return True, f"Робот {robot_name} запущен: {', '.join(started)}"
+    return True, f"Робот {robot_name} уже работает"
+
+
+def _stop_symbol(robot_name: str, symbol: str, procs: dict[str, int]) -> bool:
+    """Остановить процесс робота по одной монете."""
+    pid = procs.pop(symbol, None)
+    if not pid or not is_running(pid):
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and is_running(pid):
+            time.sleep(0.1)
+        if is_running(pid):
+            sig = getattr(signal, "SIGKILL", signal.SIGTERM)
+            os.kill(pid, sig)
+    except OSError as e:
+        logger.warning("Не удалось остановить %s %s: %s", robot_name, symbol, e)
+        return False
+    logger.info("Робот %s остановлен по монете %s", robot_name, symbol)
+    return True
 
 
 def stop_robot(robot_name: str, timeout: float = 2.0) -> tuple[bool, str]:
-    """Остановить робота. Возвращает (успех, сообщение).
+    """Остановить робота (все его монеты). Возвращает (успех, сообщение).
 
     Args:
         robot_name: Имя робота.
         timeout: Время ожидания перед SIGKILL (сек).
     """
-    pidfile = pidfile_for(robot_name)
-    if not pidfile.exists():
+    procs = _read_procs(robot_name)
+    stopped: list[str] = []
+    for symbol in list(procs):
+        if _stop_symbol(robot_name, symbol, procs):
+            stopped.append(symbol)
+    _write_procs(robot_name, procs)
+    pidfile_for(robot_name).unlink(missing_ok=True)
+    procsfile_for(robot_name).unlink(missing_ok=True)
+    if stopped:
+        return True, f"Робот {robot_name} остановлен: {', '.join(stopped)}"
+    if not procs:
         return False, f"Робот {robot_name} не запущен"
-
-    try:
-        pid = int(pidfile.read_text().strip())
-    except (ValueError, OSError):
-        pidfile.unlink(missing_ok=True)
-        return False, "PID-файл повреждён"
-
-    if is_running(pid):
-        try:
-            os.kill(pid, signal.SIGTERM)
-            time.sleep(timeout)
-            if is_running(pid):
-                sig = getattr(signal, "SIGKILL", signal.SIGTERM)
-                os.kill(pid, sig)
-            pidfile.unlink(missing_ok=True)
-            return True, f"Робот {robot_name} остановлен"
-        except OSError as e:
-            return False, f"Ошибка остановки: {e}"
-    else:
-        pidfile.unlink(missing_ok=True)
-        return False, f"Процесс {pid} уже не активен"
+    return False, f"Процессы робота {robot_name} уже не активны"
 
 
 def stop_all_robots(timeout: float = 2.0) -> dict[str, tuple[bool, str]]:
@@ -112,21 +276,92 @@ def stop_all_robots(timeout: float = 2.0) -> dict[str, tuple[bool, str]]:
     return results
 
 
-def get_robot_status(robot_name: str) -> RobotStatus:
-    """Получить статус робота."""
-    pidfile = pidfile_for(robot_name)
-    if not pidfile.exists():
-        return RobotStatus(name=robot_name, running=False)
+def set_robot_symbols(robot_name: str, symbols: list[str]) -> tuple[bool, str]:
+    """Задать список монет робота и применить его к работающему процессу.
 
+    Удалённые монеты останавливаются, добавленные — запускаются.
+    """
+    if robot_name not in get_available_robots():
+        return False, f"Робот {robot_name} не найден"
+    normalized = normalize_symbols(symbols)
+    coins = RobotCoins.load()
+    old = coins.symbols_for(robot_name)
+    coins.set(robot_name, normalized)
+
+    procs = _read_procs(robot_name)
+    running = {sym: pid for sym, pid in procs.items() if is_running(pid)}
+    if not running:
+        _write_procs(robot_name, procs)
+        return (
+            True,
+            f"Монеты робота {robot_name} сохранены: {', '.join(normalized) or '—'}",
+        )
+
+    removed = [sym for sym in old if sym not in normalized]
+    added = [sym for sym in normalized if sym not in running]
+    stopped: list[str] = []
+    for symbol in removed:
+        if _stop_symbol(robot_name, symbol, procs):
+            stopped.append(symbol)
+    started: list[str] = []
     try:
-        pid = int(pidfile.read_text().strip())
+        for symbol in added:
+            procs[symbol] = _spawn(robot_name, symbol)
+            started.append(symbol)
+    except (OSError, ValueError) as e:
+        logger.error("Не удалось запустить %s: %s", robot_name, e)
+
+    _write_procs(robot_name, procs)
+    _write_legacy_pid(robot_name, procs)
+    parts = [f"Монеты робота {robot_name} обновлены"]
+    if started:
+        parts.append(f"запущено: {', '.join(started)}")
+    if stopped:
+        parts.append(f"остановлено: {', '.join(stopped)}")
+    if stopped:
+        parts.append("по остановленным монетам позиция остаётся на бирже под SL/TP")
+    return True, "; ".join(parts)
+
+
+def add_robot_symbol(robot_name: str, symbol: str) -> tuple[bool, str]:
+    """Добавить монету в список робота."""
+    symbols = get_robot_symbols(robot_name)
+    if symbol in symbols:
+        return True, f"{symbol} уже в списке робота {robot_name}"
+    return set_robot_symbols(robot_name, [*symbols, symbol])
+
+
+def remove_robot_symbol(robot_name: str, symbol: str) -> tuple[bool, str]:
+    """Убрать монету из списка робота."""
+    symbols = get_robot_symbols(robot_name)
+    if symbol not in symbols:
+        return True, f"{symbol} не в списке робота {robot_name}"
+    return set_robot_symbols(robot_name, [s for s in symbols if s != symbol])
+
+
+def get_robot_status(robot_name: str) -> RobotStatus:
+    """Получить статус робота (по всем его монетам)."""
+    symbols = get_robot_symbols(robot_name)
+    procs = _read_procs(robot_name)
+    alive: dict[str, int] = {}
+    for symbol, pid in procs.items():
         if is_running(pid):
-            return RobotStatus(name=robot_name, running=True, pid=pid)
+            alive[symbol] = pid
         else:
-            pidfile.unlink(missing_ok=True)
-            return RobotStatus(name=robot_name, running=False)
-    except (ValueError, OSError) as e:
-        return RobotStatus(name=robot_name, running=False, error=str(e))
+            procs.pop(symbol, None)
+    if procs != alive:
+        _write_procs(robot_name, alive)
+    if alive:
+        _write_legacy_pid(robot_name, alive)
+    else:
+        pidfile_for(robot_name).unlink(missing_ok=True)
+    return RobotStatus(
+        name=robot_name,
+        running=bool(alive),
+        pid=next(iter(alive.values()), None),
+        symbols=symbols,
+        symbol_pids=alive,
+    )
 
 
 def get_all_robots_status() -> list[RobotStatus]:
