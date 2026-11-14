@@ -208,6 +208,21 @@ class TradeStore:
             return []
         return sorted(p.stem for p in TRADES_DIR.glob("*.json"))
 
+    def clear(self, robot: str | None = None) -> int:
+        """Удалить историю сделок (всех или одного робота). Вернуть число записей."""
+        robots = [robot] if robot else self._list_robots()
+        removed = 0
+        for name in robots:
+            records = self._load(name)
+            removed += len(records)
+            path = self._path(name)
+            if path.exists():
+                try:
+                    path.unlink()
+                except OSError:
+                    continue
+        return removed
+
     def record_from_state(
         self,
         robot: str,
@@ -269,9 +284,7 @@ class TradeStore:
         pnl_pct = 0.0
         if qty > 0:
             exit_price = (
-                entry_price + pnl / qty
-                if side == "long"
-                else entry_price - pnl / qty
+                entry_price + pnl / qty if side == "long" else entry_price - pnl / qty
             )
             notional = entry_price * qty
             if notional > 0:

@@ -55,6 +55,22 @@ def test_persist_to_disk(store: TradeStore, tmp_path: Path) -> None:
     assert len(trades) == 1
 
 
+def test_clear_all_and_single_robot(store: TradeStore) -> None:
+    store.add(_rec(robot="robot_trend"))
+    store.add(_rec(robot="robot_flat"))
+    store.add(_rec(robot="robot_flat", symbol="ETHUSDT"))
+
+    removed = store.clear(robot="robot_flat")
+    assert removed == 2
+    assert store.get_trades(robot="robot_flat") == []
+    assert len(store.get_trades(robot="robot_trend")) == 1
+
+    removed = store.clear()
+    assert removed == 1
+    assert store.get_trades() == []
+    assert store._list_robots() == []
+
+
 def test_record_from_state_long_pnl(store: TradeStore) -> None:
     store.record_from_state(
         robot="robot_trend",
