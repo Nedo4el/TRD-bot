@@ -1,4 +1,4 @@
-"""Screener — тренд по HH/HL (восходящий) и LH/LL (нисходящий).
+"""Screener — тренд по EMA + ADX (логика robot_trend).
 
 Запуск:  python bot_screener_trend/main.py
 Остановка: Ctrl+C
@@ -10,8 +10,9 @@ import asyncio
 import os
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
@@ -37,24 +38,26 @@ def _load_config() -> tuple[dict, ScanConfig]:
     raw_exclude = os.getenv("EXCLUDE_SYMBOLS", "")
     exclude = [s.strip() for s in raw_exclude.split(",") if s.strip()]
 
-    env_cfg = {
+    env_cfg: dict[str, Any] = {
         "api_key": os.getenv("BYBIT_API_KEY", ""),
         "api_secret": os.getenv("BYBIT_API_SECRET", ""),
         "testnet": get_env_bool("TESTNET", True),
-        "timeframe": os.getenv("TIMEFRAME", "1"),
+        "timeframe": os.getenv("TIMEFRAME", "5"),
         "scan_interval": get_env_int("SCAN_INTERVAL", 300),
         "min_turnover_24h": get_env_float("MIN_TURNOVER_24H", 10_000_000),
-        "lookback_bars": get_env_int("LOOKBACK_BARS", 100),
+        "lookback_bars": get_env_int("LOOKBACK_BARS", 300),
         "exclude_symbols": exclude,
     }
 
     scan_cfg = ScanConfig(
-        swing_window=get_env_int("SWING_WINDOW", 5),
-        ema_fast=get_env_int("EMA_FAST", 20),
+        ema_fast=get_env_int("EMA_FAST", 23),
         ema_slow=get_env_int("EMA_SLOW", 50),
-        adx_min=get_env_float("ADX_MIN", 20.0),
-        min_swings=get_env_int("MIN_SWINGS", 3),
-        min_turnover_24h=env_cfg["min_turnover_24h"],
+        ema_macro=get_env_int("EMA_MACRO", 200),
+        adx_period=get_env_int("ADX_PERIOD", 14),
+        adx_threshold=get_env_float("ADX_THRESHOLD", 25.0),
+        sl_pct=get_env_float("SL_PCT", 0.02),
+        take_pct=get_env_float("TAKE_PCT", 0.10),
+        min_turnover_24h=float(env_cfg["min_turnover_24h"]),
         exclude_symbols=exclude,
     )
 
@@ -141,12 +144,13 @@ async def main() -> None:
     metrics = ScreenerMetrics()
 
     logger.info(
-        "Скринер тренда запущен: timeframe=%s, interval=%ss, "
-        "min_turnover=$%sM, lookback=%d",
+        "Скринер тренда (EMA+ADX) запущен: timeframe=%s, interval=%ss, "
+        "min_turnover=$%sM, lookback=%d, adx_threshold=%.1f",
         env_cfg["timeframe"],
         env_cfg["scan_interval"],
         env_cfg["min_turnover_24h"] / 1_000_000,
         env_cfg["lookback_bars"],
+        scan_cfg.adx_threshold,
     )
 
     while True:
