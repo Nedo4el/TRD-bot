@@ -176,7 +176,7 @@ class SignalStore:
                 continue
             status.last_run_at = item.get("last_run_at")
             status.duration_sec = item.get("duration_sec")
-            status.next_run_at = item.get("next_run_at")
+            status.next_run_at = None  # сканы только вручную — расписания нет
             status.count = int(item.get("count", 0) or 0)
             status.error = item.get("error")
             status.running = False

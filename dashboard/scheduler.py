@@ -1,12 +1,14 @@
-"""Планировщик фонового сканирования."""
+"""Планировщик скринеров: запуск только вручную.
+
+Фоновых интервалов нет: каждый скринер ждёт события «Сканировать»
+(кнопка в UI, POST /api/scan/{name} или сохранение настроек).
+Один клик = один скан.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import random
 import time
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 
 from core.logger import get_logger
 from dashboard.adapters import ADAPTERS
@@ -16,25 +18,8 @@ from dashboard.store import SignalStore
 logger = get_logger(__name__)
 
 
-@dataclass(slots=True)
-class _ScreenerClock:
-    """Абсолютное расписание: следующий слот не сдвигается после задержки."""
-
-    interval: int
-    anchor: float
-
-    def tick(self) -> float:
-        """Вернуть длительность паузы до следующего запуска."""
-        now = time.monotonic()
-        due = self.anchor + self.interval
-        while due <= now:
-            due += self.interval
-        self.anchor = due
-        return max(0.0, due - now)
-
-
 class Scheduler:
-    """Крутит все скринеры по своим интервалам."""
+    """Запускает скринеры только по ручному событию."""
 
     def __init__(
         self,
@@ -46,18 +31,13 @@ class Scheduler:
         self._store = store
         self._semaphore = asyncio.Semaphore(config.concurrency)
         self._events = {spec.name: asyncio.Event() for spec in specs}
-        self._clocks: dict[str, _ScreenerClock] = {
-            spec.name: _ScreenerClock(spec.interval_sec, time.monotonic())
-            for spec in specs
-        }
         self._tasks: list[asyncio.Task[None]] = []
         self._stopping = False
 
     def start(self) -> None:
-        """Запустить фоновые задачи скринеров (со стартовым джиттера)."""
+        """Создать фоновые задачи (они ждут ручного события)."""
         for spec in self._specs:
-            delay = random.uniform(0.0, 2.0)
-            self._tasks.append(asyncio.create_task(self._loop(spec, delay)))
+            self._tasks.append(asyncio.create_task(self._loop(spec)))
 
     async def stop(self) -> None:
         """Остановить фоновые задачи."""
@@ -69,7 +49,7 @@ class Scheduler:
         await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def trigger(self, name: str | None = None) -> bool:
-        """Запустить скринер (или все) вне расписания."""
+        """Запустить скринер (или все) вручную."""
         if name is None:
             for event in self._events.values():
                 event.set()
@@ -80,15 +60,14 @@ class Scheduler:
         target.set()
         return True
 
-    async def _loop(self, spec: ScreenerSpec, delay: float) -> None:
-        if delay:
-            await asyncio.sleep(delay)
+    async def _loop(self, spec: ScreenerSpec) -> None:
+        event = self._events[spec.name]
         while not self._stopping:
+            await event.wait()
+            event.clear()
             await self._run(spec)
-            await self._wait(spec)
 
     async def _run(self, spec: ScreenerSpec) -> None:
-        clock = self._clocks[spec.name]
         async with self._semaphore:
             self._store.mark_running(spec.name)
             started = time.monotonic()
@@ -97,42 +76,19 @@ class Scheduler:
                 signals = await scan(spec)
             except Exception as exc:
                 duration = time.monotonic() - started
-                next_run = self._next_run(spec.interval_sec, clock)
                 logger.exception("Скринер %s завершился ошибкой", spec.name)
                 self._store.set_error(
                     spec.name,
                     f"{type(exc).__name__}: {exc}",
                     duration,
-                    next_run,
+                    "",
                 )
             else:
                 duration = time.monotonic() - started
-                next_run = self._next_run(spec.interval_sec, clock)
                 logger.info(
                     "Скринер %s: %d сигналов за %.1fс",
                     spec.name,
                     len(signals),
                     duration,
                 )
-                self._store.set_result(
-                    spec.name,
-                    signals,
-                    duration,
-                    next_run,
-                )
-
-    async def _wait(self, spec: ScreenerSpec) -> None:
-        event = self._events[spec.name]
-        event.clear()
-        clock = self._clocks[spec.name]
-        try:
-            await asyncio.wait_for(event.wait(), timeout=clock.tick())
-        except TimeoutError:
-            pass
-
-    @staticmethod
-    def _next_run(interval_sec: int, clock: _ScreenerClock | None = None) -> str:
-        moment = datetime.now(timezone.utc) + timedelta(
-            seconds=clock.tick() if clock else interval_sec
-        )
-        return moment.isoformat(timespec="seconds")
+                self._store.set_result(spec.name, signals, duration, "")

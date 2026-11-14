@@ -1,12 +1,14 @@
 """Общий fetcher дашборда: тикеры, свечи, спред, пагинация.
 
 Защищает планировщик от 403/429 (CloudFront-бан Bybit при стартовом залпе):
-повторные попытки с экспоненциальным backoff.
+повторные попытки с экспоненциальным backoff + глобальный темп запросов
+(общий лимит на весь процесс, чтобы не превысить лимиты биржи).
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -18,6 +20,11 @@ logger = get_logger(__name__)
 
 _RETRYABLE_STATUS = (403, 429)
 
+# Глобальный темп: не более ~8 запросов/с на весь процесс дашборда,
+# независимо от того, сколько скринеров сканируют одновременно.
+_PACE_LOCK = asyncio.Lock()
+_LAST_REQUEST_AT = 0.0
+
 
 class DashboardFetcher:
     """REST-клиент Bybit v5 для дашборда (read-only, без пула соединений)."""
@@ -27,7 +34,7 @@ class DashboardFetcher:
         api_key: str,
         api_secret: str,
         testnet: bool = False,
-        min_delay: float = 0.05,
+        min_interval: float = 0.12,
         max_retries: int = 3,
         retry_delay: float = 1.0,
     ) -> None:
@@ -37,7 +44,7 @@ class DashboardFetcher:
             api_secret=api_secret,
             recv_window=10000,
         )
-        self._min_delay = min_delay
+        self._min_interval = min_interval
         self._max_retries = max_retries
         self._retry_delay = retry_delay
 
@@ -49,6 +56,14 @@ class DashboardFetcher:
             return True
         text = str(exc).lower()
         return any(code in text for code in ("403", "429"))
+
+    async def _pace(self) -> None:
+        global _LAST_REQUEST_AT
+        async with _PACE_LOCK:
+            wait = _LAST_REQUEST_AT + self._min_interval - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            _LAST_REQUEST_AT = time.monotonic()
 
     async def _fetch(
         self,
@@ -66,7 +81,7 @@ class DashboardFetcher:
         """
         last: BaseException | None = None
         for attempt in range(1, self._max_retries + 1):
-            await asyncio.sleep(self._min_delay * attempt)
+            await self._pace()
             try:
                 return await asyncio.to_thread(func, *args, **kwargs)
             except Exception as exc:  # noqa: BLE001
