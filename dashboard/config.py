@@ -33,7 +33,7 @@ SCREENERS: tuple[ScreenerSpec, ...] = (
     ScreenerSpec("klin", "Сжатие (клин)", "bot_screener_klin", 180, 40),
     ScreenerSpec("uzkiy", "Узкий диапазон", "bot_screener_uzkiy", 180, 60),
     ScreenerSpec("krugloe", "Круглые числа", "bot_screener_krugloe", 120, 60),
-    ScreenerSpec("trend", "Тренд HH/HL", "bot_screener_trend", 180, 40),
+    ScreenerSpec("trend", "Тренд EMA/ADX", "bot_screener_trend", 300, 40),
     ScreenerSpec("pump", "Накопление", "bot_screener_pump", 600, 40, True),
     ScreenerSpec("yrovni", "Volume Profile", "bot_screener_yrovni", 300, 25, True),
     ScreenerSpec(

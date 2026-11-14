@@ -307,23 +307,25 @@ async def scan_krugloe(spec: ScreenerSpec) -> list[Signal]:
 
 
 async def scan_trend(spec: ScreenerSpec) -> list[Signal]:
-    """Тренд: структура HH/HL (LONG) или LH/LL (SHORT)."""
+    """Тренд: EMA + ADX/DI (логика robot_trend)."""
     from bot_screener_trend.scanner import ScanConfig, analyze_symbol
 
     env = _env(spec)
     min_turnover = env.number("MIN_TURNOVER_24H", 10_000_000)
     exclude = env.names("EXCLUDE_SYMBOLS", ())
     cfg = ScanConfig(
-        swing_window=env.integer("SWING_WINDOW", 5),
-        ema_fast=env.integer("EMA_FAST", 20),
+        ema_fast=env.integer("EMA_FAST", 23),
         ema_slow=env.integer("EMA_SLOW", 50),
-        adx_min=env.number("ADX_MIN", 20.0),
-        min_swings=env.integer("MIN_SWINGS", 3),
+        ema_macro=env.integer("EMA_MACRO", 200),
+        adx_period=env.integer("ADX_PERIOD", 14),
+        adx_threshold=env.number("ADX_THRESHOLD", 25.0),
+        sl_pct=env.number("SL_PCT", 0.02),
+        take_pct=env.number("TAKE_PCT", 0.10),
         min_turnover_24h=min_turnover,
         exclude_symbols=exclude,
     )
-    timeframe = env.string("TIMEFRAME", "1")
-    lookback = env.integer("LOOKBACK_BARS", 100)
+    timeframe = env.string("TIMEFRAME", "5")
+    lookback = env.integer("LOOKBACK_BARS", 300)
     fetcher = _new_fetcher(env)
     universe = await _universe(fetcher, env, spec, min_turnover)
 
@@ -357,12 +359,12 @@ async def scan_trend(spec: ScreenerSpec) -> list[Signal]:
                 found_at=_now_iso(),
                 detail={
                     "timeframe": timeframe,
-                    "hh": result.hh_count,
-                    "hl": result.hl_count,
-                    "lh": result.lh_count,
-                    "ll": result.ll_count,
+                    "ema_fast": round(result.ema_fast, 6),
+                    "ema_slow": round(result.ema_slow, 6),
+                    "spread_pct": round(result.spread_pct, 2),
                     "adx": round(result.adx_value, 1),
-                    "rsi": round(result.rsi_value, 1),
+                    "di_plus": round(result.di_plus, 1),
+                    "di_minus": round(result.di_minus, 1),
                 },
             )
         ]
