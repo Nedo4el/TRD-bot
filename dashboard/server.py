@@ -8,6 +8,7 @@ import webbrowser
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 import uvicorn
@@ -18,8 +19,11 @@ from starlette.routing import Route
 
 from dashboard import tiger
 from dashboard.config import DashboardConfig
+from dashboard.robot_state import RobotState
 from dashboard.robots import (
     get_all_robots_status,
+    get_robot_symbols,
+    set_robot_symbols,
     start_robot,
     stop_all_robots,
     stop_robot,
@@ -27,6 +31,7 @@ from dashboard.robots import (
 from dashboard.scheduler import Scheduler
 from dashboard.settings import AllCoinsSettings, ImpulseSettings
 from dashboard.store import SignalStore
+from dashboard.symbols import SymbolsCache
 from dashboard.trade_store import TradeStore
 
 logger = logging.getLogger(__name__)
@@ -47,6 +52,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     app.state.store = store
     app.state.scheduler = scheduler
     app.state.trade_store = trade_store
+    app.state.symbols_cache = SymbolsCache()
     scheduler.start()
     try:
         yield
@@ -153,10 +159,119 @@ async def api_robots_list(request: Request) -> JSONResponse:
             "running": s.running,
             "pid": s.pid,
             "error": s.error,
+            "symbols": s.symbols,
+            "symbol_pids": s.symbol_pids,
         }
         for s in statuses
     ]
     return JSONResponse({"ok": True, "robots": data}, headers=_NO_CACHE)
+
+
+async def api_bybit_symbols(request: Request) -> JSONResponse:
+    """Список монет Bybit USDT-M (для окна выбора)."""
+    cache: SymbolsCache = request.app.state.symbols_cache
+    force = request.query_params.get("refresh", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    symbols = await cache.get(force=force)
+    return JSONResponse(
+        {"ok": True, "symbols": symbols, "total": len(symbols)},
+        headers=_NO_CACHE,
+    )
+
+
+async def api_robot_symbols_get(request: Request) -> JSONResponse:
+    """Список торгуемых монет робота."""
+    name = request.path_params.get("name", "").strip()
+    if not name:
+        return JSONResponse(
+            {"ok": False, "error": "robot name required"}, status_code=400
+        )
+    status = get_all_robots_status()
+    current = next((s for s in status if s.name == name), None)
+    return JSONResponse(
+        {
+            "ok": True,
+            "robot": name,
+            "symbols": get_robot_symbols(name),
+            "symbol_pids": current.symbol_pids if current else {},
+        },
+        headers=_NO_CACHE,
+    )
+
+
+async def api_robot_symbols_post(request: Request) -> JSONResponse:
+    """Изменить список монет робота: add / remove / symbols."""
+    name = request.path_params.get("name", "").strip()
+    if not name:
+        return JSONResponse(
+            {"ok": False, "error": "robot name required"}, status_code=400
+        )
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"ok": False, "error": "JSON object required"}, status_code=400
+        )
+
+    current = get_robot_symbols(name)
+    if "symbols" in body:
+        raw = body.get("symbols")
+        if not isinstance(raw, list):
+            return JSONResponse(
+                {"ok": False, "error": "symbols: список ожидается"}, status_code=400
+            )
+        wanted = [str(s).strip().upper() for s in raw if str(s).strip()]
+        bad = [s for s in wanted if _bad_symbol(s)]
+        if bad:
+            return JSONResponse(
+                {"ok": False, "error": f"неверные тикеры: {', '.join(bad)}"},
+                status_code=400,
+            )
+        ok, message = set_robot_symbols(name, wanted)
+    else:
+        add_raw = body.get("add") or []
+        remove_raw = body.get("remove") or []
+        if not isinstance(add_raw, list) or not isinstance(remove_raw, list):
+            return JSONResponse(
+                {"ok": False, "error": "add/remove: списки ожидаются"},
+                status_code=400,
+            )
+        add = [str(s).strip().upper() for s in add_raw if str(s).strip()]
+        remove = [str(s).strip().upper() for s in remove_raw if str(s).strip()]
+        bad = [s for s in [*add, *remove] if _bad_symbol(s)]
+        if bad:
+            return JSONResponse(
+                {"ok": False, "error": f"неверные тикеры: {', '.join(bad)}"},
+                status_code=400,
+            )
+        symbols = [s for s in current if s not in remove]
+        for symbol in add:
+            if symbol not in symbols:
+                symbols.append(symbol)
+        ok, message = set_robot_symbols(name, symbols)
+        if not ok:
+            return JSONResponse(
+                {"ok": False, "error": message}, status_code=400, headers=_NO_CACHE
+            )
+    if not ok:
+        return JSONResponse(
+            {"ok": False, "error": message}, status_code=400, headers=_NO_CACHE
+        )
+    logger.info("Монеты робота %s: %s", name, message)
+    return JSONResponse(
+        {
+            "ok": True,
+            "robot": name,
+            "symbols": get_robot_symbols(name),
+            "message": message,
+        },
+        headers=_NO_CACHE,
+    )
 
 
 async def api_robot_start(request: Request) -> JSONResponse:
@@ -230,6 +345,73 @@ async def api_robot_statistics(request: Request) -> JSONResponse:
     )
 
 
+async def api_robot_flag_start(request: Request) -> JSONResponse:
+    """Запустить тренд-робота по выбранным символам (только флаг, без биржи)."""
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"ok": False, "error": "JSON object required"}, status_code=400
+        )
+    symbols_raw = body.get("symbols", [])
+    if not isinstance(symbols_raw, list) or not symbols_raw:
+        return JSONResponse(
+            {"ok": False, "error": "symbols: непустой список обязателен"},
+            status_code=400,
+        )
+    symbols = [str(s).strip().upper() for s in symbols_raw]
+    bad = [s for s in symbols if _bad_symbol(s)]
+    if bad:
+        return JSONResponse(
+            {"ok": False, "error": f"неверные тикеры: {', '.join(bad)}"},
+            status_code=400,
+        )
+    signals_raw = body.get("signals", [])
+    if not isinstance(signals_raw, list):
+        signals_raw = []
+    state = RobotState.from_dict(
+        {
+            "running": True,
+            "symbols": symbols,
+            "signals": signals_raw,
+            "started_at": datetime.now(UTC).isoformat(),
+        }
+    )
+    state.save()
+    logger.info("Робот запущен: %s", ", ".join(state.symbols))
+    return JSONResponse({"ok": True, "state": state.to_dict()}, headers=_NO_CACHE)
+
+
+async def api_robot_flag_stop(request: Request) -> JSONResponse:
+    """Остановить тренд-робота (сбросить флаг)."""
+    state = RobotState.load()
+    state.running = False
+    state.stopped_at = datetime.now(UTC).isoformat()
+    state.save()
+    logger.info("Робот остановлен")
+    return JSONResponse({"ok": True, "state": state.to_dict()}, headers=_NO_CACHE)
+
+
+async def api_robot_flag_status(request: Request) -> JSONResponse:
+    """Текущее состояние тренд-робота."""
+    state = RobotState.load()
+    return JSONResponse(state.to_dict(), headers=_NO_CACHE)
+
+
+async def api_robot_statistics_clear(request: Request) -> JSONResponse:
+    """Очистить историю сделок (всех или одного робота: ?robot=name)."""
+    trade_store: TradeStore = request.app.state.trade_store
+    robot = request.query_params.get("robot", "").strip() or None
+    removed = trade_store.clear(robot)
+    logger.info("История сделок очищена (%s): %d записей", robot or "все", removed)
+    return JSONResponse(
+        {"ok": True, "removed": removed, "robot": robot or "all"},
+        headers=_NO_CACHE,
+    )
+
+
 async def api_open_tiger(request: Request) -> JSONResponse:
     """Открыть инструмент в терминале Tiger Trade через его локальный API."""
     config: DashboardConfig = request.app.state.config
@@ -292,10 +474,25 @@ def create_app() -> Starlette:
             methods=["POST"],
         ),
         Route("/api/robots", api_robots_list),
+        Route("/api/bybit/symbols", api_bybit_symbols),
         Route("/api/robots/{name}/start", api_robot_start, methods=["POST"]),
         Route("/api/robots/{name}/stop", api_robot_stop, methods=["POST"]),
+        Route("/api/robots/{name}/symbols", api_robot_symbols_get),
+        Route(
+            "/api/robots/{name}/symbols",
+            api_robot_symbols_post,
+            methods=["POST"],
+        ),
         Route("/api/robots/stop-all", api_robots_stop_all, methods=["POST"]),
         Route("/api/robots/statistics", api_robot_statistics, methods=["GET"]),
+        Route(
+            "/api/robots/statistics/clear",
+            api_robot_statistics_clear,
+            methods=["POST"],
+        ),
+        Route("/api/robot/start", api_robot_flag_start, methods=["POST"]),
+        Route("/api/robot/stop", api_robot_flag_stop, methods=["POST"]),
+        Route("/api/robot/status", api_robot_flag_status, methods=["GET"]),
         Route("/favicon.ico", lambda request: Response(status_code=204)),
     ]
     return Starlette(routes=routes, lifespan=lifespan)
