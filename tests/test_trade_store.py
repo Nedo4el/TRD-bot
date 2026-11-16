@@ -137,9 +137,7 @@ def test_stats_streaks(store: TradeStore) -> None:
     # Серия: W, W, W, L, L → max_win=3, max_loss=2
     pnls = [1.0, 1.0, 1.0, -1.0, -1.0]
     for i, p in enumerate(pnls):
-        store.add(
-            _rec(pnl=p, closed_at=f"2026-11-13T1{i}:00:00+00:00")
-        )
+        store.add(_rec(pnl=p, closed_at=f"2026-11-13T1{i}:00:00+00:00"))
     s = store.stats(robot="robot_trend")
     assert s.max_win_streak == 3
     assert s.max_loss_streak == 2
