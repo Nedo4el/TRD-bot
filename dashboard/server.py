@@ -8,7 +8,6 @@ import webbrowser
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
-from datetime import UTC, datetime
 from pathlib import Path
 
 import uvicorn
@@ -19,7 +18,6 @@ from starlette.routing import Route
 
 from dashboard import tiger
 from dashboard.config import DashboardConfig
-from dashboard.robot_state import RobotState
 from dashboard.robots import (
     get_all_robots_status,
     get_robot_symbols,
@@ -345,61 +343,6 @@ async def api_robot_statistics(request: Request) -> JSONResponse:
     )
 
 
-async def api_robot_flag_start(request: Request) -> JSONResponse:
-    """Запустить тренд-робота по выбранным символам (только флаг, без биржи)."""
-    try:
-        body = await request.json()
-    except ValueError:
-        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
-    if not isinstance(body, dict):
-        return JSONResponse(
-            {"ok": False, "error": "JSON object required"}, status_code=400
-        )
-    symbols_raw = body.get("symbols", [])
-    if not isinstance(symbols_raw, list) or not symbols_raw:
-        return JSONResponse(
-            {"ok": False, "error": "symbols: непустой список обязателен"},
-            status_code=400,
-        )
-    symbols = [str(s).strip().upper() for s in symbols_raw]
-    bad = [s for s in symbols if _bad_symbol(s)]
-    if bad:
-        return JSONResponse(
-            {"ok": False, "error": f"неверные тикеры: {', '.join(bad)}"},
-            status_code=400,
-        )
-    signals_raw = body.get("signals", [])
-    if not isinstance(signals_raw, list):
-        signals_raw = []
-    state = RobotState.from_dict(
-        {
-            "running": True,
-            "symbols": symbols,
-            "signals": signals_raw,
-            "started_at": datetime.now(UTC).isoformat(),
-        }
-    )
-    state.save()
-    logger.info("Робот запущен: %s", ", ".join(state.symbols))
-    return JSONResponse({"ok": True, "state": state.to_dict()}, headers=_NO_CACHE)
-
-
-async def api_robot_flag_stop(request: Request) -> JSONResponse:
-    """Остановить тренд-робота (сбросить флаг)."""
-    state = RobotState.load()
-    state.running = False
-    state.stopped_at = datetime.now(UTC).isoformat()
-    state.save()
-    logger.info("Робот остановлен")
-    return JSONResponse({"ok": True, "state": state.to_dict()}, headers=_NO_CACHE)
-
-
-async def api_robot_flag_status(request: Request) -> JSONResponse:
-    """Текущее состояние тренд-робота."""
-    state = RobotState.load()
-    return JSONResponse(state.to_dict(), headers=_NO_CACHE)
-
-
 async def api_robot_statistics_clear(request: Request) -> JSONResponse:
     """Очистить историю сделок (всех или одного робота: ?robot=name)."""
     trade_store: TradeStore = request.app.state.trade_store
@@ -490,9 +433,6 @@ def create_app() -> Starlette:
             api_robot_statistics_clear,
             methods=["POST"],
         ),
-        Route("/api/robot/start", api_robot_flag_start, methods=["POST"]),
-        Route("/api/robot/stop", api_robot_flag_stop, methods=["POST"]),
-        Route("/api/robot/status", api_robot_flag_status, methods=["GET"]),
         Route("/favicon.ico", lambda request: Response(status_code=204)),
     ]
     return Starlette(routes=routes, lifespan=lifespan)

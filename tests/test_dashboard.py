@@ -23,7 +23,6 @@ from dashboard.config import (
 )
 from dashboard.fetcher import DashboardFetcher
 from dashboard.models import Signal, make_signal
-from dashboard.robot_state import RobotState
 from dashboard.scheduler import Scheduler
 from dashboard.settings import AllCoinsSettings
 from dashboard.store import SignalStore
@@ -968,96 +967,3 @@ class _PathRequest:
 
 def _path_request(name: str, body: dict[str, Any] | None = None) -> Any:
     return _PathRequest(name, body)
-
-
-# ==================== Тренд-робот (флаг запуска) ====================
-
-
-class _FakeRequest:
-    """Минимальный стаб Request для обработчиков флага робота."""
-
-    def __init__(self, body: dict[str, Any] | None) -> None:
-        self._body = body
-
-    async def json(self) -> dict[str, Any]:
-        if self._body is None:
-            raise ValueError("no body")
-        return self._body
-
-
-def test_robot_state_defaults_and_roundtrip(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """RobotState: дефолты при отсутствии файла + save/load round-trip."""
-    import dashboard.robot_state as robot_module
-
-    monkeypatch.setattr(robot_module, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(robot_module, "ROBOT_STATE_FILE", tmp_path / "robot_state.json")
-
-    assert RobotState.load() == RobotState()
-
-    state = RobotState.from_dict(
-        {
-            "running": True,
-            "symbols": ["btcusdt", "BTCUSDT", "ethusdt"],
-            "signals": [{"symbol": "BTCUSDT", "side": "LONG"}],
-            "started_at": "2026-01-01T00:00:00+00:00",
-        }
-    )
-    state.save()
-
-    loaded = RobotState.load()
-    assert loaded.running is True
-    assert loaded.symbols == ["BTCUSDT", "ETHUSDT"]
-    assert loaded.signals == [{"symbol": "BTCUSDT", "side": "LONG"}]
-    assert loaded.started_at == "2026-01-01T00:00:00+00:00"
-
-
-def _fake_request(body: dict[str, Any] | None) -> Any:
-    return _FakeRequest(body)
-
-
-def test_robot_flag_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """POST /api/robot/start|stop, GET /api/robot/status: флаг и валидация."""
-    import dashboard.robot_state as robot_module
-    from dashboard import server as server_module
-
-    monkeypatch.setattr(robot_module, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(robot_module, "ROBOT_STATE_FILE", tmp_path / "robot_state.json")
-
-    async def run() -> None:
-        req = _fake_request(
-            {"symbols": ["btcusdt", "ETHUSDT"], "signals": [{"symbol": "BTCUSDT"}]}
-        )
-        resp = await server_module.api_robot_flag_start(req)
-        assert resp.status_code == 200
-        data = json.loads(bytes(resp.body))
-        assert data["ok"] is True
-        assert data["state"]["running"] is True
-        assert data["state"]["symbols"] == ["BTCUSDT", "ETHUSDT"]
-        assert data["state"]["started_at"] is not None
-
-        resp = await server_module.api_robot_flag_status(_fake_request(None))
-        status = json.loads(bytes(resp.body))
-        assert status["running"] is True
-        assert status["symbols"] == ["BTCUSDT", "ETHUSDT"]
-
-        resp = await server_module.api_robot_flag_start(_fake_request({"symbols": []}))
-        assert resp.status_code == 400
-
-        resp = await server_module.api_robot_flag_start(
-            _fake_request({"symbols": ["BTC USDT!"]})
-        )
-        assert resp.status_code == 400
-
-        resp = await server_module.api_robot_flag_start(_fake_request(None))
-        assert resp.status_code == 400
-
-        resp = await server_module.api_robot_flag_stop(_fake_request(None))
-        data = json.loads(bytes(resp.body))
-        assert data["ok"] is True
-        assert data["state"]["running"] is False
-        assert data["state"]["symbols"] == ["BTCUSDT", "ETHUSDT"]
-        assert data["state"]["stopped_at"] is not None
-
-    asyncio.run(run())
