@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Awaitable, Callable
 from functools import wraps
+from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 
 from core.logger import get_logger
@@ -15,6 +17,31 @@ logger = get_logger(__name__)
 # Типы для аннотаций декораторов
 P = ParamSpec("P")
 T = TypeVar("T")
+
+
+def read_json_file(path: Path) -> Any:
+    """Прочитать JSON-файл, который могли сохранить в UTF-8 или UTF-16.
+
+    Файлы состояния правят и руками: PowerShell и Блокнот пишут UTF-16
+    либо UTF-8 с BOM, а ``read_text(encoding="utf-8")`` на них падает
+    с UnicodeDecodeError ещё до старта торговли.
+
+    Args:
+        path: путь к JSON-файлу.
+
+    Returns:
+        Разобранное содержимое (любой JSON-тип).
+
+    Raises:
+        ValueError: файл не читается ни как UTF-8, ни как UTF-16 JSON.
+    """
+    raw = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-16"):
+        try:
+            return json.loads(raw.decode(encoding))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+    raise ValueError(f"{path.name}: не разобрать как UTF-8/UTF-16 JSON")
 
 
 def exponential_backoff(attempt: int, base: float = 1.0, cap: float = 60.0) -> float:
