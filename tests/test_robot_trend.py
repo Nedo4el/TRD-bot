@@ -908,6 +908,33 @@ def test_enter_sl_setup_failure_closes_position(tmp_path: Path) -> None:
     assert st.day_trades == 1
 
 
+def test_enter_unconfirmed_fill_requests_resync(tmp_path: Path) -> None:
+    flow, client, feed, strategy, store = _make_flow(tmp_path)
+    strategy.instruction = _enter_instruction()
+
+    async def _no_position(symbol: str) -> Position | None:
+        return None
+
+    client.get_position = _no_position  # type: ignore[method-assign]
+    asyncio.run(flow._tick())
+    assert len(client.placed) == 1
+    assert store.state.position is None
+    assert feed.resync_needed is True
+
+
+def test_enter_order_error_requests_resync(tmp_path: Path) -> None:
+    flow, client, feed, strategy, store = _make_flow(tmp_path)
+    strategy.instruction = _enter_instruction()
+
+    async def _reject(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("timeout")
+
+    client.place_order = _reject  # type: ignore[method-assign]
+    asyncio.run(flow._tick())
+    assert store.state.position is None
+    assert feed.resync_needed is True
+
+
 # ============================== order_flow: выход ==============================
 
 
@@ -1141,6 +1168,20 @@ def test_recover_syncs_qty_and_ensures_sl(tmp_path: Path) -> None:
     assert store.state.position.qty == 0.05
     assert store.state.position.entry_price == 101.0
     assert client.sl_calls == [(95.0, 110.0)]
+
+
+def test_recover_takes_side_from_exchange(tmp_path: Path) -> None:
+    flow, client, _feed, _strategy, store = _make_flow(tmp_path)
+    store.state.position = OpenPosition(
+        entry_price=100.0, qty=0.1, side="long", stop_loss=105.0
+    )
+    store.state.phase = PHASE_IN_POSITION
+    client.position = Position(
+        symbol="BTCUSDT", side="Sell", size=0.1, avg_price=100.0, unrealised_pnl=0.0
+    )
+    assert asyncio.run(flow.recover()) is True
+    assert store.state.position is not None
+    assert store.state.position.side == "short"
 
 
 def test_recover_cancels_stray_orders_when_flat(tmp_path: Path) -> None:

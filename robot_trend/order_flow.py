@@ -243,6 +243,8 @@ class OrderFlow:
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("ордер не выставлен: %s", exc)
+            # ответ мог потеряться уже после филла — сверяемся с биржей
+            self.feed.resync_needed = True
             self._notify(f"trend: ошибка входа — {exc}")
             return
 
@@ -251,6 +253,8 @@ class OrderFlow:
             logger.error(
                 "позиция не подтвердилась после Market-ордера — ждём recover",
             )
+            # филл мог не попасть в ответ/в REST — без ресинка откроем вторую
+            self.feed.resync_needed = True
             return
         entry = pos.avg_price or rest_price
         if not slippage_ok(rest_price, entry, self.cfg.slippage_pct):
@@ -588,6 +592,9 @@ class OrderFlow:
             st.position.qty = ex.size
             if ex.avg_price > 0:
                 st.position.entry_price = ex.avg_price
+            # сторона — по бирже: закрытие считается от неё (_exit)
+            if ex.side in ("Buy", "Sell"):
+                st.position.side = "long" if ex.side == "Buy" else "short"
             st.phase = PHASE_IN_POSITION
             await self.store.save()
             logger.info(
