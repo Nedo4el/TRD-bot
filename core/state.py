@@ -16,6 +16,8 @@ import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from core.utils import read_json_file
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +59,7 @@ class StateStore:
             )
             return
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = read_json_file(self.path)
             self.state = BotState(
                 positions={
                     sym: StoredPosition(**pos)

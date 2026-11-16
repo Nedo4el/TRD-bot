@@ -8,6 +8,8 @@ import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from core.utils import read_json_file
+
 logger = logging.getLogger(__name__)
 
 PHASE_IDLE = "IDLE"
@@ -66,7 +68,7 @@ class StateStore:
             logger.info("state %s не найден — чистый старт", self.path)
             return
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            raw = read_json_file(self.path)
             position = raw.get("position")
             self.state = TrendState(
                 phase=raw.get("phase", PHASE_IDLE),
