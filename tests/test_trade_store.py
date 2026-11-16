@@ -19,6 +19,14 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TradeStore:
     return TradeStore()
 
 
+def test_default_trades_dir_is_isolated_from_project() -> None:
+    """Журнал сделок по умолчанию не должен смотреть в data/ проекта."""
+    import dashboard.trade_store as ts
+
+    project_root = Path(__file__).resolve().parents[1]
+    assert project_root not in ts.TRADES_DIR.parents
+
+
 def _rec(
     robot: str = "robot_trend",
     symbol: str = "BTCUSDT",
