@@ -633,6 +633,23 @@ def test_robot_coins_persistence_and_env_seed(
     assert len(reloaded.set("robot_trend", many)) == coins_module.MAX_SYMBOLS_PER_ROBOT
 
 
+def test_robot_coins_reads_utf16_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Файл монет из PowerShell (UTF-16) и с BOM читается, а не роняет /api/robots."""
+    import dashboard.robot_coins as coins_module
+    from dashboard.robot_coins import RobotCoins
+
+    coins_file = tmp_path / "robot_coins.json"
+    monkeypatch.setattr(coins_module, "COINS_FILE", coins_file)
+
+    coins_file.write_bytes('{"robot_trend": ["ENAUSDT"]}'.encode("utf-16"))
+    assert RobotCoins.load().symbols_for("robot_trend") == ["ENAUSDT"]
+
+    coins_file.write_bytes(json.dumps({"robot_trend": ["BTCUSDT"]}).encode("utf-8-sig"))
+    assert RobotCoins.load().symbols_for("robot_trend") == ["BTCUSDT"]
+
+
 def test_per_symbol_paths_and_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

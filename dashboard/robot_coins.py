@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from dotenv import dotenv_values
@@ -46,6 +47,21 @@ def symbol_from_env(robot_name: str) -> str:
     return str(raw.get("SYMBOL") or "").strip().upper()
 
 
+def _read_coins_json(path: Path) -> Any:
+    """Разобрать JSON монет: UTF-8 (в т.ч. с BOM) или UTF-16.
+
+    Файл правят и руками — PowerShell сохраняет UTF-16. Без фолбэка
+    такой файл валил весь ``/api/robots`` (UnicodeDecodeError).
+    """
+    raw = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-16"):
+        try:
+            return json.loads(raw.decode(encoding))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+    raise ValueError(f"{path.name}: не UTF-8 и не UTF-16 JSON")
+
+
 @dataclass(slots=True)
 class RobotCoins:
     """Списки торгуемых монет по роботам."""
@@ -56,8 +72,10 @@ class RobotCoins:
     def load(cls) -> RobotCoins:
         """Прочитать JSON, при ошибке — пустое состояние."""
         try:
-            raw = json.loads(COINS_FILE.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            raw = _read_coins_json(COINS_FILE)
+        except (OSError, ValueError) as exc:
+            if COINS_FILE.exists():
+                logger.warning("Список монет не прочитан: %s", exc)
             return cls()
         robots: dict[str, list[str]] = {}
         if isinstance(raw, dict):
