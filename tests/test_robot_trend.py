@@ -189,6 +189,25 @@ def test_state_corrupt_file(tmp_path: Path) -> None:
     assert store.state.phase == PHASE_IDLE
 
 
+def test_state_reads_utf16_file(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "symbol": "BTCUSDT",
+                "phase": "IN_POSITION",
+                "position": {"entry_price": 100.0, "qty": 0.1, "side": "long"},
+                "day_trades": 3,
+            }
+        ),
+        encoding="utf-16",
+    )
+    store = StateStore(path, symbol="BTCUSDT")
+    assert store.state.phase == PHASE_IN_POSITION
+    assert store.state.position is not None
+    assert store.state.day_trades == 3
+
+
 def test_state_wrong_symbol_raises(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
     path.write_text(json.dumps({"symbol": "ETHUSDT"}), encoding="utf-8")
