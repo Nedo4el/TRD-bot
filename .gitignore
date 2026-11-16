@@ -52,6 +52,11 @@ data/
 .omo/run-continuation/
 .playwright-mcp/
 
+# Локальные черновики и разовые отладочные скрипты (не для репозитория)
+test_coins.py
+test_coins2.py
+test_robot.py
+
 # IDE
 .vscode/
 .idea/
