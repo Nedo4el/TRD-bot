@@ -169,16 +169,25 @@ def _symbol_env(robot_name: str, symbol: str) -> dict[str, str]:
 
 
 def _spawn(robot_name: str, symbol: str) -> int:
-    """Запустить процесс робота для монеты, вернуть pid."""
-    robot_path = PROJECT_ROOT / robot_name / "main.py"
-    proc = subprocess.Popen(
-        [sys.executable, str(robot_path)],
-        cwd=str(PROJECT_ROOT),
-        env=_symbol_env(robot_name, symbol),
-        creationflags=subprocess.CREATE_NO_WINDOW,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    """Запустить процесс робота для монеты, вернуть pid.
+
+    Запуск модулем (``-m``), а не путём к скрипту: тогда cwd попадает в
+    ``sys.path`` и импорты ``core``/``dashboard`` не падают на старте.
+    stderr уходит в ``logs/<robot>_<symbol>.stderr.log`` — иначе падение
+    процесса видно только как «pid был и пропал», без причины.
+    """
+    log_dir = PROJECT_ROOT / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    stderr_path = log_dir / f"{robot_name}_{symbol}.stderr.log"
+    with stderr_path.open("ab") as stderr:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", f"{robot_name}.main"],
+            cwd=str(PROJECT_ROOT),
+            env=_symbol_env(robot_name, symbol),
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr,
+        )
     return proc.pid
 
 
@@ -344,12 +353,14 @@ def get_robot_status(robot_name: str) -> RobotStatus:
     symbols = get_robot_symbols(robot_name)
     procs = _read_procs(robot_name)
     alive: dict[str, int] = {}
-    for symbol, pid in procs.items():
+    pruned = False
+    for symbol, pid in list(procs.items()):
         if is_running(pid):
             alive[symbol] = pid
         else:
             procs.pop(symbol, None)
-    if procs != alive:
+            pruned = True
+    if pruned:
         _write_procs(robot_name, alive)
     if alive:
         _write_legacy_pid(robot_name, alive)

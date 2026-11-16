@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Self
@@ -675,6 +676,54 @@ def test_per_symbol_paths_and_env(
     assert env["STATE_FILE"] == str(Path("data/state_SOLUSDT.json"))
     assert env["LOG_FILE"] == str(Path("logs/robot_trend_SOLUSDT.log"))
     assert env["KILL_SWITCH"] == str(Path("data/robot_trend_SOLUSDT.kill"))
+
+
+def test_spawn_runs_robot_as_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Робот стартует как модуль: при запуске скриптом падает импорт core."""
+    from dashboard import robots as robots_module
+
+    monkeypatch.setattr(robots_module, "PROJECT_ROOT", tmp_path)
+    seen: list[tuple[list[str], str | None]] = []
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(argv: list[str], **kwargs: Any) -> FakeProc:
+        seen.append((list(argv), kwargs.get("cwd")))
+        return FakeProc()
+
+    monkeypatch.setattr(robots_module.subprocess, "Popen", fake_popen)
+    pid = robots_module._spawn("robot_trend", "BTCUSDT")
+
+    assert pid == 4242
+    assert seen[0][0] == [sys.executable, "-m", "robot_trend.main"]
+    assert seen[0][1] == str(tmp_path)
+    assert (tmp_path / "logs" / "robot_trend_BTCUSDT.stderr.log").exists()
+
+
+def test_get_robot_status_prunes_dead_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Мёртвый pid вычищается из реестра, а не роняет /api/robots (500)."""
+    import dashboard.robot_coins as coins_module
+    from dashboard import robots as robots_module
+
+    monkeypatch.setattr(robots_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(robots_module, "_robots_cache", ["robot_trend"])
+    monkeypatch.setattr(robots_module, "is_running", lambda pid: False)
+    coins_file = tmp_path / "data" / "robot_coins.json"
+    coins_file.parent.mkdir(parents=True)
+    monkeypatch.setattr(coins_module, "COINS_FILE", coins_file)
+    coins_file.write_text(json.dumps({"robot_trend": ["EVAAUSDT"]}), encoding="utf-8")
+    robots_module._write_procs("robot_trend", {"EVAAUSDT": 9532})
+
+    status = robots_module.get_robot_status("robot_trend")
+
+    assert status.running is False
+    assert status.symbol_pids == {}
+    assert robots_module._read_procs("robot_trend") == {}
 
 
 def test_robot_symbols_start_stop_and_status(
