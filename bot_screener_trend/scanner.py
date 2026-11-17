@@ -5,7 +5,7 @@
   DOWN: цена < EMA_FAST < EMA_SLOW < EMA_MACRO, ADX >= порога, -DI > +DI
 
 Score = сила тренда: ADX x 2 + зазор EMA_FAST/EMA_SLOW x 5 (максимум 100).
-SL/TP — как в robot_trend: фиксированный процент от цены сигнала.
+Скринер только находит сигналы: стоп/тейк и размер позиции не считает.
 """
 
 from __future__ import annotations
@@ -30,8 +30,6 @@ class ScanConfig:
     ema_macro: int = 200
     adx_period: int = 14
     adx_threshold: float = 30.0
-    sl_pct: float = 0.02
-    take_pct: float = 0.10
     min_turnover_24h: float = 10_000_000
     exclude_symbols: list[str] = field(default_factory=list)
 
@@ -50,8 +48,6 @@ class ScanResult:
     di_plus: float = 0.0
     di_minus: float = 0.0
     score: int = 0
-    stop_loss: float = 0.0
-    take_profit: float = 0.0
     turnover_24h: float = 0.0
     signal_time: str = ""
 
@@ -124,13 +120,6 @@ def analyze_symbol(
 
     score = int(min(100.0, adx_val * 2.0 + spread_pct * 5.0))
 
-    if trend == "UP":
-        stop_loss = price * (1.0 - cfg.sl_pct)
-        take_profit = price * (1.0 + cfg.take_pct)
-    else:
-        stop_loss = price * (1.0 + cfg.sl_pct)
-        take_profit = price * (1.0 - cfg.take_pct)
-
     return ScanResult(
         symbol=symbol,
         timeframe=timeframe,
@@ -144,8 +133,6 @@ def analyze_symbol(
         di_plus=di_p,
         di_minus=di_m,
         score=score,
-        stop_loss=stop_loss,
-        take_profit=take_profit,
         turnover_24h=turnover_24h,
         signal_time=datetime.now(MSK).strftime("%H:%M:%S"),
     )

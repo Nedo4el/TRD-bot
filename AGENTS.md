@@ -16,6 +16,15 @@
 - Файлы: `docs/worklog/YYYY-MM-DD.md`, время МСК, хранится 180 дней (старое удаляется само).
 - Перед продолжением работы смотри последнюю запись: `python tools/worklog.py --show`.
 
+## Дамп параметров (txt на рабочем столе)
+
+- После **любого** изменения параметров `robot_trend` или `bot_screener_trend`
+  (код, дефолты или `.env`) — сразу перезаписывай txt:
+  `python tools/dump_params.py`.
+- Файлы: `C:\Users\79095\Desktop\trd\Robot\robot_trend.txt`
+  и `C:\Users\79095\Desktop\trd\Screener\bot_screener_trend.txt`.
+- Скрипт читает фактические значения из конфигов, руками txt не правим.
+
 ## Принципы (Karpathy Guidelines)
 
 - **Простота превыше всего** — маленькое улучшение, которое добавляет сложность, не стоит того.

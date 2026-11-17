@@ -36,8 +36,6 @@ def _row(r: ScanResult) -> list[object]:
         f"{r.adx_value:.1f}",
         f"+{r.di_plus:.1f}/-{r.di_minus:.1f}",
         r.score,
-        f"${r.stop_loss:.4f}",
-        f"${r.take_profit:.4f}",
         format_turnover(r.turnover_24h),
     ]
 
@@ -51,8 +49,6 @@ HEADERS = [
     "ADX",
     "DI +/-",
     "Score",
-    "SL",
-    "TP",
     "Оборот",
 ]
 
@@ -129,8 +125,7 @@ def save_report(
             f.writelines(
                 f"  {r.symbol:<12} ${r.price:<12.4f}  "
                 f"EMA {r.ema_fast:.4f}/{r.ema_slow:.4f}  "
-                f"ADX={r.adx_value:.1f}  Score={r.score}  "
-                f"SL=${r.stop_loss:.4f}  TP=${r.take_profit:.4f}\n"
+                f"ADX={r.adx_value:.1f}  Score={r.score}\n"
                 for r in sorted(group, key=lambda x: x.score, reverse=True)
             )
             f.write("\n")

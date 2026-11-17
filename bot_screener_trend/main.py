@@ -55,8 +55,6 @@ def _load_config() -> tuple[dict, ScanConfig]:
         ema_macro=get_env_int("EMA_MACRO", 200),
         adx_period=get_env_int("ADX_PERIOD", 14),
         adx_threshold=get_env_float("ADX_THRESHOLD", 25.0),
-        sl_pct=get_env_float("SL_PCT", 0.02),
-        take_pct=get_env_float("TAKE_PCT", 0.10),
         min_turnover_24h=float(env_cfg["min_turnover_24h"]),
         exclude_symbols=exclude,
     )

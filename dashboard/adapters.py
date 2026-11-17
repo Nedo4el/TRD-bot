@@ -319,8 +319,6 @@ async def scan_trend(spec: ScreenerSpec) -> list[Signal]:
         ema_macro=env.integer("EMA_MACRO", 200),
         adx_period=env.integer("ADX_PERIOD", 14),
         adx_threshold=env.number("ADX_THRESHOLD", 30.0),
-        sl_pct=env.number("SL_PCT", 0.02),
-        take_pct=env.number("TAKE_PCT", 0.10),
         min_turnover_24h=min_turnover,
         exclude_symbols=exclude,
     )

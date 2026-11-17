@@ -85,7 +85,7 @@ class TestTrendDetection:
         assert result is None
 
 
-class TestScoreAndLevels:
+class TestScore:
     def test_score_formula(self) -> None:
         result = analyze_symbol("TESTUSDT", _rising(), timeframe="1")
         assert result is not None
@@ -93,25 +93,8 @@ class TestScoreAndLevels:
         assert result.score == expected
         assert 0 <= result.score <= 100
 
-    def test_stop_take_up(self) -> None:
-        result = analyze_symbol("TESTUSDT", _rising(), timeframe="1")
-        assert result is not None
-        assert result.stop_loss == result.price * 0.98
-        assert result.take_profit == result.price * 1.10
-
-    def test_stop_take_down(self) -> None:
-        result = analyze_symbol("TESTUSDT", _falling(), timeframe="1")
-        assert result is not None
-        assert result.stop_loss == result.price * 1.02
-        assert result.take_profit == result.price * 0.90
-
     def test_custom_config_respected(self) -> None:
         cfg = ScanConfig(adx_threshold=90.0)
         result = analyze_symbol("TESTUSDT", _rising(), cfg=cfg)
         # монотонный рост даёт ADX ~100, порог 90 всё ещё проходит
         assert result is not None
-        cfg2 = ScanConfig(sl_pct=0.05, take_pct=0.20)
-        result2 = analyze_symbol("TESTUSDT", _rising(), cfg=cfg2)
-        assert result2 is not None
-        assert result2.stop_loss == result2.price * 0.95
-        assert result2.take_profit == result2.price * 1.20
