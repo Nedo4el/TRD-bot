@@ -31,6 +31,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 if TYPE_CHECKING:
     from bot_screener_trend.scanner import ScanConfig
     from robot_trend.config import TrendConfig
+    from robot_trend.guard import GuardParams
     from robot_trend.strategy import TrendParams
 
 ROBOT_ENV = PROJECT_ROOT / "robot_trend" / ".env"
@@ -99,7 +100,9 @@ def header(title: str, source: Path, now: datetime) -> list[str]:
     ]
 
 
-def robot_text(cfg: TrendConfig, p: TrendParams, now: datetime) -> str:
+def robot_text(
+    cfg: TrendConfig, p: TrendParams, g: GuardParams, now: datetime
+) -> str:
     """Текст дампа параметров robot_trend."""
     notional = cfg.order_notional()
     size = f"${notional:.2f} (от депозита)" if notional else "по QTY"
@@ -162,6 +165,28 @@ def robot_text(cfg: TrendConfig, p: TrendParams, now: datetime) -> str:
         row("FUNDING_WINDOW_SEC", num(cfg.funding_window_sec)),
         row("KILL_SWITCH (файл)", cfg.kill_switch_file or "выкл"),
         "",
+        "ЗАЩИТА ПОЗИЦИИ (GUARD)",
+        row("GUARD_ENABLED", flag(g.enabled)),
+        row("GUARD_DRY_RUN (без ордеров)", flag(g.dry_run)),
+        row("CVD_ENABLED", flag(g.cvd_enabled)),
+        row("CVD_WINDOW (свечей 5м)", str(g.cvd_window)),
+        row("CVD_EXIT_MODE", g.cvd_exit_mode),
+        row("CVD_PARTIAL_PCT", f"{num(g.partial_pct * 100)}%"),
+        row("ABSORPTION_ENABLED", flag(g.absorption_enabled)),
+        row("ABSORPTION_VOL_MULT", f"{num(g.absorption_vol_mult)}x SMA20"),
+        row("ABSORPTION_BODY_MAX", f"{num(g.absorption_body_max)} ATR(14)"),
+        row("OI_ENABLED", flag(g.oi_enabled)),
+        row("OI_WINDOW (свечей 5м)", str(g.oi_window)),
+        row("OI_DROP_PCT (от пика)", f"{num(g.oi_drop_pct * 100)}%"),
+        row("FUNDING_HIGH_THRESHOLD", f"{num(g.funding_high * 100)}%"),
+        row("MIN_VOLUME_USD (оборот свечи)", f"${num(g.min_volume_usd)}"),
+        f"  CVD: цена обновила экстремум, а CVD — нет -> "
+        f"{'выход целиком' if g.cvd_exit_mode == 'full' else 'закрыть ' + num(g.partial_pct * 100) + '%'}",
+        f"  Absorption: объём >= {num(g.absorption_vol_mult)}x SMA20 при теле "
+        f"<= {num(g.absorption_body_max)} ATR -> WARN, при пробое соседней свечи — частичный выход",
+        f"  OI: новый экстремум цены без роста OI -> частичный выход; "
+        f"фандинг >= {num(g.funding_high * 100)}% -> выход целиком",
+        "",
         "СЛУЖЕБНОЕ",
         row("WS_ENABLED", flag(cfg.ws_enabled)),
         row("RECONNECT_SEC", num(cfg.reconnect_sec)),
@@ -222,6 +247,7 @@ def main() -> int:
     """Перезаписать оба txt-дампа и напечатать пути."""
     from bot_screener_trend.main import _load_config
     from robot_trend.config import load_config
+    from robot_trend.guard import GuardParams
     from robot_trend.strategy import TrendParams
 
     now = datetime.now(MSK)
@@ -229,7 +255,8 @@ def main() -> int:
     forget_env([ROBOT_ENV, SCREENER_ENV])
     robot_cfg = load_config()
     robot_params = TrendParams.from_env()
-    robot_out = robot_text(robot_cfg, robot_params, now)
+    guard_params = GuardParams.from_env()
+    robot_out = robot_text(robot_cfg, robot_params, guard_params, now)
 
     forget_env([ROBOT_ENV, SCREENER_ENV])
     env_cfg, scan_cfg = _load_config()

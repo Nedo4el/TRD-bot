@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import secrets
@@ -26,6 +27,14 @@ from core.notifier import Notifier
 from dashboard.trade_store import TradeStore
 from robot_trend.config import TrendConfig
 from robot_trend.data_feed import DataFeed
+from robot_trend.guard import (
+    GuardAction,
+    GuardParams,
+    GuardVerdict,
+    PositionGuard,
+    partial_qty,
+)
+from robot_trend.guard_feed import GuardFeed
 from robot_trend.risk import (
     cooldown_remaining,
     daily_stop_reason,
@@ -82,6 +91,8 @@ class OrderFlow:
         self._last_decided: float = 0.0
         self._gate_logged: str | None = None
         self._trades = TradeStore()
+        self._guard = PositionGuard(GuardParams.from_env())
+        self._guard_feed: GuardFeed | None = None
 
     # ==================== жизненный цикл ====================
 
@@ -147,6 +158,8 @@ class OrderFlow:
         if not closed:
             logger.warning("свечи недоступны — тик пропущен")
             return
+        if st.position is not None:
+            await self._guard_poll(closed)
         if closed[-1].open_time == self._last_decided:
             return  # новой закрытой свечи нет
         htf = await self._fetch_htf()
@@ -154,6 +167,8 @@ class OrderFlow:
             # решение откладывается: _last_decided не трогаем, повторим тик
             return
         self._last_decided = closed[-1].open_time
+        if st.position is not None:
+            await self._guard_step(closed)
         await self._on_candles(closed, htf)
 
     async def _on_candles(self, closed: list[Candle], htf: list[Candle]) -> None:
@@ -465,6 +480,120 @@ class OrderFlow:
             pos.be_active,
             pos.peak_price,
         )
+
+    # ==================== защита позиции (guard) ====================
+
+    async def _guard_poll(self, closed: list[Candle]) -> None:
+        """Подтянуть дельты/OI/фандинг, пока позиция открыта."""
+        if not self._guard.params.enabled:
+            return
+        try:
+            if self._guard_feed is None:
+                self._guard_feed = GuardFeed(
+                    self.client, self.cfg.symbol, self._guard.params
+                )
+            await self._guard_feed.poll(closed)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("guard: данные недоступны (%s)", exc)
+
+    async def _guard_step(self, closed: list[Candle]) -> None:
+        """Проверить защиту на закрытии свечи: WARN — лог, EXIT — действие."""
+        pos = self.store.state.position
+        feed = self._guard_feed
+        if pos is None or not self._guard.params.enabled or feed is None:
+            return
+        try:
+            verdict = self._guard.evaluate(
+                closed,
+                feed.cvd_series(closed),
+                feed.oi_points(),
+                feed.funding(),
+                pos.side,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("guard: проверка не удалась (%s)", exc)
+            return
+        if verdict.action is GuardAction.HOLD:
+            return
+        self._log_guard(verdict, pos)
+        if self._guard.params.dry_run:
+            logger.info(
+                "guard (dry-run): %s %s — %s",
+                verdict.module,
+                verdict.action.name,
+                verdict.reason,
+            )
+            return
+        if verdict.action is GuardAction.EXIT_FULL:
+            await self._exit(f"guard:{verdict.module}:{verdict.reason}")
+            return
+        await self._guard_partial(pos, verdict)
+
+    async def _guard_partial(
+        self, pos: OpenPosition, verdict: GuardVerdict
+    ) -> None:
+        """Сократить позицию на ``CVD_PARTIAL_PCT`` (reduce-only Market)."""
+        step = self.filters.qty_step
+        pct = self._guard.params.partial_pct
+        qty = partial_qty(pos.qty, pct, step)
+        rest = pos.qty - qty
+        price = self.feed.last_price or pos.entry_price
+        if qty <= 0 or rest < step or rest * price < self.filters.min_notional:
+            logger.info("guard: остаток меньше минимума — закрываем целиком")
+            await self._exit(f"guard:{verdict.module}:{verdict.reason}")
+            return
+        close_side = "Sell" if pos.side == "long" else "Buy"
+        try:
+            await self.client.place_order(
+                self.cfg.symbol,
+                side=close_side,
+                qty=qty,
+                reduce_only=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("guard: частичное закрытие не вышло (%s)", exc)
+            return
+        pos.qty = rest
+        await self.store.save()
+        logger.info(
+            "guard: закрыто %.6g (%.0f%%), остаток %.6g (%s)",
+            qty,
+            pct * 100,
+            rest,
+            verdict.reason,
+        )
+        if not await self._wait_qty(rest, step):
+            logger.warning("guard: объём на бирже не сошёлся с %.6g", rest)
+
+    def _log_guard(self, verdict: GuardVerdict, pos: OpenPosition) -> None:
+        """JSON-строка о срабатывании — для последующего анализа."""
+        payload = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "symbol": self.cfg.symbol,
+            "side": pos.side,
+            "price": self.feed.last_price or pos.entry_price,
+            "action": verdict.action.name,
+            "module": verdict.module,
+            "reason": verdict.reason,
+            "details": verdict.details,
+            "dry_run": self._guard.params.dry_run,
+        }
+        path = Path(self.cfg.log_file).parent / "guard_log.jsonl"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+        except OSError as exc:
+            logger.warning("guard: лог не записался (%s)", exc)
+
+    async def _wait_qty(self, expected: float, step: float) -> bool:
+        """Дождаться, что объём позиции на бирже не больше ожидаемого."""
+        for _ in range(FILL_RETRIES):
+            pos = await self.client.get_position(self.cfg.symbol)
+            if pos is None or pos.size <= expected + step / 2:
+                return True
+            await asyncio.sleep(FILL_DELAY)
+        return False
 
     async def _closed_pnl(self, pos: OpenPosition) -> float:
         """PnL закрытия: с биржи, иначе расчёт по последней цене."""
