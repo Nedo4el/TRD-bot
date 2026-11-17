@@ -46,15 +46,13 @@ class TrendConfig(BaseModel):
     symbol: str = Field(default_factory=lambda: os.getenv("SYMBOL", "BTCUSDT"))
     timeframe: str = Field(default_factory=lambda: os.getenv("TIMEFRAME", "5"))
     # старший ТФ: направление + сила тренда (EMA/ADX), входы только по нему
-    htf_timeframe: str = Field(default_factory=lambda: os.getenv("HTF_TIMEFRAME", "30"))
+    htf_timeframe: str = Field(default_factory=lambda: os.getenv("HTF_TIMEFRAME", "60"))
     htf_candle_warmup: int = Field(default_factory=lambda: _env_int("HTF_WARMUP", 250))
 
     # --- Размер позиции ---
     deposit_usd: float = Field(default_factory=lambda: _env_float("DEPOSIT_USD", 100.0))
     fixed_qty: float = Field(default_factory=lambda: _env_float("QTY", 0.0))
-    position_pct: float = Field(
-        default_factory=lambda: _env_float("POSITION_PCT", 10.0)
-    )
+    position_pct: float = Field(default_factory=lambda: _env_float("POSITION_PCT", 6.0))
 
     # --- Свечи ---
     candles_warmup: int = Field(default_factory=lambda: _env_int("CANDLE_WARMUP", 300))
@@ -73,13 +71,13 @@ class TrendConfig(BaseModel):
         default_factory=lambda: _env_float("SLIPPAGE_PCT", 0.005)
     )
     cooldown_sec: float = Field(
-        default_factory=lambda: _env_float("COOLDOWN_SEC", 15.0)
+        default_factory=lambda: _env_float("COOLDOWN_SEC", 300.0)
     )
     daily_loss_limit: float = Field(
-        default_factory=lambda: _env_float("DAILY_LOSS_LIMIT", 0.0)
+        default_factory=lambda: _env_float("DAILY_LOSS_LIMIT", 10.0)
     )
     max_trades_per_day: int = Field(
-        default_factory=lambda: _env_int("MAX_TRADES_PER_DAY", 0)
+        default_factory=lambda: _env_int("MAX_TRADES_PER_DAY", 50)
     )
 
     # --- Устойчивость WS ---

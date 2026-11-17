@@ -85,7 +85,7 @@ def test_config_defaults() -> None:
     assert cfg.symbol == "BTCUSDT"
     assert cfg.order_link_prefix == "tr-"
     assert cfg.timeframe == "5"
-    assert cfg.htf_timeframe == "30"
+    assert cfg.htf_timeframe == "60"
     assert cfg.htf_candle_warmup == 250
 
 
@@ -414,10 +414,10 @@ def test_params_defaults_match_table() -> None:
     p = TrendParams()
     assert (p.timeframe_min, p.htf_min, p.htf_warmup) == (5, 60, 250)
     assert (p.ema_fast, p.ema_slow, p.ema_macro) == (23, 50, 200)
-    assert (p.adx_period, p.adx_threshold) == (14, 25.0)
-    assert (p.sl_pct, p.take_pct) == (0.02, 0.10)
+    assert (p.adx_period, p.adx_threshold) == (14, 30.0)
+    assert (p.sl_pct, p.take_pct) == (0.03, 0.10)
     assert (p.be_trigger_pct, p.be_offset_pct, p.trail_pct) == (0.0, 0.0, 0.0)
-    assert (p.vol_period, p.vol_mult) == (20, 1.3)
+    assert (p.vol_period, p.vol_mult) == (20, 1.0)
     assert p.ema_min_spread_pct == 0.1
     assert p.entry_on_pullback is True
 
@@ -477,8 +477,8 @@ def test_decide_enter_long_on_ema_pullback() -> None:
     ins = strat.decide(candles, _htf_candles(), None)
     assert ins is not None and ins.action == "enter"
     assert ins.side == "long"
-    # стоп -2%, тейк +10% от цены входа
-    assert ins.stop == pytest.approx(ltf.close * 0.98)
+    # стоп -3%, тейк +10% от цены входа
+    assert ins.stop == pytest.approx(ltf.close * 0.97)
     assert ins.take == pytest.approx(ltf.close * 1.10)
     assert "EMA pullback long" in ins.reason
     assert "HTF ADX" in ins.reason
@@ -558,7 +558,7 @@ def test_entry_short_and_stop_take_mirror() -> None:
     strat = TrendStrategy()
     assert strat._entry(ltf, htf) == "short"
     stop, take = strat._stop_take(ltf, "short")
-    assert stop == pytest.approx(100.0 * 1.02)
+    assert stop == pytest.approx(100.0 * 1.03)
     assert take == pytest.approx(100.0 * 0.90)
     # без отскака — входа нет
     assert strat._entry(dataclasses.replace(ltf, pullback_short=False), htf) is None

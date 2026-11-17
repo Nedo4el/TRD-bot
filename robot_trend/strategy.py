@@ -38,14 +38,14 @@ class TrendParams:
     ema_slow: int = 50
     ema_macro: int = 200
     adx_period: int = 14
-    adx_threshold: float = 25.0
-    sl_pct: float = 0.02
+    adx_threshold: float = 30.0
+    sl_pct: float = 0.03
     take_pct: float = 0.10
     be_trigger_pct: float = 0.0
     be_offset_pct: float = 0.0
     trail_pct: float = 0.0
     vol_period: int = 20
-    vol_mult: float = 1.3
+    vol_mult: float = 1.0
     ema_min_spread_pct: float = 0.1
     entry_on_pullback: bool = True
 
@@ -60,14 +60,14 @@ class TrendParams:
             ema_slow=_env_int("EMA_SLOW", 50),
             ema_macro=_env_int("EMA_MACRO", 200),
             adx_period=_env_int("ADX_PERIOD", 14),
-            adx_threshold=_env_float("ADX_THRESHOLD", 25.0),
-            sl_pct=_env_float("SL_PCT", 0.02),
+            adx_threshold=_env_float("ADX_THRESHOLD", 30.0),
+            sl_pct=_env_float("SL_PCT", 0.03),
             take_pct=_env_float("TAKE_PCT", 0.10),
             be_trigger_pct=_env_float("BE_TRIGGER", 0.0),
             be_offset_pct=_env_float("BE_OFFSET", 0.0),
             trail_pct=_env_float("TRAIL_PCT", 0.0),
             vol_period=_env_int("VOLUME_SMA_PERIOD", 20),
-            vol_mult=_env_float("VOLUME_MULTIPLIER", 1.3),
+            vol_mult=_env_float("VOLUME_MULTIPLIER", 1.0),
             ema_min_spread_pct=_env_float("EMA_MIN_SPREAD_PCT", 0.1),
             entry_on_pullback=_env_bool("ENTRY_ON_PULLBACK", True),
         )
