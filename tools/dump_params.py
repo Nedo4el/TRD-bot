@@ -180,12 +180,18 @@ def robot_text(
         row("OI_DROP_PCT (от пика)", f"{num(g.oi_drop_pct * 100)}%"),
         row("FUNDING_HIGH_THRESHOLD", f"{num(g.funding_high * 100)}%"),
         row("MIN_VOLUME_USD (оборот свечи)", f"${num(g.min_volume_usd)}"),
-        f"  CVD: цена обновила экстремум, а CVD — нет -> "
-        f"{'выход целиком' if g.cvd_exit_mode == 'full' else 'закрыть ' + num(g.partial_pct * 100) + '%'}",
-        f"  Absorption: объём >= {num(g.absorption_vol_mult)}x SMA20 при теле "
-        f"<= {num(g.absorption_body_max)} ATR -> WARN, при пробое соседней свечи — частичный выход",
-        f"  OI: новый экстремум цены без роста OI -> частичный выход; "
-        f"фандинг >= {num(g.funding_high * 100)}% -> выход целиком",
+        (
+            f"  CVD: цена обновила экстремум, а CVD — нет -> "
+            f"{'выход целиком' if g.cvd_exit_mode == 'full' else 'закрыть ' + num(g.partial_pct * 100) + '%'}"
+        ),
+        (
+            f"  Absorption: объём >= {num(g.absorption_vol_mult)}x SMA20 при теле "
+            f"<= {num(g.absorption_body_max)} ATR -> WARN, при пробое соседней свечи — частичный выход"
+        ),
+        (
+            f"  OI: новый экстремум цены без роста OI -> частичный выход; "
+            f"фандинг >= {num(g.funding_high * 100)}% -> выход целиком"
+        ),
         "",
         "СЛУЖЕБНОЕ",
         row("WS_ENABLED", flag(cfg.ws_enabled)),

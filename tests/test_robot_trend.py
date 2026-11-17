@@ -8,12 +8,13 @@ import json
 import math
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from core.bybit_client import BybitClient, Candle, Position
 from robot_trend.config import TrendConfig
+from robot_trend.guard import GuardParams, PositionGuard
 from robot_trend.main import _core_config
 from robot_trend.order_flow import OrderFlow
 from robot_trend.risk import (
@@ -669,7 +670,13 @@ class FakeClient:
         order_link_id: str | None = None,
     ) -> dict[str, Any]:
         self.placed.append(
-            {"side": side, "qty": qty, "type": order_type, "link": order_link_id}
+            {
+                "side": side,
+                "qty": qty,
+                "type": order_type,
+                "link": order_link_id,
+                "reduce_only": reduce_only,
+            }
         )
         if order_type == "Market" and not reduce_only:
             self.position = Position(
@@ -1301,3 +1308,121 @@ def test_entry_below_min_notional_skipped(tmp_path: Path) -> None:
     strategy.instruction = _enter_instruction()
     asyncio.run(flow._tick())
     assert client.placed == []
+
+
+# ============================== order_flow: guard ==============================
+
+
+class StubGuardFeed:
+    def __init__(self, cvd: list[float]) -> None:
+        self._cvd = cvd
+        self.polls = 0
+
+    async def poll(self, candles: list[Candle]) -> None:
+        self.polls += 1
+
+    def cvd_series(self, candles: list[Candle]) -> list[float]:
+        return self._cvd
+
+    def oi_points(self) -> list[Any]:
+        return []
+
+    def funding(self) -> float:
+        return 0.0
+
+
+def _guard_candles() -> list[Candle]:
+    out = [
+        Candle(
+            open_time=i * 300_000,
+            open=100.0,
+            high=100.2,
+            low=99.5,
+            close=100.0,
+            volume=5000.0,
+        )
+        for i in range(29)
+    ]
+    out.append(
+        Candle(
+            open_time=29 * 300_000,
+            open=100.0,
+            high=100.4,
+            low=99.9,
+            close=100.3,
+            volume=5000.0,
+        )
+    )
+    return out
+
+
+def _diverging_cvd() -> list[float]:
+    return [50.0] + [float(i) for i in range(1, 29)] + [29.0]
+
+
+def _guard_params(**overrides: Any) -> GuardParams:
+    base: dict[str, Any] = {
+        "min_volume_usd": 0.0,
+        "cvd_window": 30,
+        "absorption_enabled": False,
+        "oi_enabled": False,
+    }
+    base.update(overrides)
+    return GuardParams(**base)
+
+
+def test_guard_dry_run_logs_without_orders(tmp_path: Path) -> None:
+    cfg = _cfg(log_file=str(tmp_path / "trend.log"))
+    flow, client, _feed, strategy, store = _make_flow(tmp_path, cfg=cfg)
+    strategy.instruction = _enter_instruction()
+    asyncio.run(flow._tick())
+    assert len(client.placed) == 1
+
+    flow._guard = PositionGuard(_guard_params(dry_run=True))
+    flow._guard_feed = cast(Any, StubGuardFeed(_diverging_cvd()))
+    asyncio.run(flow._guard_step(_guard_candles()))
+
+    assert len(client.placed) == 1
+    assert store.state.position is not None
+    assert store.state.position.qty == pytest.approx(0.1)
+    payload = json.loads(
+        (tmp_path / "guard_log.jsonl").read_text(encoding="utf-8").strip()
+    )
+    assert payload["action"] == "EXIT_PARTIAL"
+    assert payload["module"] == "cvd"
+    assert payload["dry_run"] is True
+
+
+def test_guard_live_closes_half_reduce_only(tmp_path: Path) -> None:
+    cfg = _cfg(log_file=str(tmp_path / "trend.log"))
+    flow, client, _feed, strategy, store = _make_flow(tmp_path, cfg=cfg)
+    strategy.instruction = _enter_instruction()
+    asyncio.run(flow._tick())
+
+    flow._guard = PositionGuard(_guard_params(dry_run=False))
+    flow._guard_feed = cast(Any, StubGuardFeed(_diverging_cvd()))
+    client.position = Position(
+        symbol=cfg.symbol, side="Buy", size=0.05, avg_price=100.0, unrealised_pnl=0.0
+    )
+    asyncio.run(flow._guard_step(_guard_candles()))
+
+    last = client.placed[-1]
+    assert last["side"] == "Sell"
+    assert last["qty"] == pytest.approx(0.05)
+    assert last["reduce_only"] is True
+    assert store.state.position is not None
+    assert store.state.position.qty == pytest.approx(0.05)
+
+
+def test_guard_poll_skipped_when_disabled(tmp_path: Path) -> None:
+    flow, client, _feed, strategy, _store = _make_flow(tmp_path)
+    strategy.instruction = _enter_instruction()
+    asyncio.run(flow._tick())
+
+    flow._guard = PositionGuard(_guard_params(enabled=False))
+    feed = StubGuardFeed(_diverging_cvd())
+    flow._guard_feed = cast(Any, feed)
+    asyncio.run(flow._guard_step(_guard_candles()))
+
+    assert len(client.placed) == 1
+    assert feed.polls == 0
