@@ -154,6 +154,7 @@ def robot_text(
         row("BE_OFFSET", signed_pct(p.be_offset_pct)),
         row("TRAIL_PCT (трейлинг)", signed_pct(p.trail_pct)),
         row("TRAIL_TRIGGER (старт трейлинга)", signed_pct(p.trail_trigger_pct)),
+        row("PARTIAL_SHARE (доля на старте трейлинга)", signed_pct(p.partial_share)),
         "",
         "ЛИМИТЫ И ЗАЩИТА",
         row("COOLDOWN_SEC (пауза)", num(cfg.cooldown_sec)),
