@@ -29,6 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 if TYPE_CHECKING:
+    from bot_screener_trend.autostart import AutoStartConfig
     from bot_screener_trend.scanner import ScanConfig
     from robot_trend.config import TrendConfig
     from robot_trend.guard import GuardParams
@@ -229,28 +230,42 @@ def robot_text(
     return "\n".join(lines)
 
 
-def screener_text(env_cfg: dict, cfg: ScanConfig, now: datetime) -> str:
+def screener_text(
+    env_cfg: dict,
+    cfg: ScanConfig,
+    auto_cfg: AutoStartConfig,
+    now: datetime,
+) -> str:
     """Текст дампа параметров bot_screener_trend."""
     excluded = env_cfg["exclude_symbols"]
     exclude_note = f"{len(excluded)} шт: {', '.join(excluded)}" if excluded else "нет"
     turnover = env_cfg["min_turnover_24h"]
+    trend_tf = env_cfg["htf_timeframe"]
+    signal_tf = env_cfg["timeframe"]
     up_rule = (
-        f"  UP  : цена > EMA {cfg.ema_fast} > EMA {cfg.ema_slow} > "
+        f"  UP  : EMA {cfg.ema_fast} > EMA {cfg.ema_slow}, цена > "
         f"EMA {cfg.ema_macro}, ADX >= {num(cfg.adx_threshold)}, +DI > -DI"
     )
     down_rule = (
-        f"  DOWN: цена < EMA {cfg.ema_fast} < EMA {cfg.ema_slow} < "
+        f"  DOWN: EMA {cfg.ema_fast} < EMA {cfg.ema_slow}, цена < "
         f"EMA {cfg.ema_macro}, ADX >= {num(cfg.adx_threshold)}, -DI > +DI"
+    )
+    entry_rule = (
+        f"  Вход: откат к EMA {cfg.ema_fast} (low <= EMA, close > EMA) + "
+        f"объём >= {num(cfg.vol_mult)} x SMA{cfg.vol_period} + "
+        f"зазор EMA >= {num(cfg.ema_min_spread_pct)}%"
     )
     lines = header("SCREENER TREND — ПАРАМЕТРЫ", SCREENER_ENV, now)
     lines += [
         "",
         "СКАНИРОВАНИЕ",
         row("TESTNET (тестовые данные)", flag(env_cfg["testnet"])),
-        row("TIMEFRAME (свечи, мин)", env_cfg["timeframe"]),
+        row("TIMEFRAME (сигнал, мин)", signal_tf),
+        row("HTF_TIMEFRAME (тренд, мин)", trend_tf),
         row("SCAN_INTERVAL (сек)", str(env_cfg["scan_interval"])),
         row("MIN_TURNOVER_24H", f"${turnover / 1_000_000:.0f}M"),
         row("LOOKBACK_BARS (свечей)", str(env_cfg["lookback_bars"])),
+        row("HTF_LOOKBACK_BARS (свечей)", str(env_cfg["htf_lookback_bars"])),
         row("EXCLUDE_SYMBOLS", exclude_note),
         "",
         "ТРЕНД — ИНДИКАТОРЫ",
@@ -260,11 +275,26 @@ def screener_text(env_cfg: dict, cfg: ScanConfig, now: datetime) -> str:
         row("ADX_PERIOD", str(cfg.adx_period)),
         row("ADX_THRESHOLD", num(cfg.adx_threshold)),
         "",
-        "УСЛОВИЕ СИГНАЛА",
+        "ВХОД — ФИЛЬТРЫ",
+        row("VOLUME_PERIOD", str(cfg.vol_period)),
+        row("VOLUME_MULT", num(cfg.vol_mult)),
+        row("EMA_MIN_SPREAD_PCT", num(cfg.ema_min_spread_pct)),
+        row("REQUIRE_PULLBACK", flag(cfg.require_pullback)),
+        "",
+        "УСЛОВИЕ СИГНАЛА (как вход robot_trend)",
+        f"  Тренд считается на {trend_tf}m, откат — на {signal_tf}m",
         up_rule,
         down_rule,
+        entry_rule,
         "  Score: ADX x 2 + зазор EMA_FAST/EMA_SLOW x 5 (макс. 100)",
         "  Скринер только находит сигналы: SL/TP и размер позиции не считает",
+        "",
+        "АВТО-ЗАПУСК ROBOT_TREND",
+        row("AUTO_START", flag(auto_cfg.enabled)),
+        row("AUTO_START_ROBOT", auto_cfg.robot_name),
+        row("AUTO_START_MAX (монет за скан)", str(auto_cfg.max_per_scan)),
+        "  Монеты сигналов добавляются в список робота и запускаются",
+        "  как кнопкой в дашборде (отдельный процесс на монету)",
         "",
     ]
     return "\n".join(lines)
@@ -286,8 +316,8 @@ def main() -> int:
     robot_out = robot_text(robot_cfg, robot_params, guard_params, now)
 
     forget_env([ROBOT_ENV, SCREENER_ENV])
-    env_cfg, scan_cfg = _load_config()
-    screener_out = screener_text(env_cfg, scan_cfg, now)
+    env_cfg, scan_cfg, auto_cfg = _load_config()
+    screener_out = screener_text(env_cfg, scan_cfg, auto_cfg, now)
 
     for path, text in ((ROBOT_FILE, robot_out), (SCREENER_FILE, screener_out)):
         path.parent.mkdir(parents=True, exist_ok=True)
