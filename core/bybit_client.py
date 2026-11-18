@@ -63,6 +63,11 @@ def _gate_delay(spacing: float) -> float:
     return 0.0
 
 
+def shared_gate_wait() -> float:
+    """Забронировать слот в общем лимитере и вернуть паузу до него, сек."""
+    return _gate_delay(1.0 / SHARED_RPS)
+
+
 # --- Сдвиг локальных часов относительно сервера Bybit (TIME_SYNC) -----------
 # pybit подписывает запросы через pybit._helpers.generate_timestamp(): часы,
 # отстающие/опережающие биржу, дают retCode 10002 (окно подписи истекло).

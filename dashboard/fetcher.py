@@ -14,6 +14,7 @@ from typing import Any
 
 from pybit.unified_trading import HTTP
 
+from core.bybit_client import shared_gate_wait
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -64,6 +65,9 @@ class DashboardFetcher:
             if wait > 0:
                 await asyncio.sleep(wait)
             _LAST_REQUEST_AT = time.monotonic()
+        gate_wait = await asyncio.to_thread(shared_gate_wait)
+        if gate_wait > 0:
+            await asyncio.sleep(gate_wait)
 
     async def _fetch(
         self,
