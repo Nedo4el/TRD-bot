@@ -44,6 +44,8 @@ class TrendParams:
     be_trigger_pct: float = 0.0
     be_offset_pct: float = 0.0
     trail_pct: float = 0.0
+    trail_trigger_pct: float = 0.0
+    partial_share: float = 0.0
     vol_period: int = 20
     vol_mult: float = 1.0
     ema_min_spread_pct: float = 0.1
@@ -66,6 +68,8 @@ class TrendParams:
             be_trigger_pct=_env_float("BE_TRIGGER", 0.0),
             be_offset_pct=_env_float("BE_OFFSET", 0.0),
             trail_pct=_env_float("TRAIL_PCT", 0.0),
+            trail_trigger_pct=_env_float("TRAIL_TRIGGER", 0.0),
+            partial_share=_env_float("PARTIAL_SHARE", 0.0),
             vol_period=_env_int("VOLUME_SMA_PERIOD", 20),
             vol_mult=_env_float("VOLUME_MULTIPLIER", 1.0),
             ema_min_spread_pct=_env_float("EMA_MIN_SPREAD_PCT", 0.1),
@@ -95,6 +99,10 @@ class TrendParams:
             raise ValueError("SL_PCT должен быть в (0, 1), TAKE_PCT — в [0, 1)")
         if min(self.be_trigger_pct, self.be_offset_pct, self.trail_pct) < 0:
             raise ValueError("BE_TRIGGER / BE_OFFSET / TRAIL_PCT не могут быть < 0")
+        if self.trail_trigger_pct < 0:
+            raise ValueError("TRAIL_TRIGGER не может быть < 0")
+        if not 0 <= self.partial_share < 1:
+            raise ValueError("PARTIAL_SHARE должен быть в [0, 1)")
         if self.vol_mult <= 0:
             raise ValueError("VOL_MULT должен быть > 0")
         if self.ema_min_spread_pct < 0:

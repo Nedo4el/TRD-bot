@@ -27,12 +27,16 @@ def on_price(
     be_trigger_pct: float,
     be_offset_pct: float,
     trail_pct: float,
+    trail_trigger_pct: float = 0.0,
     be_active: bool = False,
     side: str = "long",
 ) -> RiskDecision:
     """Обновить peak/BE/trail по новой цене позиции.
 
-    Активация BE и трейлинга одна: прибыль >= be_trigger_pct.
+    BE включается при прибыли >= be_trigger_pct (стоп -> вход + be_offset_pct).
+    Трейлинг включается при достижении пиком trail_trigger_pct от входа;
+    trail_trigger_pct <= 0 — трейлинг стартует вместе с BE (старое поведение).
+    Пик хранится в state, поэтому включённый трейлинг переживает откат и рестарт.
     trail_pct <= 0 — трейлинг выключен, be_trigger_pct <= 0 — BE выключен.
     Стоп никогда не уходит в сторону убытка (монотонность).
     """
@@ -46,15 +50,21 @@ def on_price(
             be_trigger_pct,
             be_offset_pct,
             trail_pct,
+            trail_trigger_pct,
             be_active,
         )
     new_peak = max(peak, price)
     be_now = be_active or (
         be_trigger_pct > 0 and price >= entry * (1.0 + be_trigger_pct)
     )
+    trail_now = trail_pct > 0 and (
+        new_peak >= entry * (1.0 + trail_trigger_pct)
+        if trail_trigger_pct > 0
+        else be_now
+    )
     base = entry * (1.0 + be_offset_pct) if be_now else entry * (1.0 - stop_pct)
     candidates = [current_stop, base]
-    if trail_pct > 0 and be_now:
+    if trail_now:
         candidates.append(new_peak * (1.0 - trail_pct))
     new_stop = max(candidates)
     update = new_stop != current_stop or be_now != be_active
@@ -70,6 +80,7 @@ def _on_price_short(
     be_trigger_pct: float,
     be_offset_pct: float,
     trail_pct: float,
+    trail_trigger_pct: float,
     be_active: bool,
 ) -> RiskDecision:
     """Зеркальный on_price: минимум цены, стоп сверху."""
@@ -77,9 +88,14 @@ def _on_price_short(
     be_now = be_active or (
         be_trigger_pct > 0 and price <= entry * (1.0 - be_trigger_pct)
     )
+    trail_now = trail_pct > 0 and (
+        new_trough <= entry * (1.0 - trail_trigger_pct)
+        if trail_trigger_pct > 0
+        else be_now
+    )
     base = entry * (1.0 - be_offset_pct) if be_now else entry * (1.0 + stop_pct)
     candidates = [current_stop, base]
-    if trail_pct > 0 and be_now:
+    if trail_now:
         candidates.append(new_trough * (1.0 + trail_pct))
     new_stop = min(candidates)
     update = new_stop != current_stop or be_now != be_active

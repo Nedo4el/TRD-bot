@@ -32,6 +32,7 @@ class OpenPosition:
     # BE/trail: пик цены с момента входа и состояние безубытка
     peak_price: float = 0.0
     be_active: bool = False
+    partial_done: bool = False
 
 
 @dataclass

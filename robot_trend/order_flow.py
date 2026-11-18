@@ -51,7 +51,7 @@ from robot_trend.state import (
     OpenPosition,
     StateStore,
 )
-from robot_trend.strategy import Instruction, TrendStrategy
+from robot_trend.strategy import Instruction, TrendParams, TrendStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -294,7 +294,7 @@ class OrderFlow:
             await self.client.set_stop_loss_take_profit(
                 self.cfg.symbol,
                 instruction.stop,
-                instruction.take,
+                instruction.take or None,
             )
         except Exception as exc:  # noqa: BLE001
             # защита: без стопа в позиции не остаёмся
@@ -446,6 +446,7 @@ class OrderFlow:
                 if pos.side == "long"
                 else pos.entry_price * (1.0 + p.sl_pct)
             )
+        await self._partial_at_trail(pos, p, peak, price)
         decision = on_price(
             entry=pos.entry_price,
             peak=peak,
@@ -455,6 +456,7 @@ class OrderFlow:
             be_trigger_pct=p.be_trigger_pct,
             be_offset_pct=p.be_offset_pct,
             trail_pct=p.trail_pct,
+            trail_trigger_pct=p.trail_trigger_pct,
             be_active=pos.be_active,
             side=pos.side,
         )
@@ -468,7 +470,7 @@ class OrderFlow:
             await self.client.set_stop_loss_take_profit(
                 self.cfg.symbol,
                 pos.stop_loss,
-                pos.take_profit,
+                pos.take_profit or None,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("risk: серверный SL не обновился (%s)", exc)
@@ -480,6 +482,51 @@ class OrderFlow:
             pos.be_active,
             pos.peak_price,
         )
+
+    async def _partial_at_trail(
+        self,
+        pos: OpenPosition,
+        p: TrendParams,
+        peak: float,
+        price: float,
+    ) -> None:
+        """Скинуть PARTIAL_SHARE позиции в момент включения трейлинга."""
+        if p.partial_share <= 0 or pos.partial_done or p.trail_trigger_pct <= 0:
+            return
+        armed = (
+            peak >= pos.entry_price * (1.0 + p.trail_trigger_pct)
+            if pos.side == "long"
+            else peak <= pos.entry_price * (1.0 - p.trail_trigger_pct)
+        )
+        if not armed:
+            return
+        step = self.filters.qty_step
+        qty = partial_qty(pos.qty, p.partial_share, step)
+        rest = pos.qty - qty
+        if qty <= 0 or rest < step or rest * price < self.filters.min_notional:
+            logger.info("risk: остаток меньше минимума — частичный выход пропущен")
+            pos.partial_done = True
+            await self.store.save()
+            return
+        side = "Sell" if pos.side == "long" else "Buy"
+        try:
+            await self.client.place_order(
+                self.cfg.symbol, side=side, qty=qty, reduce_only=True
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("risk: частичное закрытие не вышло (%s)", exc)
+            return
+        pos.qty = rest
+        pos.partial_done = True
+        await self.store.save()
+        logger.info(
+            "risk: закрыто %.6g (%.0f%%), остаток %.6g",
+            qty,
+            p.partial_share * 100,
+            rest,
+        )
+        if not await self._wait_qty(rest, step):
+            logger.warning("risk: объём на бирже не сошёлся с %.6g", rest)
 
     # ==================== защита позиции (guard) ====================
 
@@ -737,7 +784,7 @@ class OrderFlow:
                     await self.client.set_stop_loss_take_profit(
                         self.cfg.symbol,
                         st.position.stop_loss,
-                        st.position.take_profit,
+                        st.position.take_profit or None,
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.error("recover: SL/TP не подтверждены: %s", exc)

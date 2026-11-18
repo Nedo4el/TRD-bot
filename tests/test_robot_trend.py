@@ -343,6 +343,49 @@ def test_on_price_trail_disabled_when_zero() -> None:
     assert d.stop_loss == pytest.approx(100.0)
 
 
+# ---- отдельный порог включения трейлинга (TRAIL_TRIGGER) ----
+# BE на +5% -> стоп +1%, трейлинг 2% ждёт +9%
+
+
+def _be5_trail9(**overrides: Any) -> Any:
+    base: dict[str, Any] = {
+        "be_trigger_pct": 0.05,
+        "be_offset_pct": 0.01,
+        "trail_pct": 0.02,
+        "trail_trigger_pct": 0.09,
+    }
+    base.update(overrides)
+    return _on_price(**base)
+
+
+def test_trail_waits_for_trigger_after_be() -> None:
+    # +6%: BE уже перевёл стоп в +1%, но пик < +9% — трейлинг ещё спит
+    d = _be5_trail9(price=106.0, peak=106.0)
+    assert d.be_active
+    assert d.stop_loss == pytest.approx(101.0)
+
+
+def test_trail_arms_at_trigger() -> None:
+    # +9.5%: трейлинг включился -> стоп = пик - 2%
+    d = _be5_trail9(price=109.5, peak=109.5)
+    assert d.stop_loss == pytest.approx(109.5 * 0.98)
+
+
+def test_trail_stays_armed_after_pullback() -> None:
+    # пик 110 дал стоп 107.8; цена вернулась к 108 — трейлинг не разоружается
+    d = _be5_trail9(price=108.0, peak=110.0, current_stop=107.8, be_active=True)
+    assert d.stop_loss == pytest.approx(107.8)
+    assert not d.update_server
+
+
+def test_trail_trigger_short_mirrored() -> None:
+    # шорт: BE на -5%, трейлинг 2% включается на -9%
+    d = _be5_trail9(price=90.5, peak=90.5, current_stop=102.0, side="short")
+    assert d.stop_loss == pytest.approx(90.5 * 1.02)
+    d0 = _be5_trail9(price=94.0, peak=94.0, current_stop=102.0, side="short")
+    assert d0.stop_loss == pytest.approx(99.0)
+
+
 # ============================== стратегия ==============================
 
 
@@ -685,6 +728,19 @@ class FakeClient:
                 size=qty,
                 avg_price=self.price,
                 unrealised_pnl=0.0,
+            )
+        elif reduce_only and self.position is not None:
+            left = self.position.size - qty
+            self.position = (
+                None
+                if left <= 0
+                else Position(
+                    symbol=symbol,
+                    side=self.position.side,
+                    size=left,
+                    avg_price=self.position.avg_price,
+                    unrealised_pnl=0.0,
+                )
             )
         return {"result": {"orderId": "oid-1"}}
 
@@ -1273,8 +1329,40 @@ def test_shutdown_close_fails_keeps_position(tmp_path: Path) -> None:
     assert st.phase == PHASE_IN_POSITION
 
 
-# ============================== main ==============================
+def test_partial_half_at_trail_trigger(tmp_path: Path) -> None:
+    flow, client, feed, strategy, store = _make_flow(tmp_path)
+    strategy.params = dataclasses.replace(
+        TrendParams(),
+        be_trigger_pct=0.05,
+        be_offset_pct=0.01,
+        trail_pct=0.02,
+        trail_trigger_pct=0.09,
+        partial_share=0.5,
+        take_pct=0.15,
+    )
+    strategy.instruction = Instruction(
+        action="enter", side="long", stop=97.0, take=115.0, reason="test"
+    )
+    asyncio.run(flow._tick())
+    assert store.state.position is not None
 
+    feed.last_price = 110.0
+    asyncio.run(flow._update_risk())
+
+    partials = [o for o in client.placed if o["reduce_only"]]
+    assert len(partials) == 1
+    assert partials[0]["side"] == "Sell"
+    assert partials[0]["qty"] == pytest.approx(0.05)
+    pos = store.state.position
+    assert pos is not None
+    assert pos.qty == pytest.approx(0.05)
+    assert pos.partial_done
+
+    asyncio.run(flow._update_risk())
+    assert len([o for o in client.placed if o["reduce_only"]]) == 1
+
+
+# ============================== main ==============================
 
 def test_core_config_mapping() -> None:
     trend = _cfg(
