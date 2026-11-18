@@ -129,6 +129,10 @@
   .badge.LONG { background: rgba(46, 204, 113, .16); color: var(--green); }
   .badge.SHORT { background: rgba(255, 92, 108, .16); color: var(--red); }
   .badge.NEUTRAL { background: rgba(139, 152, 173, .16); color: var(--muted); }
+ .badge.warn { background: rgba(255, 193, 7, .16); color: #ffc107; }
+ .badge.err { background: rgba(255, 92, 108, .16); color: var(--red); }
+ .health-err { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ .health-state { white-space: nowrap; }
   .score { min-width: 92px; }
   .score .num { font-weight: 700; }
   .score .bar {
@@ -374,6 +378,7 @@
       <button class="tab-btn" id="tabRobots">Роботы</button>
       <button class="tab-btn" id="tabStats">Статистика сделок</button>
       <button class="tab-btn" id="tabPositions">Позиции</button>
+      <button class="tab-btn" id="tabHealth">Здоровье</button>
     </div>
 
   <div class="settings-panel" id="impulsePanel">
@@ -636,6 +641,42 @@
       <div class="muted" style="margin-top: 6px; font-size: 12px;">
         Ручное закрытие идёт рыночным reduce-only ордером ключами робота и работает,
         даже если робот остановлен. Робот при следующем тике сам увидит, что позиция закрыта.
+      </div>
+    </div>
+
+    <div class="tab-content" id="contentHealth">
+      <h2>Здоровье роботов</h2>
+      <div style="margin-bottom: 12px; display: flex; gap: 18px; flex-wrap: wrap; align-items: center; font-size: 13px;">
+        <span>Процессы: <b id="healthProc">—</b></span>
+        <span>Ошибки 1ч: <b id="healthErrors">—</b></span>
+        <span>Лимит Bybit 1ч: <b id="healthRate">—</b></span>
+        <span>Сеть 1ч: <b id="healthNet">—</b></span>
+        <span>Предупреждения 1ч: <b id="healthWarns">—</b></span>
+        <span>stderr: <b id="healthStderr">—</b></span>
+        <span class="muted" id="healthUpdated">—</span>
+        <button class="primary" id="healthRefresh">Обновить</button>
+      </div>
+      <div class="table-wrap" style="max-height: 62vh;">
+        <table>
+          <thead>
+            <tr>
+              <th>Статус</th><th>Робот</th><th>Монета</th><th>PID</th>
+              <th>Последняя строка лога</th><th>Ошибки 1ч</th>
+              <th>Лимит 1ч</th><th>Сеть 1ч</th><th>Последняя ошибка</th><th>stderr</th>
+              <th>State</th>
+            </tr>
+          </thead>
+          <tbody id="healthBody">
+            <tr><td colspan="11" class="empty">Загрузка…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="muted" style="margin-top: 6px; font-size: 12px;">
+        Счётчики берутся по хвосту лога за последний час (время — МСК).
+        «Лимит» — ответы Bybit 10006, pybit ретраит сам: частые означают, что
+        на один ключ подвешено слишком много монет. «Сеть» — таймауты и
+        реконнекты WS/REST (шум, не ошибка логики). stderr в норме 0 байт —
+        там лежит traceback упавшего процесса.
       </div>
     </div>
    </div>
@@ -1876,6 +1917,111 @@ async function closePositionManual(robot, symbol, pct) {
   }
 }
 
+// ==================== Здоровье роботов ====================
+
+const HEALTH_STATUS = {
+  ok: ["ок", "on"],
+  stopped: ["остановлен", "off"],
+  dead: ["нет процесса", "err"],
+  errors: ["ошибки", "err"],
+  rate_limit: ["лимит Bybit", "warn"],
+  kill: ["kill", "err"],
+};
+
+function fmtBytes(n) {
+  const v = Number(n) || 0;
+  if (v < 1024) return v + " Б";
+  if (v < 1024 * 1024) return (v / 1024).toFixed(1) + " КБ";
+  return (v / 1024 / 1024).toFixed(1) + " МБ";
+}
+
+function fmtAgo(iso) {
+  if (!iso) return "";
+  const mins = Math.max(
+    0,
+    Math.round((Date.now() - new Date(iso).getTime()) / 60000)
+  );
+  if (mins < 1) return "только что";
+  if (mins < 60) return mins + " мин назад";
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return hours + " ч назад";
+  return Math.round(hours / 24) + " дн назад";
+}
+
+async function loadHealth() {
+  try {
+    const res = await fetch("/api/robot-health", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "ошибка");
+    renderHealth(data);
+  } catch (err) {
+    $("healthUpdated").textContent = "нет связи с сервером: " + err.message;
+  }
+}
+
+function renderHealth(data) {
+  const s = data.summary || {};
+  $("healthProc").textContent =
+    (s.processes || 0) + " процессов · роботов запущено: " +
+    (s.robots_running || 0);
+  const errors = s.errors_1h || 0;
+  $("healthErrors").textContent = errors;
+  $("healthErrors").className = errors ? "chg-dn" : "";
+  const rate = s.rate_limit_1h || 0;
+  $("healthRate").textContent = rate;
+  $("healthRate").className = rate ? "chg-dn" : "";
+  $("healthNet").textContent = s.transport_1h || 0;
+  $("healthWarns").textContent = s.warnings_1h || 0;
+  const stderr = s.stderr_bytes || 0;
+  $("healthStderr").textContent = fmtBytes(stderr);
+  $("healthStderr").className = stderr ? "chg-dn" : "";
+  $("healthUpdated").textContent = data.generated_at
+    ? "обновлено " + fmtClock(data.generated_at)
+    : "—";
+
+  const rows = data.rows || [];
+  const body = $("healthBody");
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="11" class="empty">
+      Роботы не запущены и монеты не выбраны.</td></tr>`;
+    return;
+  }
+  body.innerHTML = rows.map((r) => {
+    const [label, cls] = HEALTH_STATUS[r.status] || [r.status, "off"];
+    const log = r.log || {};
+    const state = r.state;
+    const lastErr = log.last_error;
+    const lastLine = log.last_line_at
+      ? fmtTime(log.last_line_at) + " · " + fmtAgo(log.last_line_at)
+      : "нет данных";
+    const errorText = lastErr
+      ? fmtTime(lastErr.at) + " · " + esc(lastErr.message)
+      : "—";
+    const dayPnl = Number(state && state.day_pnl) || 0;
+    const stateText = state
+      ? esc(state.phase) + " · " + (dayPnl > 0 ? "+" : "") +
+        dayPnl.toFixed(2) + " · " + (state.day_trades || 0) + " сд." +
+        (state.kill ? " · kill" : "")
+      : "—";
+    const stderrSize = (r.stderr && r.stderr.size) || 0;
+    return `<tr>
+      <td><span class="badge ${cls}">${esc(label)}</span></td>
+      <td><b>${esc(r.robot)}</b></td>
+      <td><b>${esc(r.symbol)}</b></td>
+      <td>${r.pid ? esc(String(r.pid)) + (r.alive ? "" : " ✕") : "—"}</td>
+      <td class="time">${lastLine}
+        <div class="screen-name">${fmtBytes(log.size)}</div></td>
+      <td class="${log.errors_1h ? "chg-dn" : "muted"}">${log.errors_1h || 0}</td>
+      <td class="${log.rate_limit_1h ? "chg-dn" : "muted"}">${log.rate_limit_1h || 0}</td>
+      <td class="${log.transport_1h ? "" : "muted"}">${log.transport_1h || 0}</td>
+      <td class="time health-err" title="${lastErr ? esc(lastErr.message) : ""}">${errorText}</td>
+      <td class="${stderrSize ? "chg-dn" : "muted"}">${fmtBytes(stderrSize)}</td>
+      <td class="health-state">${stateText}</td>
+    </tr>`;
+  }).join("");
+}
+
 function switchTab(tabName) {
   document.querySelectorAll(".tab-btn").forEach((btn) => btn.classList.remove("active"));
   document.querySelectorAll(".tab-content").forEach((el) => el.classList.remove("active"));
@@ -1895,6 +2041,10 @@ function switchTab(tabName) {
     $("tabPositions").classList.add("active");
     $("contentPositions").classList.add("active");
     loadPositions();
+  } else if (tabName === "health") {
+    $("tabHealth").classList.add("active");
+    $("contentHealth").classList.add("active");
+    loadHealth();
   }
 }
 
@@ -1902,7 +2052,9 @@ $("tabScreeners").addEventListener("click", () => switchTab("screeners"));
 $("tabRobots").addEventListener("click", () => switchTab("robots"));
 $("tabStats").addEventListener("click", () => switchTab("stats"));
 $("tabPositions").addEventListener("click", () => switchTab("positions"));
+$("tabHealth").addEventListener("click", () => switchTab("health"));
 $("posRefresh").addEventListener("click", loadPositions);
+$("healthRefresh").addEventListener("click", loadHealth);
 $("robotRefresh").addEventListener("click", loadRobots);
 $("robotStopAll").addEventListener("click", stopAllRobots);
 
@@ -2044,6 +2196,9 @@ loadImpulseSettings();
 loadRobotStatus();
 loadPositions();
 setInterval(loadPositions, 10000);
+setInterval(() => {
+  if ($("contentHealth").classList.contains("active")) loadHealth();
+}, 15000);
 </script>
 </body>
 </html>

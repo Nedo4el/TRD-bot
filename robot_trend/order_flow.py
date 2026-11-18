@@ -18,6 +18,7 @@ import logging
 import math
 import secrets
 import time
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,13 @@ def _utc_day() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _jitter_ms(symbol: str, window_ms: int) -> int:
+    """Детерминированный сдвиг просыпания робота (0..window_ms) по монете."""
+    if window_ms <= 0:
+        return 0
+    return zlib.crc32(symbol.encode()) % (window_ms + 1)
+
+
 class OrderFlow:
     """Исполнительный цикл: свечи → решение стратегии → ордера → состояние."""
 
@@ -89,6 +97,9 @@ class OrderFlow:
         self.filters = filters
         self._stop = asyncio.Event()
         self._last_decided: float = 0.0
+        self._wake_jitter_ms = _jitter_ms(cfg.symbol, cfg.wake_jitter_ms)
+        self._htf_cache: list[Candle] | None = None
+        self._htf_cache_until_ms: int = 0
         self._gate_logged: str | None = None
         self._trades = TradeStore()
         self._guard = PositionGuard(GuardParams.from_env())
@@ -137,9 +148,23 @@ class OrderFlow:
                         self.feed.candles.get_nowait()
                     except asyncio.QueueEmpty:
                         break
-                return True
+                await self._wake_jitter()
+                return not self._stop.is_set()
             await asyncio.sleep(0.2)
         return not self._stop.is_set()
+
+    async def _wake_jitter(self) -> None:
+        """Развести одновременные просыпания роботов разных монет.
+
+        Свеча 5m закрывается у всех символов в одну секунду: без сдвига
+        7 процессов бьют /v5/market/kline одним залпом (LTF + HTF) и ловят
+        10006. Офсет детерминирован по символу, чтобы задержка не скакала.
+        """
+        if self._wake_jitter_ms <= 0:
+            return
+        deadline = time.monotonic() + self._wake_jitter_ms / 1000.0
+        while time.monotonic() < deadline and not self._stop.is_set():
+            await asyncio.sleep(0.05)
 
     async def _tick(self) -> None:
         """Одна итерация: гейты/ресинк/свечи → решение стратегии."""
@@ -826,9 +851,14 @@ class OrderFlow:
     async def _fetch_htf(self) -> list[Candle] | None:
         """Закрытые свечи старшего ТФ (None — входное решение откладываем).
 
-        Грузим только в момент решения (раз в TIMEFRAME минут), поэтому
-        лишнего REST-нагрузки нет. Выходы/risk от старшего ТФ не зависят.
+        Внутри часа набор закрытых HTF-свечей не меняется, поэтому кэш живёт
+        до закрытия следующего бара: 1 запрос kline в час вместо 12.
         """
+        if (
+            self._htf_cache is not None
+            and int(time.time() * 1000) < self._htf_cache_until_ms
+        ):
+            return list(self._htf_cache)
         try:
             candles = await self.client.get_klines(
                 self.cfg.symbol,
@@ -842,7 +872,10 @@ class OrderFlow:
         if not closed:
             logger.warning("свечи %sм пусты — решение отложено", self.cfg.htf_timeframe)
             return None
-        return closed
+        htf_ms = int(self.cfg.htf_timeframe) * 60_000
+        self._htf_cache = closed
+        self._htf_cache_until_ms = closed[-1].open_time + htf_ms
+        return list(closed)
 
     async def _wait_position(self) -> Position | None:
         for _ in range(FILL_RETRIES):

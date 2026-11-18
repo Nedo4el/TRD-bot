@@ -57,6 +57,11 @@ class TrendConfig(BaseModel):
     # --- Свечи ---
     candles_warmup: int = Field(default_factory=lambda: _env_int("CANDLE_WARMUP", 300))
     poll_sec: float = Field(default_factory=lambda: _env_float("POLL_SEC", 10.0))
+    # разброс просыпания по WS-свече, мс: роботы разных монет не бьют kline
+    # одним залпом (7 процессов в одну секунду = 14 запросов > лимит 10/с)
+    wake_jitter_ms: int = Field(
+        default_factory=lambda: _env_int("WAKE_JITTER_MS", 1500)
+    )
 
     # --- Защита (kill-switch по equity) ---
     max_loss_usd: float = Field(
@@ -176,7 +181,9 @@ class TrendConfig(BaseModel):
             raise ValueError("значение в секундах должно быть > 0")
         return v
 
-    @field_validator("max_trades_per_day", "candles_warmup", "htf_candle_warmup")
+    @field_validator(
+        "max_trades_per_day", "candles_warmup", "htf_candle_warmup", "wake_jitter_ms"
+    )
     @classmethod
     def _int_non_negative(cls, v: int) -> int:
         if v < 0:

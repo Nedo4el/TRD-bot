@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import webbrowser
@@ -18,6 +19,7 @@ from starlette.routing import Route
 
 from dashboard import tiger
 from dashboard.config import DashboardConfig
+from dashboard.health import build_robot_health
 from dashboard.positions import close_robot_position, list_open_positions
 from dashboard.robots import (
     get_all_robots_status,
@@ -400,6 +402,12 @@ async def api_positions_close(request: Request) -> JSONResponse:
     )
 
 
+async def api_robot_health(request: Request) -> JSONResponse:
+    """Здоровье роботов: процессы, ошибки логов, лимит Bybit, stderr, state."""
+    payload = await asyncio.to_thread(build_robot_health)
+    return JSONResponse({"ok": True, **payload}, headers=_NO_CACHE)
+
+
 async def api_open_tiger(request: Request) -> JSONResponse:
     """Открыть инструмент в терминале Tiger Trade через его локальный API."""
     config: DashboardConfig = request.app.state.config
@@ -454,6 +462,7 @@ def create_app() -> Starlette:
         Route("/api/open-tiger", api_open_tiger, methods=["POST"]),
         Route("/api/positions", api_positions),
         Route("/api/positions/close", api_positions_close, methods=["POST"]),
+        Route("/api/robot-health", api_robot_health),
         Route("/api/health", api_health),
         Route("/api/settings/all", api_settings_all_get),
         Route("/api/settings/all", api_settings_all_post, methods=["POST"]),
