@@ -1254,7 +1254,9 @@ function renderRobotModal() {
 function updateRobotButtons() {
   const any = $("robotSigList").querySelectorAll("input:checked").length > 0;
   $("robotStartBtn").disabled = !any;
-  $("robotStartBtn").style.display = trendRobot.running ? "none" : "";
+  $("robotStartBtn").textContent = trendRobot.running
+    ? "Добавить и запустить"
+    : "Запустить робота";
   $("robotStopBtn").style.display = trendRobot.running ? "" : "none";
 }
 
@@ -1294,16 +1296,23 @@ async function startRobotFromModal() {
     toast("Для этого скринера робот не привязан — выберите вкладку «Тренд EMA/ADX»", true);
     return;
   }
-  if (
-    !confirm(
-      "Запустить " + robot + " на " + symbols.join(", ") +
+  const running = trendRobot.running;
+  const fresh = symbols.filter((s) => !trendRobot.symbols.includes(s));
+  if (running && !fresh.length) {
+    toast("Эти монеты уже у робота " + robot);
+    return;
+  }
+  const question = running
+    ? "Добавить к работающему " + robot + ": " + fresh.join(", ") +
       "? Ордера пойдут на реальный счёт."
-    )
-  ) {
+    : "Запустить " + robot + " на " + symbols.join(", ") +
+      "? Ордера пойдут на реальный счёт.";
+  if (!confirm(question)) {
     return;
   }
   try {
-    // 1) монеты сигнала попадают в список робота
+    // 1) монеты сигнала попадают в список робота; работающий робот
+    //    поднимет процессы на новые монеты сам
     let res = await fetch("/api/robots/" + encodeURIComponent(robot) + "/symbols", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1313,16 +1322,22 @@ async function startRobotFromModal() {
     if (!res.ok || !data.ok) {
       throw new Error(data.error || data.message || "HTTP " + res.status);
     }
-    // 2) запуск процессов робота по этим монетам
-    res = await fetch("/api/robots/" + encodeURIComponent(robot) + "/start", {
-      method: "POST",
-    });
-    data = await res.json();
-    if (!res.ok || !data.ok) {
-      throw new Error(data.message || data.error || "HTTP " + res.status);
+    // 2) старт процессов нужен только если робот ещё не работает
+    if (!running) {
+      res = await fetch("/api/robots/" + encodeURIComponent(robot) + "/start", {
+        method: "POST",
+      });
+      data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.message || data.error || "HTTP " + res.status);
+      }
     }
     closeRobotModal();
-    toast("Робот " + robot + " запущен: " + symbols.join(", "));
+    toast(
+      running
+        ? "Монеты добавлены к " + robot + ": " + fresh.join(", ")
+        : "Робот " + robot + " запущен: " + symbols.join(", ")
+    );
     await loadRobotStatus();
     loadRobots();
   } catch (err) {
@@ -1349,7 +1364,7 @@ async function stopTrendRobot() {
 }
 
 function maybeAutoPopup() {
-  if (!primed || trendRobot.running) return;
+  if (!primed) return;
   if ($("robotModal").classList.contains("show")) return;
   if (newSignalsCount() > 0) openRobotModal();
 }
