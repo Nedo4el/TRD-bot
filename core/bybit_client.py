@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 # Bybit: /v5/market/kline — ~10 запросов/с на IP, а локальный лимитер процесса
 # соседей не видит: 7 роботов, поднятых пачкой, бьют kline в одну секунду.
 # Слоты резервируем файлом, чтобы суммарный темп всех процессов был <= SHARED_RPS.
-SHARED_RPS = 8.0
+SHARED_RPS = 4.0
 _GATE_LOCK = PROJECT_ROOT / "data" / "api_gate.lock"
 _GATE_TS = PROJECT_ROOT / "data" / "api_gate.ts"
 _GATE_STALE_SEC = 5.0
@@ -219,7 +219,13 @@ class BybitClient:
         @retry(max_retries=3, base_delay=1.0)
         def _sync_call() -> Any:
             # Синхронный вызов pybit — см. аннотации типов у pybit
-            return method(*args, **kwargs)  # type: ignore[no-any-return]
+            try:
+                return method(*args, **kwargs)  # type: ignore[no-any-return]
+            except InvalidRequestError as exc:
+                if "34040" in str(exc):
+                    # "not modified": стоп уже целевой — это успех, а не ошибка
+                    return {"retCode": 0, "result": {}, "retMsg": "not modified"}
+                raise
 
         try:
             result = await run_in_thread(_sync_call)
@@ -641,11 +647,6 @@ class BybitClient:
                 dict[str, Any],
                 await self._call("set_trading_stop", **params),
             )
-        except InvalidRequestError as exc:
-            if "34040" in str(exc):
-                logger.debug("set_trading_stop: стоп уже целевой (34040)")
-                return {"retCode": 0, "result": {}}
-            raise
         except Exception:
             if take_profit != 0:
                 raise

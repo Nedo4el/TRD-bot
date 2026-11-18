@@ -44,23 +44,23 @@ def test_gate_recovers_from_stale_lock(
     assert not lock.exists()
 
 
-def test_stop_already_target_is_success() -> None:
+def test_call_treats_not_modified_as_success() -> None:
     client = bc.BybitClient(Config(api_key="k", api_secret="s", testnet=True))
 
-    async def already_set(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    def already_set(**kwargs: Any) -> dict[str, Any]:
         raise InvalidRequestError(None, "not modified (ErrCode: 34040)", 400, 0, {})
 
-    client._call = already_set  # type: ignore[method-assign]
+    client._http.set_trading_stop = already_set  # type: ignore[method-assign]
     out = asyncio.run(client.set_stop_loss_take_profit("BTCUSDT", 95.0, 0))
     assert out["retCode"] == 0
 
 
-def test_stop_other_api_error_raises() -> None:
+def test_call_other_api_error_raises() -> None:
     client = bc.BybitClient(Config(api_key="k", api_secret="s", testnet=True))
 
-    async def bad_params(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    def bad_params(**kwargs: Any) -> dict[str, Any]:
         raise InvalidRequestError(None, "bad params (ErrCode: 10001)", 400, 0, {})
 
-    client._call = bad_params  # type: ignore[method-assign]
+    client._http.set_trading_stop = bad_params  # type: ignore[method-assign]
     with pytest.raises(InvalidRequestError):
-        asyncio.run(client.set_stop_loss_take_profit("BTCUSDT", 95.0, 0))
+        asyncio.run(client.set_stop_loss_take_profit("BTCUSDT", 95.0))
