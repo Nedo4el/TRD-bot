@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 import threading
 import time
 from collections import deque
@@ -17,11 +18,50 @@ from typing import Any, cast
 from pybit.exceptions import FailedRequestError, InvalidRequestError
 from pybit.unified_trading import HTTP, WebSocket
 
-from core.config import Config
+from core.config import PROJECT_ROOT, Config
 from core.logger import get_logger
 from core.utils import exponential_backoff, retry, run_in_thread
 
 logger = get_logger(__name__)
+
+# --- Общий темп REST для всех процессов машины ------------------------------
+# Bybit: /v5/market/kline — ~10 запросов/с на IP, а локальный лимитер процесса
+# соседей не видит: 7 роботов, поднятых пачкой, бьют kline в одну секунду.
+# Слоты резервируем файлом, чтобы суммарный темп всех процессов был <= SHARED_RPS.
+SHARED_RPS = 8.0
+_GATE_LOCK = PROJECT_ROOT / "data" / "api_gate.lock"
+_GATE_TS = PROJECT_ROOT / "data" / "api_gate.ts"
+_GATE_STALE_SEC = 5.0
+
+
+def _gate_delay(spacing: float) -> float:
+    """Зарезервировать слот в общем темпе процессов; вернуть паузу до него."""
+    _GATE_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(400):
+        try:
+            fd = os.open(str(_GATE_LOCK), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+        except FileExistsError:
+            try:
+                if time.time() - _GATE_LOCK.stat().st_mtime > _GATE_STALE_SEC:
+                    _GATE_LOCK.unlink(missing_ok=True)
+            except OSError:
+                pass
+            time.sleep(0.005)
+            continue
+        try:
+            try:
+                next_at = float(_GATE_TS.read_text(encoding="ascii"))
+            except (OSError, ValueError):
+                next_at = 0.0
+            now = time.time()
+            slot = max(now, next_at)
+            _GATE_TS.write_text(f"{slot + spacing:.6f}", encoding="ascii")
+        finally:
+            os.close(fd)
+            _GATE_LOCK.unlink(missing_ok=True)
+        return max(0.0, slot - now)
+    return 0.0
+
 
 # --- Сдвиг локальных часов относительно сервера Bybit (TIME_SYNC) -----------
 # pybit подписывает запросы через pybit._helpers.generate_timestamp(): часы,
@@ -154,6 +194,10 @@ class BybitClient:
                 logger.debug("Rate limit: пауза %.3fс", sleep_for)
                 await asyncio.sleep(sleep_for)
         self._last_call_times.append(time.monotonic())
+        gate_wait = _gate_delay(1.0 / SHARED_RPS)
+        if gate_wait > 0:
+            logger.debug("Общий лимит: пауза %.3fс", gate_wait)
+            await asyncio.sleep(gate_wait)
 
     # ============================ REST API =============================
 
@@ -597,6 +641,11 @@ class BybitClient:
                 dict[str, Any],
                 await self._call("set_trading_stop", **params),
             )
+        except InvalidRequestError as exc:
+            if "34040" in str(exc):
+                logger.debug("set_trading_stop: стоп уже целевой (34040)")
+                return {"retCode": 0, "result": {}}
+            raise
         except Exception:
             if take_profit != 0:
                 raise
