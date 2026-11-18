@@ -16,9 +16,9 @@ import asyncio
 import json
 import logging
 import math
+import random
 import secrets
 import time
-import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -68,13 +68,6 @@ def _utc_day() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def _jitter_ms(symbol: str, window_ms: int) -> int:
-    """Детерминированный сдвиг просыпания робота (0..window_ms) по монете."""
-    if window_ms <= 0:
-        return 0
-    return zlib.crc32(symbol.encode()) % (window_ms + 1)
-
-
 class OrderFlow:
     """Исполнительный цикл: свечи → решение стратегии → ордера → состояние."""
 
@@ -97,7 +90,9 @@ class OrderFlow:
         self.filters = filters
         self._stop = asyncio.Event()
         self._last_decided: float = 0.0
-        self._wake_jitter_ms = _jitter_ms(cfg.symbol, cfg.wake_jitter_ms)
+        self._wake_jitter_ms = (
+            random.randint(0, cfg.wake_jitter_ms) if cfg.wake_jitter_ms > 0 else 0
+        )
         self._htf_cache: list[Candle] | None = None
         self._htf_cache_until_ms: int = 0
         self._gate_logged: str | None = None
@@ -148,17 +143,18 @@ class OrderFlow:
                         self.feed.candles.get_nowait()
                     except asyncio.QueueEmpty:
                         break
-                await self._wake_jitter()
                 return not self._stop.is_set()
             await asyncio.sleep(0.2)
         return not self._stop.is_set()
 
     async def _wake_jitter(self) -> None:
-        """Развести одновременные просыпания роботов разных монет.
+        """Развести REST-запросы роботов, стартовавших в одну секунду.
 
-        Свеча 5m закрывается у всех символов в одну секунду: без сдвига
-        7 процессов бьют /v5/market/kline одним залпом (LTF + HTF) и ловят
-        10006. Офсет детерминирован по символу, чтобы задержка не скакала.
+        Свеча 5m закрывается у всех символов одновременно, а таймаутный тик
+        POLL_SEC у процессов, поднятых пачкой, попадает в ту же секунду:
+        7 запросов kline подряд упираются в лимит Bybit (10006). Сдвиг
+        случайный на процесс — фиксированные офсеты по символу могут лечь
+        в один интервал (crc32 семи тикеров это подтвердил).
         """
         if self._wake_jitter_ms <= 0:
             return
@@ -183,6 +179,7 @@ class OrderFlow:
             return
         if st.position is not None:
             await self._update_risk()
+        await self._wake_jitter()
         candles = await self._fetch_candles()
         closed = candles[:-1] if len(candles) > 1 else []
         if not closed:
@@ -874,7 +871,8 @@ class OrderFlow:
             return None
         htf_ms = int(self.cfg.htf_timeframe) * 60_000
         self._htf_cache = closed
-        self._htf_cache_until_ms = closed[-1].open_time + htf_ms
+        # новый закрытый бар появится, когда закроется текущая формирующаяся
+        self._htf_cache_until_ms = candles[-1].open_time + htf_ms
         return list(closed)
 
     async def _wait_position(self) -> Position | None:

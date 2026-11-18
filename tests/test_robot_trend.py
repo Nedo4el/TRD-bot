@@ -62,6 +62,7 @@ def _cfg(**overrides: Any) -> TrendConfig:
         "position_pct": 10.0,
         "candles_warmup": 5,
         "poll_sec": 0.3,
+        "wake_jitter_ms": 0,
         "max_loss_usd": 0.0,
         "max_drawdown_pct": 0.0,
         "slippage_pct": 0.005,
@@ -1182,6 +1183,69 @@ def test_wait_wake_returns_on_candle_and_stop(tmp_path: Path) -> None:
     assert asyncio.run(_case_candle()) is True
     assert asyncio.run(_case_stop()) is False
     assert asyncio.run(_case_timeout()) is True
+
+
+def test_wake_jitter_spread_and_stop(tmp_path: Path) -> None:
+    flow, *_ = _make_flow(tmp_path / "a", cfg=_cfg(wake_jitter_ms=200))
+    assert 0 <= flow._wake_jitter_ms <= 200
+    assert _make_flow(tmp_path / "c")[0]._wake_jitter_ms == 0
+
+    flow._wake_jitter_ms = 120
+    start = time.monotonic()
+    asyncio.run(flow._wake_jitter())
+    assert time.monotonic() - start >= 0.11
+
+    async def _stopped() -> float:
+        flow2, *_ = _make_flow(tmp_path / "b")
+        flow2._wake_jitter_ms = 500
+        asyncio.get_running_loop().call_later(0.05, flow2.request_stop)
+        began = time.monotonic()
+        await flow2._wake_jitter()
+        return time.monotonic() - began
+
+    assert asyncio.run(_stopped()) < 0.45
+
+
+def test_tick_applies_wake_jitter(tmp_path: Path) -> None:
+    flow, _client, _feed, _strategy, _store = _make_flow(tmp_path)
+    flow._wake_jitter_ms = 80
+    start = time.monotonic()
+    asyncio.run(flow._tick())
+    assert time.monotonic() - start >= 0.07
+
+
+def test_htf_cache_lives_until_next_bar(tmp_path: Path) -> None:
+    flow, client, _feed, _strategy, _store = _make_flow(tmp_path)
+    htf_ms = 3_600_000
+    now_ms = int(time.time() * 1000)
+    last_closed = now_ms // htf_ms * htf_ms - htf_ms
+    client.candles = [
+        Candle(last_closed - htf_ms * i, 100.0, 101.0, 99.0, 100.0, 1.0)
+        for i in reversed(range(3))
+    ]
+    client.candles.append(Candle(last_closed + htf_ms, 100.0, 101.0, 99.0, 100.0, 1.0))
+
+    calls = 0
+    orig = client.get_klines
+
+    async def counted(*args: Any, **kwargs: Any) -> list[Candle]:
+        nonlocal calls
+        calls += 1
+        return await orig(*args, **kwargs)
+
+    client.get_klines = counted  # type: ignore[method-assign]
+
+    first = asyncio.run(flow._fetch_htf())
+    second = asyncio.run(flow._fetch_htf())
+    assert calls == 1  # второй вызов — из кэша
+    assert second == first
+    assert len(second or []) == 3
+    assert flow._htf_cache_until_ms == last_closed + htf_ms * 2
+    assert flow._htf_cache_until_ms > now_ms
+
+    flow._htf_cache_until_ms = 0  # как будто бар закрылся
+    assert asyncio.run(flow._fetch_htf()) == first
+    assert calls == 2
 
 
 # ============================== recover ==============================

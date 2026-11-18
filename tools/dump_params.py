@@ -125,6 +125,7 @@ def robot_text(
         row("CANDLE_WARMUP (свечей LTF)", str(cfg.candles_warmup)),
         row("HTF_WARMUP (свечей HTF)", str(cfg.htf_candle_warmup)),
         row("POLL_SEC (опрос, сек)", num(cfg.poll_sec)),
+        row("WAKE_JITTER_MS (разброс просыпания, мс)", str(cfg.wake_jitter_ms)),
         "",
         "РАЗМЕР ПОЗИЦИИ",
         row("DEPOSIT_USD", num(cfg.deposit_usd)),

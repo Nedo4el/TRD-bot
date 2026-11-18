@@ -57,10 +57,10 @@ class TrendConfig(BaseModel):
     # --- Свечи ---
     candles_warmup: int = Field(default_factory=lambda: _env_int("CANDLE_WARMUP", 300))
     poll_sec: float = Field(default_factory=lambda: _env_float("POLL_SEC", 10.0))
-    # разброс просыпания по WS-свече, мс: роботы разных монет не бьют kline
-    # одним залпом (7 процессов в одну секунду = 14 запросов > лимит 10/с)
+    # разброс REST-тика, мс: процессы, поднятые пачкой, иначе бьют kline
+    # в одну секунду (7 запросов подряд упираются в лимит Bybit, errCode 10006)
     wake_jitter_ms: int = Field(
-        default_factory=lambda: _env_int("WAKE_JITTER_MS", 1500)
+        default_factory=lambda: _env_int("WAKE_JITTER_MS", 3000)
     )
 
     # --- Защита (kill-switch по equity) ---
