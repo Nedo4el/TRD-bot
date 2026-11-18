@@ -250,10 +250,8 @@ def screener_text(
         f"  DOWN: EMA {cfg.ema_fast} < EMA {cfg.ema_slow}, цена < "
         f"EMA {cfg.ema_macro}, ADX >= {num(cfg.adx_threshold)}, -DI > +DI"
     )
-    entry_rule = (
-        f"  Вход: откат к EMA {cfg.ema_fast} (low <= EMA, close > EMA) + "
-        f"объём >= {num(cfg.vol_mult)} x SMA{cfg.vol_period} + "
-        f"зазор EMA >= {num(cfg.ema_min_spread_pct)}%"
+    entry_note = (
+        f"  Вход (выбирает робот): откат к EMA {cfg.ema_fast}, объём, зазор EMA"
     )
     lines = header("SCREENER TREND — ПАРАМЕТРЫ", SCREENER_ENV, now)
     lines += [
@@ -275,19 +273,16 @@ def screener_text(
         row("ADX_PERIOD", str(cfg.adx_period)),
         row("ADX_THRESHOLD", num(cfg.adx_threshold)),
         "",
-        "ВХОД — ФИЛЬТРЫ",
+        "СПРАВОЧНО В ТАБЛИЦЕ (на отбор не влияет)",
         row("VOLUME_PERIOD", str(cfg.vol_period)),
-        row("VOLUME_MULT", num(cfg.vol_mult)),
-        row("EMA_MIN_SPREAD_PCT", num(cfg.ema_min_spread_pct)),
-        row("REQUIRE_PULLBACK", flag(cfg.require_pullback)),
         "",
-        "УСЛОВИЕ СИГНАЛА (как вход robot_trend)",
-        f"  Тренд считается на {trend_tf}m, откат — на {signal_tf}m",
+        "УСЛОВИЕ СИГНАЛА (только тренд)",
+        f"  Тренд считается на {trend_tf}m, робот входит на {signal_tf}m",
         up_rule,
         down_rule,
-        entry_rule,
         "  Score: ADX x 2 + зазор EMA_FAST/EMA_SLOW x 5 (макс. 100)",
-        "  Скринер только находит сигналы: SL/TP и размер позиции не считает",
+        "  Скринер отдаёт монету роботу, точку входа робот выбирает сам",
+        entry_note,
         "",
         "АВТО-ЗАПУСК ROBOT_TREND",
         row("AUTO_START", flag(auto_cfg.enabled)),

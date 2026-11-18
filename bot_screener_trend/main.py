@@ -63,9 +63,6 @@ def _load_config() -> tuple[dict, ScanConfig, AutoStartConfig]:
         adx_period=get_env_int("ADX_PERIOD", 14),
         adx_threshold=get_env_float("ADX_THRESHOLD", 26.0),
         vol_period=get_env_int("VOLUME_PERIOD", 20),
-        vol_mult=get_env_float("VOLUME_MULT", 1.0),
-        ema_min_spread_pct=get_env_float("EMA_MIN_SPREAD_PCT", 0.1),
-        require_pullback=get_env_bool("REQUIRE_PULLBACK", True),
         min_turnover_24h=float(env_cfg["min_turnover_24h"]),
         exclude_symbols=exclude,
     )
