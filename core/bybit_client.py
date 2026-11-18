@@ -81,6 +81,7 @@ class Position:
     stop_loss: float | None = None
     take_profit: float | None = None
     position_idx: int = 0  # 0 — one-way, 1 — long (хедж), 2 — short (хедж)
+    mark_price: float = 0.0  # текущая цена маркировки (0.0 — биржа не вернула)
 
 
 def _fmt_num(value: float) -> str:
@@ -639,25 +640,41 @@ class BybitClient:
             category=self.config.category,
             symbol=symbol,
         )
-        positions: list[Position] = []
-        for row in resp["result"]["list"]:
-            if float(row["size"]) == 0:
-                continue
-            positions.append(
-                Position(
-                    symbol=symbol,
-                    side=row["side"],
-                    size=float(row["size"]),
-                    avg_price=float(row["avgPrice"]),
-                    unrealised_pnl=float(row["unrealisedPnl"]),
-                    stop_loss=float(row["stopLoss"]) if row.get("stopLoss") else None,
-                    take_profit=float(row["takeProfit"])
-                    if row.get("takeProfit")
-                    else None,
-                    position_idx=int(row.get("positionIdx") or 0),
-                ),
-            )
-        return positions
+        return [
+            self._position_from_row(row)
+            for row in resp["result"]["list"]
+            if float(row.get("size") or 0) != 0
+        ]
+
+    async def get_all_positions(self) -> list[Position]:
+        """Все открытые позиции аккаунта (USDT-маржинальные контракты)."""
+        resp = await self._call(
+            "get_positions",
+            category=self.config.category,
+            settleCoin="USDT",
+        )
+        return [
+            self._position_from_row(row)
+            for row in resp["result"]["list"]
+            if float(row.get("size") or 0) != 0
+        ]
+
+    @staticmethod
+    def _position_from_row(row: dict[str, Any]) -> Position:
+        """Собрать Position из строки ответа /v5/position/list."""
+        stop_loss = float(row["stopLoss"]) if row.get("stopLoss") else None
+        take_profit = float(row["takeProfit"]) if row.get("takeProfit") else None
+        return Position(
+            symbol=str(row.get("symbol") or ""),
+            side=str(row.get("side") or ""),
+            size=float(row.get("size") or 0.0),
+            avg_price=float(row.get("avgPrice") or 0.0),
+            unrealised_pnl=float(row.get("unrealisedPnl") or 0.0),
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            position_idx=int(row.get("positionIdx") or 0),
+            mark_price=float(row.get("markPrice") or 0.0),
+        )
 
     async def get_position_mode(self, symbol: str) -> str:
         """Режим позиции: "one-way" | "hedge" | "unknown" (best-effort).

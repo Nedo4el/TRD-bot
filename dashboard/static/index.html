@@ -373,6 +373,7 @@
       <button class="tab-btn active" id="tabScreeners">Скринеры</button>
       <button class="tab-btn" id="tabRobots">Роботы</button>
       <button class="tab-btn" id="tabStats">Статистика сделок</button>
+      <button class="tab-btn" id="tabPositions">Позиции</button>
     </div>
 
   <div class="settings-panel" id="impulsePanel">
@@ -608,6 +609,33 @@
             <tr><td colspan="9" class="empty">Нет данных о сделках.</td></tr>
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <div class="tab-content" id="contentPositions">
+      <h2>Открытые позиции роботов</h2>
+      <div style="margin-bottom: 12px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+        <button class="primary" id="posRefresh">Обновить позиции</button>
+        <span class="muted" id="posUpdated">—</span>
+      </div>
+      <div class="table-wrap" style="max-height: 60vh;">
+        <table>
+          <thead>
+            <tr>
+              <th>Робот</th><th>Монета</th><th>Сторона</th><th>Кол-во</th>
+              <th>Вход</th><th>Текущая</th><th>PnL</th><th>PnL %</th>
+              <th>SL</th><th>TP</th><th>Открыта (МСК)</th><th>Действия</th>
+            </tr>
+          </thead>
+          <tbody id="posBody">
+            <tr><td colspan="12" class="empty">Загрузка…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="muted" id="posErrors" style="margin-top: 8px; font-size: 12px;"></div>
+      <div class="muted" style="margin-top: 6px; font-size: 12px;">
+        Ручное закрытие идёт рыночным reduce-only ордером ключами робота и работает,
+        даже если робот остановлен. Робот при следующем тике сам увидит, что позиция закрыта.
       </div>
     </div>
    </div>
@@ -1725,6 +1753,114 @@ async function stopAllRobots() {
   }
 }
 
+// ==================== Открытые позиции роботов ====================
+
+let openPositions = [];
+
+function fmtQty(v) {
+  if (v === null || v === undefined) return "—";
+  const a = Math.abs(v);
+  if (a >= 1000) return v.toFixed(0);
+  if (a >= 1) return v.toFixed(3);
+  return v.toFixed(6);
+}
+
+async function loadPositions() {
+  try {
+    const res = await fetch("/api/positions", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || "ошибка получения позиций");
+    renderPositions(data);
+  } catch (err) {
+    $("posUpdated").textContent = "нет связи с сервером";
+    $("posErrors").textContent = "Ошибка загрузки позиций: " + err.message;
+  }
+}
+
+function renderPositions(data) {
+  openPositions = data.positions || [];
+  $("tabPositions").textContent = openPositions.length
+    ? `Позиции (${openPositions.length})`
+    : "Позиции";
+  $("posUpdated").textContent = data.generated_at
+    ? "обновлено " + fmtClock(data.generated_at)
+    : "—";
+  const errors = data.errors || [];
+  $("posErrors").innerHTML = errors
+    .map((e) => `${esc(e.robot)}: ${esc(e.error)}`)
+    .join(" · ");
+
+  const body = $("posBody");
+  if (!openPositions.length) {
+    body.innerHTML = `<tr><td colspan="12" class="empty">
+      Открытых позиций нет.</td></tr>`;
+    return;
+  }
+  body.innerHTML = openPositions.map((p) => {
+    const sideCls = p.side === "long" ? "LONG" : "SHORT";
+    const pnlCls = p.unrealized_pnl > 0 ? "chg-up"
+      : (p.unrealized_pnl < 0 ? "chg-dn" : "chg-flat");
+    const fromState = p.source === "state";
+    const src = fromState
+      ? ` <span class="muted" title="Биржа недоступна: данные из state-файла">state</span>`
+      : "";
+    const pnl = fromState ? "—" : fmtSigned(p.unrealized_pnl);
+    const pnlPct = fromState ? "—" : fmtSignedPct(p.pnl_pct);
+    return `<tr>
+      <td><b>${esc(p.robot)}</b>
+        <div class="screen-name">${p.robot_running ? "работает" : "остановлен"}</div></td>
+      <td><b>${esc(p.symbol)}</b>${src}</td>
+      <td><span class="badge ${sideCls}">${sideCls}</span></td>
+      <td>${fmtQty(p.qty)}</td>
+      <td>${fmtPrice(p.entry_price)}</td>
+      <td>${p.mark_price ? fmtPrice(p.mark_price) : "—"}</td>
+      <td class="${pnlCls}">${pnl}</td>
+      <td class="${pnlCls}">${pnlPct}</td>
+      <td>${p.stop_loss ? fmtPrice(p.stop_loss) : "—"}</td>
+      <td>${p.take_profit ? fmtPrice(p.take_profit) : "—"}</td>
+      <td class="time">${p.opened_at ? fmtTime(p.opened_at) : "—"}</td>
+      <td><div class="robot-actions">
+        <button data-pos-robot="${esc(p.robot)}" data-pos-symbol="${esc(p.symbol)}"
+          data-pos-pct="100">Закрыть</button>
+        <button data-pos-robot="${esc(p.robot)}" data-pos-symbol="${esc(p.symbol)}"
+          data-pos-pct="50">50%</button>
+      </div></td>
+    </tr>`;
+  }).join("");
+
+  body.querySelectorAll("[data-pos-robot]").forEach((btn) => {
+    btn.addEventListener("click", () =>
+      closePositionManual(
+        btn.dataset.posRobot,
+        btn.dataset.posSymbol,
+        Number(btn.dataset.posPct)
+      )
+    );
+  });
+}
+
+async function closePositionManual(robot, symbol, pct) {
+  const what = pct >= 100 ? "всю позицию" : `${pct}% позиции`;
+  if (!confirm(`${symbol} (${robot}): закрыть ${what} по рынку?`)) return;
+  try {
+    const res = await fetch("/api/positions/close", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ robot, symbol, pct }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.message || data.error || "HTTP " + res.status);
+    }
+    toast(data.message || "Готово");
+    loadPositions();
+    loadRobots();
+  } catch (err) {
+    toast("Не удалось закрыть: " + err.message, true);
+  }
+}
+
 function switchTab(tabName) {
   document.querySelectorAll(".tab-btn").forEach((btn) => btn.classList.remove("active"));
   document.querySelectorAll(".tab-content").forEach((el) => el.classList.remove("active"));
@@ -1740,12 +1876,18 @@ function switchTab(tabName) {
     $("tabStats").classList.add("active");
     $("contentStats").classList.add("active");
     loadStats();
+  } else if (tabName === "positions") {
+    $("tabPositions").classList.add("active");
+    $("contentPositions").classList.add("active");
+    loadPositions();
   }
 }
 
 $("tabScreeners").addEventListener("click", () => switchTab("screeners"));
 $("tabRobots").addEventListener("click", () => switchTab("robots"));
 $("tabStats").addEventListener("click", () => switchTab("stats"));
+$("tabPositions").addEventListener("click", () => switchTab("positions"));
+$("posRefresh").addEventListener("click", loadPositions);
 $("robotRefresh").addEventListener("click", loadRobots);
 $("robotStopAll").addEventListener("click", stopAllRobots);
 
@@ -1885,6 +2027,8 @@ load();
 loadSettings();
 loadImpulseSettings();
 loadRobotStatus();
+loadPositions();
+setInterval(loadPositions, 10000);
 </script>
 </body>
 </html>

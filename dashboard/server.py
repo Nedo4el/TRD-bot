@@ -18,6 +18,7 @@ from starlette.routing import Route
 
 from dashboard import tiger
 from dashboard.config import DashboardConfig
+from dashboard.positions import close_robot_position, list_open_positions
 from dashboard.robots import (
     get_all_robots_status,
     get_robot_symbols,
@@ -28,7 +29,7 @@ from dashboard.robots import (
 )
 from dashboard.scheduler import Scheduler
 from dashboard.settings import AllCoinsSettings, ImpulseSettings
-from dashboard.store import SignalStore
+from dashboard.store import SignalStore, now_iso
 from dashboard.symbols import SymbolsCache
 from dashboard.trade_store import TradeStore
 
@@ -355,6 +356,50 @@ async def api_robot_statistics_clear(request: Request) -> JSONResponse:
     )
 
 
+async def api_positions(request: Request) -> JSONResponse:
+    """Открытые позиции всех роботов (биржа + state-файлы)."""
+    positions, errors = await list_open_positions()
+    return JSONResponse(
+        {
+            "ok": True,
+            "generated_at": now_iso(),
+            "positions": positions,
+            "errors": errors,
+        },
+        headers=_NO_CACHE,
+    )
+
+
+async def api_positions_close(request: Request) -> JSONResponse:
+    """Закрыть позицию робота по рынку: {robot, symbol, pct?}."""
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"ok": False, "error": "JSON object required"}, status_code=400
+        )
+    robot = str(body.get("robot") or "").strip()
+    symbol = str(body.get("symbol") or "").strip().upper()
+    if not robot:
+        return JSONResponse({"ok": False, "error": "robot обязателен"}, status_code=400)
+    if _bad_symbol(symbol):
+        return JSONResponse({"ok": False, "error": "неверный тикер"}, status_code=400)
+    try:
+        pct = float(body.get("pct", 100))
+    except (TypeError, ValueError):
+        return JSONResponse(
+            {"ok": False, "error": "pct: число ожидается"}, status_code=400
+        )
+    ok, message = await close_robot_position(robot, symbol, pct)
+    return JSONResponse(
+        {"ok": ok, "message": message, "robot": robot, "symbol": symbol},
+        status_code=200 if ok else 400,
+        headers=_NO_CACHE,
+    )
+
+
 async def api_open_tiger(request: Request) -> JSONResponse:
     """Открыть инструмент в терминале Tiger Trade через его локальный API."""
     config: DashboardConfig = request.app.state.config
@@ -407,6 +452,8 @@ def create_app() -> Starlette:
         Route("/api/scan", api_scan_all, methods=["POST"]),
         Route("/api/scan/{name}", api_scan_one, methods=["POST"]),
         Route("/api/open-tiger", api_open_tiger, methods=["POST"]),
+        Route("/api/positions", api_positions),
+        Route("/api/positions/close", api_positions_close, methods=["POST"]),
         Route("/api/health", api_health),
         Route("/api/settings/all", api_settings_all_get),
         Route("/api/settings/all", api_settings_all_post, methods=["POST"]),
