@@ -198,6 +198,22 @@ def robot_text(
             f"фандинг >= {num(g.funding_high * 100)}% -> выход целиком"
         ),
         "",
+        "СРЕЗ 50% — КАК РАБОТАЕТ СЕЙЧАС",
+        (
+            f"  GUARD_DRY_RUN={flag(g.dry_run)}: "
+            + (
+                "сигналы только в guard_log.jsonl, реально работает "
+                f"уровень {num(g.partial_fallback_pct * 100)}% + трейлинг"
+                if g.dry_run
+                else "сигналы режут позицию по-настоящему"
+            )
+        ),
+        (
+            "  резать по дивергенции (CVD/OI) -> GUARD_DRY_RUN=false; "
+            "при PARTIAL_MODE=both сработает первое из двух событий"
+        ),
+        "  PARTIAL_FALLBACK_PCT должен быть ниже TAKE_PCT, иначе тейк сработает раньше",
+        "",
         "СЛУЖЕБНОЕ",
         row("WS_ENABLED", flag(cfg.ws_enabled)),
         row("RECONNECT_SEC", num(cfg.reconnect_sec)),
