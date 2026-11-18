@@ -14,7 +14,12 @@ import pytest
 
 from core.bybit_client import BybitClient, Candle, Position
 from robot_trend.config import TrendConfig
-from robot_trend.guard import GuardParams, PositionGuard
+from robot_trend.guard import (
+    GuardAction,
+    GuardParams,
+    GuardVerdict,
+    PositionGuard,
+)
 from robot_trend.main import _core_config
 from robot_trend.order_flow import OrderFlow
 from robot_trend.risk import (
@@ -1329,16 +1334,10 @@ def test_shutdown_close_fails_keeps_position(tmp_path: Path) -> None:
     assert st.phase == PHASE_IN_POSITION
 
 
-def test_partial_half_at_trail_trigger(tmp_path: Path) -> None:
+def test_partial_level_fallback_once(tmp_path: Path) -> None:
     flow, client, feed, strategy, store = _make_flow(tmp_path)
-    strategy.params = dataclasses.replace(
-        TrendParams(),
-        be_trigger_pct=0.05,
-        be_offset_pct=0.01,
-        trail_pct=0.02,
-        trail_trigger_pct=0.09,
-        partial_share=0.5,
-        take_pct=0.15,
+    flow._guard = PositionGuard(
+        _guard_params(partial_mode="level", partial_fallback_pct=0.15)
     )
     strategy.instruction = Instruction(
         action="enter", side="long", stop=97.0, take=115.0, reason="test"
@@ -1346,19 +1345,73 @@ def test_partial_half_at_trail_trigger(tmp_path: Path) -> None:
     asyncio.run(flow._tick())
     assert store.state.position is not None
 
-    feed.last_price = 110.0
+    feed.last_price = 112.0
     asyncio.run(flow._update_risk())
+    assert [o for o in client.placed if o["reduce_only"]] == []
+
+    feed.last_price = 116.0
+    asyncio.run(flow._update_risk())
+    partials = [o for o in client.placed if o["reduce_only"]]
+    assert len(partials) == 1
+    assert partials[0]["qty"] == pytest.approx(0.05)
+    pos = store.state.position
+    assert pos is not None and pos.partial_done
+    assert pos.qty == pytest.approx(0.05)
+
+    feed.last_price = 120.0
+    asyncio.run(flow._update_risk())
+    assert len([o for o in client.placed if o["reduce_only"]]) == 1
+
+
+def test_signal_partial_needs_profit_and_allowed_module(tmp_path: Path) -> None:
+    flow, _client, feed, _strategy, _store = _make_flow(tmp_path)
+    pos = OpenPosition(entry_price=100.0, qty=0.1, side="long")
+    verdict = GuardVerdict(GuardAction.EXIT_PARTIAL, "cvd", "bearish_divergence")
+    flow._guard = PositionGuard(_guard_params(partial_mode="signal"))
+
+    feed.last_price = 103.0
+    assert flow._signal_partial_ok(verdict, pos) is False
+    feed.last_price = 106.0
+    assert flow._signal_partial_ok(verdict, pos) is True
+
+    pos.partial_done = True
+    assert flow._signal_partial_ok(verdict, pos) is False
+
+    pos.partial_done = False
+    flow._guard = PositionGuard(
+        _guard_params(partial_mode="signal", partial_signal="oi")
+    )
+    assert flow._signal_partial_ok(verdict, pos) is False
+
+    flow._guard = PositionGuard(_guard_params(partial_mode="level"))
+    assert flow._signal_partial_ok(verdict, pos) is False
+
+
+def test_guard_signal_cuts_half_once(tmp_path: Path) -> None:
+    flow, client, feed, strategy, store = _make_flow(tmp_path)
+    strategy.instruction = Instruction(
+        action="enter", side="long", stop=97.0, take=115.0, reason="test"
+    )
+    asyncio.run(flow._tick())
+
+    flow._guard = PositionGuard(
+        _guard_params(
+            partial_mode="signal",
+            partial_min_profit=0.0,
+            dry_run=False,
+        )
+    )
+    flow._guard_feed = cast(Any, StubGuardFeed(_diverging_cvd()))
+    feed.last_price = 100.3
+    asyncio.run(flow._guard_step(_guard_candles()))
 
     partials = [o for o in client.placed if o["reduce_only"]]
     assert len(partials) == 1
-    assert partials[0]["side"] == "Sell"
     assert partials[0]["qty"] == pytest.approx(0.05)
     pos = store.state.position
-    assert pos is not None
-    assert pos.qty == pytest.approx(0.05)
-    assert pos.partial_done
+    assert pos is not None and pos.partial_done
 
-    asyncio.run(flow._update_risk())
+    asyncio.run(flow._guard_step(_guard_candles()))
     assert len([o for o in client.placed if o["reduce_only"]]) == 1
 
 
@@ -1487,7 +1540,7 @@ def test_guard_live_closes_half_reduce_only(tmp_path: Path) -> None:
     strategy.instruction = _enter_instruction()
     asyncio.run(flow._tick())
 
-    flow._guard = PositionGuard(_guard_params(dry_run=False))
+    flow._guard = PositionGuard(_guard_params(dry_run=False, partial_min_profit=0.0))
     flow._guard_feed = cast(Any, StubGuardFeed(_diverging_cvd()))
     client.position = Position(
         symbol=cfg.symbol, side="Buy", size=0.05, avg_price=100.0, unrealised_pnl=0.0

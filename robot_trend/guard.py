@@ -35,6 +35,10 @@ class GuardParams:
     cvd_window: int = 30
     cvd_exit_mode: str = "partial"
     partial_pct: float = 0.5
+    partial_mode: str = "both"
+    partial_min_profit: float = 0.05
+    partial_fallback_pct: float = 0.12
+    partial_signal: str = "cvd+oi"
     absorption_enabled: bool = True
     absorption_vol_mult: float = 2.0
     absorption_body_max: float = 0.3
@@ -54,6 +58,10 @@ class GuardParams:
             cvd_window=_env_int("CVD_WINDOW", 30),
             cvd_exit_mode=os.getenv("CVD_EXIT_MODE", "partial").strip().lower(),
             partial_pct=_env_float("CVD_PARTIAL_PCT", 0.5),
+            partial_mode=os.getenv("PARTIAL_MODE", "both").strip().lower(),
+            partial_min_profit=_env_float("PARTIAL_MIN_PROFIT", 0.05),
+            partial_fallback_pct=_env_float("PARTIAL_FALLBACK_PCT", 0.12),
+            partial_signal=os.getenv("PARTIAL_SIGNAL", "cvd+oi").strip().lower(),
             absorption_enabled=_env_bool("ABSORPTION_ENABLED", True),
             absorption_vol_mult=_env_float("ABSORPTION_VOL_MULT", 2.0),
             absorption_body_max=_env_float("ABSORPTION_BODY_MAX", 0.3),
@@ -71,6 +79,14 @@ class GuardParams:
             raise ValueError("CVD_WINDOW и OI_WINDOW должны быть >= 3")
         if not 0 < self.partial_pct < 1:
             raise ValueError("CVD_PARTIAL_PCT должен быть в (0, 1)")
+        if self.partial_mode not in ("level", "signal", "both"):
+            raise ValueError("PARTIAL_MODE должен быть level, signal или both")
+        if self.partial_signal not in ("cvd+oi", "cvd", "oi", "any"):
+            raise ValueError("PARTIAL_SIGNAL должен быть cvd+oi, cvd, oi или any")
+        if not 0 <= self.partial_min_profit < 1:
+            raise ValueError("PARTIAL_MIN_PROFIT должен быть в [0, 1)")
+        if not 0 <= self.partial_fallback_pct < 1:
+            raise ValueError("PARTIAL_FALLBACK_PCT должен быть в [0, 1)")
         if not 0 <= self.oi_drop_pct < 1:
             raise ValueError("OI_DROP_PCT должен быть в [0, 1)")
         if self.absorption_vol_mult <= 0 or self.absorption_body_max <= 0:

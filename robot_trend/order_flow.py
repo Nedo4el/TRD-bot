@@ -51,7 +51,7 @@ from robot_trend.state import (
     OpenPosition,
     StateStore,
 )
-from robot_trend.strategy import Instruction, TrendParams, TrendStrategy
+from robot_trend.strategy import Instruction, TrendStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,11 @@ class OrderFlow:
         self._trades = TradeStore()
         self._guard = PositionGuard(GuardParams.from_env())
         self._guard_feed: GuardFeed | None = None
+        g = self._guard.params
+        if g.partial_fallback_pct >= self.strategy.params.take_pct > 0:
+            logger.warning(
+                "guard: PARTIAL_FALLBACK_PCT >= TAKE_PCT — уровень среза не сработает"
+            )
 
     # ==================== жизненный цикл ====================
 
@@ -446,7 +451,7 @@ class OrderFlow:
                 if pos.side == "long"
                 else pos.entry_price * (1.0 + p.sl_pct)
             )
-        await self._partial_at_trail(pos, p, peak, price)
+        await self._partial_at_level(pos, price)
         decision = on_price(
             entry=pos.entry_price,
             peak=peak,
@@ -483,50 +488,22 @@ class OrderFlow:
             pos.peak_price,
         )
 
-    async def _partial_at_trail(
-        self,
-        pos: OpenPosition,
-        p: TrendParams,
-        peak: float,
-        price: float,
-    ) -> None:
-        """Скинуть PARTIAL_SHARE позиции в момент включения трейлинга."""
-        if p.partial_share <= 0 or pos.partial_done or p.trail_trigger_pct <= 0:
+    async def _partial_at_level(self, pos: OpenPosition, price: float) -> None:
+        """Снять долю позиции на уровне-предохранителе (PARTIAL_FALLBACK_PCT)."""
+        g = self._guard.params
+        if g.partial_mode == "signal" or g.partial_fallback_pct <= 0:
             return
-        armed = (
-            peak >= pos.entry_price * (1.0 + p.trail_trigger_pct)
+        if pos.partial_done:
+            return
+        level = (
+            pos.entry_price * (1.0 + g.partial_fallback_pct)
             if pos.side == "long"
-            else peak <= pos.entry_price * (1.0 - p.trail_trigger_pct)
+            else pos.entry_price * (1.0 - g.partial_fallback_pct)
         )
-        if not armed:
+        reached = price >= level if pos.side == "long" else price <= level
+        if not reached:
             return
-        step = self.filters.qty_step
-        qty = partial_qty(pos.qty, p.partial_share, step)
-        rest = pos.qty - qty
-        if qty <= 0 or rest < step or rest * price < self.filters.min_notional:
-            logger.info("risk: остаток меньше минимума — частичный выход пропущен")
-            pos.partial_done = True
-            await self.store.save()
-            return
-        side = "Sell" if pos.side == "long" else "Buy"
-        try:
-            await self.client.place_order(
-                self.cfg.symbol, side=side, qty=qty, reduce_only=True
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("risk: частичное закрытие не вышло (%s)", exc)
-            return
-        pos.qty = rest
-        pos.partial_done = True
-        await self.store.save()
-        logger.info(
-            "risk: закрыто %.6g (%.0f%%), остаток %.6g",
-            qty,
-            p.partial_share * 100,
-            rest,
-        )
-        if not await self._wait_qty(rest, step):
-            logger.warning("risk: объём на бирже не сошёлся с %.6g", rest)
+        await self._guard_partial(pos, "fallback_level")
 
     # ==================== защита позиции (guard) ====================
 
@@ -574,11 +551,30 @@ class OrderFlow:
         if verdict.action is GuardAction.EXIT_FULL:
             await self._exit(f"guard:{verdict.module}:{verdict.reason}")
             return
-        await self._guard_partial(pos, verdict)
+        if not self._signal_partial_ok(verdict, pos):
+            return
+        await self._guard_partial(pos, f"{verdict.module}:{verdict.reason}")
 
-    async def _guard_partial(
-        self, pos: OpenPosition, verdict: GuardVerdict
-    ) -> None:
+    def _signal_partial_ok(self, verdict: GuardVerdict, pos: OpenPosition) -> bool:
+        """Можно ли резать по сигналу: режим, модуль, профит и однократность."""
+        g = self._guard.params
+        allowed = {
+            "cvd+oi": ("cvd", "oi"),
+            "cvd": ("cvd",),
+            "oi": ("oi",),
+            "any": ("cvd", "oi", "absorption"),
+        }[g.partial_signal]
+        if g.partial_mode == "level" or pos.partial_done:
+            return False
+        if verdict.module not in allowed:
+            return False
+        price = self.feed.last_price or pos.entry_price
+        profit = (price - pos.entry_price) / pos.entry_price
+        if pos.side != "long":
+            profit = -profit
+        return profit >= g.partial_min_profit
+
+    async def _guard_partial(self, pos: OpenPosition, reason: str) -> None:
         """Сократить позицию на ``CVD_PARTIAL_PCT`` (reduce-only Market)."""
         step = self.filters.qty_step
         pct = self._guard.params.partial_pct
@@ -587,7 +583,7 @@ class OrderFlow:
         price = self.feed.last_price or pos.entry_price
         if qty <= 0 or rest < step or rest * price < self.filters.min_notional:
             logger.info("guard: остаток меньше минимума — закрываем целиком")
-            await self._exit(f"guard:{verdict.module}:{verdict.reason}")
+            await self._exit(f"guard:{reason}")
             return
         close_side = "Sell" if pos.side == "long" else "Buy"
         try:
@@ -601,13 +597,14 @@ class OrderFlow:
             logger.error("guard: частичное закрытие не вышло (%s)", exc)
             return
         pos.qty = rest
+        pos.partial_done = True
         await self.store.save()
         logger.info(
             "guard: закрыто %.6g (%.0f%%), остаток %.6g (%s)",
             qty,
             pct * 100,
             rest,
-            verdict.reason,
+            reason,
         )
         if not await self._wait_qty(rest, step):
             logger.warning("guard: объём на бирже не сошёлся с %.6g", rest)
