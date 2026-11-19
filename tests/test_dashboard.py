@@ -55,7 +55,7 @@ def _signal(symbol: str, score: float, screener: str = "impulse") -> Signal:
         score=score,
         label="тест",
         turnover_24h=1_000_000.0,
-        found_at="2026-01-01T00:00:00+00:00",
+        found_at=store_module.now_iso(),
         detail={"move_pct": 5.0},
     )
 
@@ -164,6 +164,29 @@ def test_store_restores_snapshot(
     assert snapshot["signals"][0]["symbol"] == "AAAUSDT"
     assert snapshot["screeners"][0]["count"] == 1
     assert snapshot["screeners"][0]["running"] is False
+
+
+def test_store_restore_drops_stale_signals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """После рестарта старые сигналы (старше TTL) не показываем."""
+    monkeypatch.setattr(store_module, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(store_module, "STATE_FILE", tmp_path / "latest.json")
+    first = SignalStore([_spec()])
+    stale = make_signal(
+        screener="impulse",
+        title="Тест",
+        symbol="OLDUSDT",
+        score=42.0,
+        found_at="2020-01-01T00:00:00+00:00",
+    )
+    first.set_result("impulse", [stale], 0.5, "2020-01-01T00:01:00+00:00")
+
+    second = SignalStore([_spec()])
+
+    snapshot = second.snapshot()
+    assert snapshot["total_signals"] == 0
+    assert snapshot["screeners"][0]["count"] == 0
 
 
 def test_scheduler_trigger_unknown_screener(store: SignalStore) -> None:
@@ -344,6 +367,67 @@ def test_scan_all_coins_mocked(
     assert aaa.detail["change_24h_pct"] == 5.2
     assert aaa.detail["atr_pct"] is not None
     assert aaa.detail["volume_trend_pct"] is not None
+
+
+def test_scan_trend_uses_htf_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Вкладка «Тренд» считает по HTF (1h); без HTF сигнала нет."""
+    import dashboard.adapters as adapters_module
+    from dashboard.adapters import scan_trend
+
+    class FakeEnv:
+        def number(self, key: str, default: float = 0.0) -> float:
+            return {"MIN_TURNOVER_24H": 1_000_000.0}.get(key, default)
+
+        def integer(self, key: str, default: int = 0) -> int:
+            return {"LOOKBACK_BARS": 300, "HTF_LOOKBACK_BARS": 300}.get(key, default)
+
+        def string(self, key: str, default: str = "") -> str:
+            return {"TIMEFRAME": "5", "HTF_TIMEFRAME": "60"}.get(key, default)
+
+        def names(self, key: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+            return default
+
+    def candles(count: int, base: float, step: float) -> list[dict]:
+        rows = []
+        for i in range(count):
+            close = base + i * step
+            rows.append(
+                {
+                    "open_time": i,
+                    "open": close,
+                    "high": close + 0.05,
+                    "low": close - 0.05,
+                    "close": close,
+                    "volume": 1000.0,
+                }
+            )
+        return rows
+
+    class FakeFetcher:
+        async def get_filtered_symbols(
+            self, min_turnover: float
+        ) -> list[tuple[str, float]]:
+            return [("AAAUSDT", 50_000_000.0), ("BBBUSDT", 60_000_000.0)]
+
+        async def get_klines(
+            self, symbol: str, interval: str, limit: int = 100
+        ) -> list[dict]:
+            if interval == "60":
+                return candles(limit, 100.0, 0.5) if symbol == "AAAUSDT" else []
+            step = 0.0 if symbol == "AAAUSDT" else 0.5
+            return candles(limit, 100.0, step)
+
+    monkeypatch.setattr(adapters_module, "_env", lambda spec: FakeEnv())
+    monkeypatch.setattr(adapters_module, "_new_fetcher", lambda env: FakeFetcher())
+
+    signals = asyncio.run(scan_trend(_spec("trend")))
+
+    assert [s.symbol for s in signals] == ["AAAUSDT"]
+    sig = signals[0]
+    assert sig.side == "LONG"
+    assert sig.detail["timeframe"] == "5"
+    assert sig.detail["htf_timeframe"] == "60"
+    assert sig.detail["htf_adx"] > 0
 
 
 def test_settings_api_endpoints(

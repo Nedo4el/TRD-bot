@@ -13,10 +13,24 @@ from dashboard.models import Signal
 
 logger = get_logger(__name__)
 
+SIGNAL_TTL_SEC = 24 * 3600
+
 
 def now_iso() -> str:
     """Текущее время в UTC (ISO-8601)."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _is_fresh(found_at: str) -> bool:
+    """Сигнал не старше TTL — иначе после рестарта показывать его нельзя."""
+    try:
+        stamp = datetime.fromisoformat(found_at)
+    except (TypeError, ValueError):
+        return False
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - stamp).total_seconds()
+    return age <= SIGNAL_TTL_SEC
 
 
 @dataclass(slots=True)
@@ -166,9 +180,11 @@ class SignalStore:
                 if not isinstance(item, dict):
                     continue
                 try:
-                    restored.append(Signal(**item))
+                    signal = Signal(**item)
                 except TypeError:
                     continue
+                if _is_fresh(signal.found_at):
+                    restored.append(signal)
             self._signals[name] = restored
         for name, item in payload.get("screeners", {}).items():
             status = self._status.get(name)
@@ -177,6 +193,6 @@ class SignalStore:
             status.last_run_at = item.get("last_run_at")
             status.duration_sec = item.get("duration_sec")
             status.next_run_at = None  # сканы только вручную — расписания нет
-            status.count = int(item.get("count", 0) or 0)
+            status.count = len(self._signals.get(name, []))
             status.error = item.get("error")
             status.running = False

@@ -307,7 +307,7 @@ async def scan_krugloe(spec: ScreenerSpec) -> list[Signal]:
 
 
 async def scan_trend(spec: ScreenerSpec) -> list[Signal]:
-    """Тренд: EMA + ADX/DI (логика robot_trend)."""
+    """Тренд по HTF EMA + ADX/DI — те же данные, что у robot_trend."""
     from bot_screener_trend.scanner import ScanConfig, analyze_symbol
 
     env = _env(spec)
@@ -318,12 +318,14 @@ async def scan_trend(spec: ScreenerSpec) -> list[Signal]:
         ema_slow=env.integer("EMA_SLOW", 50),
         ema_macro=env.integer("EMA_MACRO", 200),
         adx_period=env.integer("ADX_PERIOD", 14),
-        adx_threshold=env.number("ADX_THRESHOLD", 30.0),
+        adx_threshold=env.number("ADX_THRESHOLD", 26.0),
         min_turnover_24h=min_turnover,
         exclude_symbols=exclude,
     )
     timeframe = env.string("TIMEFRAME", "5")
     lookback = env.integer("LOOKBACK_BARS", 300)
+    htf_timeframe = env.string("HTF_TIMEFRAME", "60")
+    htf_lookback = env.integer("HTF_LOOKBACK_BARS", 300)
     fetcher = _new_fetcher(env)
     universe = await _universe(fetcher, env, spec, min_turnover)
 
@@ -333,12 +335,18 @@ async def scan_trend(spec: ScreenerSpec) -> list[Signal]:
         if not candles:
             return []
         candles.sort(key=lambda candle: candle["open_time"])
+        htf = await fetcher.get_klines(symbol, htf_timeframe, limit=htf_lookback)
+        if not htf:
+            return []
+        htf.sort(key=lambda candle: candle["open_time"])
         result = analyze_symbol(
             symbol,
             candles,
             cfg=cfg,
             timeframe=timeframe,
             turnover_24h=turnover,
+            htf_candles=htf,
+            htf_timeframe=htf_timeframe,
         )
         if result is None:
             return []
@@ -357,6 +365,8 @@ async def scan_trend(spec: ScreenerSpec) -> list[Signal]:
                 found_at=_now_iso(),
                 detail={
                     "timeframe": timeframe,
+                    "htf_timeframe": result.htf_timeframe,
+                    "htf_adx": round(result.htf_adx, 1),
                     "ema_fast": round(result.ema_fast, 6),
                     "ema_slow": round(result.ema_slow, 6),
                     "spread_pct": round(result.spread_pct, 2),

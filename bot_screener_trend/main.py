@@ -92,6 +92,8 @@ async def _scan_one(
     htf = await fetcher.get_klines(
         symbol, env_cfg["htf_timeframe"], limit=env_cfg["htf_lookback_bars"]
     )
+    if not htf:
+        return None
     htf.sort(key=lambda c: c["open_time"])
     return analyze_symbol(
         symbol,
@@ -99,7 +101,7 @@ async def _scan_one(
         cfg=cfg,
         timeframe=env_cfg["timeframe"],
         turnover_24h=turnover_24h,
-        htf_candles=htf or None,
+        htf_candles=htf,
         htf_timeframe=env_cfg["htf_timeframe"],
     )
 

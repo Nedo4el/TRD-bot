@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
+from typing import Any, cast
 
 from bot_screener_trend.autostart import AutoStartConfig, pick_symbols
 from bot_screener_trend.scanner import ScanConfig, ScanResult, analyze_symbol
@@ -60,6 +62,14 @@ def _htf_up() -> list[dict]:
 
 def _htf_down() -> list[dict]:
     return _falling(step=1.0)
+
+
+_SCAN_ENV = {
+    "timeframe": "5",
+    "htf_timeframe": "60",
+    "lookback_bars": 300,
+    "htf_lookback_bars": 300,
+}
 
 
 class TestTrendDetection:
@@ -132,12 +142,9 @@ class TestTrendDetection:
         assert result is not None
         assert result.vol_ratio < 1.0
 
-    def test_without_htf_uses_signal_candles(self) -> None:
-        """Без HTF-свечей тренд считается по свечам сигнала (старый режим)."""
-        result = analyze_symbol("TESTUSDT", _rising(step=1.0), timeframe="1")
-        assert result is not None
-        assert result.trend == "UP"
-        assert result.htf_timeframe == "1"
+    def test_empty_htf_returns_none(self) -> None:
+        """Без HTF-свечей сигнала нет: старый режим по 5m удалён."""
+        assert analyze_symbol("TESTUSDT", _rising(step=1.0), htf_candles=[]) is None
 
 
 class TestScore:
@@ -171,3 +178,41 @@ class TestAutoStart:
         cfg = AutoStartConfig()
         assert cfg.enabled is False
         assert cfg.robot_name == "robot_trend"
+
+
+class TestScanOne:
+    """Сетевой слой скринера: без HTF монета пропускается."""
+
+    def test_missing_htf_skips_symbol(self) -> None:
+        from bot_screener_trend.main import _scan_one
+
+        class FakeFetcher:
+            async def get_klines(
+                self, symbol: str, interval: str, limit: int = 100
+            ) -> list[dict]:
+                return _rising() if interval == "5" else []
+
+        result = asyncio.run(
+            _scan_one(
+                cast(Any, FakeFetcher()), "TESTUSDT", _SCAN_ENV, ScanConfig(), 1e9
+            )
+        )
+        assert result is None
+
+    def test_trend_measured_on_htf(self) -> None:
+        from bot_screener_trend.main import _scan_one
+
+        class FakeFetcher:
+            async def get_klines(
+                self, symbol: str, interval: str, limit: int = 100
+            ) -> list[dict]:
+                return _flat() if interval == "5" else _htf_up()
+
+        result = asyncio.run(
+            _scan_one(
+                cast(Any, FakeFetcher()), "TESTUSDT", _SCAN_ENV, ScanConfig(), 1e9
+            )
+        )
+        assert result is not None
+        assert result.trend == "UP"
+        assert result.htf_timeframe == "60"

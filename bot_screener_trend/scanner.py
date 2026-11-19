@@ -134,21 +134,21 @@ def analyze_symbol(
     symbol: str,
     candles: list[dict],
     *,
+    htf_candles: list[dict],
     cfg: ScanConfig | None = None,
     timeframe: str = "5",
     turnover_24h: float = 0.0,
-    htf_candles: list[dict] | None = None,
     htf_timeframe: str = "60",
 ) -> ScanResult | None:
-    """Найти тренд: HTF EMA/ADX/DI, входные условия — только для справки.
+    """Найти тренд по HTF EMA/ADX/DI; входные условия — только для справки.
 
     Args:
         symbol: имя пары.
         candles: свечи сигнального ТФ [{open_time, open, high, low, close, volume}].
+        htf_candles: свечи старшего ТФ — обязательны, тренд считается только по ним.
         cfg: конфигурация.
         timeframe: таймфрейм сигнала.
         turnover_24h: оборот за 24ч.
-        htf_candles: свечи старшего ТФ; без них тренд считается по candles.
         htf_timeframe: таймфрейм старшего ТФ (для отчёта).
 
     Returns:
@@ -157,8 +157,7 @@ def analyze_symbol(
     if cfg is None:
         cfg = ScanConfig()
 
-    trend_candles = htf_candles if htf_candles else candles
-    found = _ema_trend(trend_candles, cfg)
+    found = _ema_trend(htf_candles, cfg)
     if found is None:
         return None
     trend, metrics = found
@@ -185,8 +184,8 @@ def analyze_symbol(
         score=score,
         turnover_24h=turnover_24h,
         signal_time=datetime.now(MSK).strftime("%H:%M:%S"),
-        htf_timeframe=htf_timeframe if htf_candles else timeframe,
-        htf_adx=metrics["adx"] if htf_candles else 0.0,
+        htf_timeframe=htf_timeframe,
+        htf_adx=metrics["adx"],
         vol_ratio=float(info["vol_ratio"]),
         pullback=pullback,
     )
