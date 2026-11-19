@@ -51,6 +51,7 @@ def _load_config() -> tuple[dict, ScanConfig, AutoStartConfig]:
         "htf_timeframe": os.getenv("HTF_TIMEFRAME", "60"),
         "scan_interval": get_env_int("SCAN_INTERVAL", 300),
         "min_turnover_24h": get_env_float("MIN_TURNOVER_24H", 10_000_000),
+        "max_price": get_env_float("MAX_PRICE", 0.0),
         "lookback_bars": get_env_int("LOOKBACK_BARS", 300),
         "htf_lookback_bars": get_env_int("HTF_LOOKBACK_BARS", 300),
         "exclude_symbols": exclude,
@@ -64,6 +65,7 @@ def _load_config() -> tuple[dict, ScanConfig, AutoStartConfig]:
         adx_threshold=get_env_float("ADX_THRESHOLD", 26.0),
         vol_period=get_env_int("VOLUME_PERIOD", 20),
         min_turnover_24h=float(env_cfg["min_turnover_24h"]),
+        max_price=float(env_cfg["max_price"]),
         exclude_symbols=exclude,
     )
 

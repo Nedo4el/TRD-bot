@@ -34,6 +34,7 @@ class ScanConfig:
     adx_threshold: float = 26.0
     vol_period: int = 20
     min_turnover_24h: float = 10_000_000
+    max_price: float = 0.0
     exclude_symbols: list[str] = field(default_factory=list)
 
 
@@ -162,8 +163,11 @@ def analyze_symbol(
         return None
     trend, metrics = found
 
-    info = _ltf_info(candles, cfg)
     last = candles[-1]
+    if cfg.max_price > 0 and last["close"] > cfg.max_price:
+        return None
+
+    info = _ltf_info(candles, cfg)
     pullback = bool(
         info["pullback_long"] if trend == "UP" else info["pullback_short"]
     )

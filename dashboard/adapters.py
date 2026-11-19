@@ -320,6 +320,7 @@ async def scan_trend(spec: ScreenerSpec) -> list[Signal]:
         adx_period=env.integer("ADX_PERIOD", 14),
         adx_threshold=env.number("ADX_THRESHOLD", 26.0),
         min_turnover_24h=min_turnover,
+        max_price=env.number("MAX_PRICE", 0.0),
         exclude_symbols=exclude,
     )
     timeframe = env.string("TIMEFRAME", "5")
