@@ -416,6 +416,28 @@ def obv(closes: list[float], volumes: list[float]) -> list[float]:
     return result
 
 
+def efficiency_ratio(values: list[float], period: int = 36) -> float:
+    """Kaufman Efficiency Ratio — насколько движение «прямое», а не пилообразное.
+
+    ER = |net move| / sum(|move|) за последние ``period`` шагов.
+    1.0 — идеальный тренд, ~0.0 — пила/боковик на том же диапазоне.
+
+    Args:
+        values: ряд цен от старых к новым.
+        period: число шагов окна (свечей минус одна).
+
+    Returns:
+        Значение 0..1; 0.0 — данных меньше, чем нужно.
+    """
+    if period < 1 or len(values) < period + 1:
+        return 0.0
+    window = values[-(period + 1) :]
+    path = sum(abs(window[i] - window[i - 1]) for i in range(1, len(window)))
+    if path <= 0:
+        return 0.0
+    return abs(window[-1] - window[0]) / path
+
+
 def crossed_up(prev_a: float, prev_b: float, now_a: float, now_b: float) -> bool:
     """Пересекла ли линия A линию B снизу вверх на последней свече."""
     return prev_a <= prev_b and now_a > now_b

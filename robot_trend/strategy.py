@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from core.bybit_client import Candle
-from core.indicators import adx_di, ema, sma
+from core.indicators import adx_di, atr, efficiency_ratio, ema, sma
 from core.strategies import BaseStrategy, Signal
 from robot_trend.config import _env_bool, _env_float, _env_int
 from robot_trend.state import OpenPosition
@@ -25,6 +25,10 @@ class Instruction:
     stop: float | None = None  # уровень SL (для enter)
     take: float | None = None  # уровень TP (для enter)
     reason: str = ""
+    # цена сигнала и проценты: order_flow пересчитает SL/TP от фактического филла
+    ref_price: float = 0.0
+    sl_pct: float = 0.0
+    take_pct: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -49,6 +53,9 @@ class TrendParams:
     vol_mult: float = 1.0
     ema_min_spread_pct: float = 0.1
     entry_on_pullback: bool = True
+    chop_period: int = 36
+    chop_min_er: float = 0.0
+    max_ext_atr: float = 0.0
 
     @classmethod
     def from_env(cls, symbol: str | None = None) -> TrendParams:
@@ -72,6 +79,9 @@ class TrendParams:
             vol_mult=_env_float("VOLUME_MULTIPLIER", 1.0),
             ema_min_spread_pct=_env_float("EMA_MIN_SPREAD_PCT", 0.1),
             entry_on_pullback=_env_bool("ENTRY_ON_PULLBACK", True),
+            chop_period=_env_int("CHOP_PERIOD", 36),
+            chop_min_er=_env_float("CHOP_MIN_ER", 0.0),
+            max_ext_atr=_env_float("MAX_EXT_ATR", 0.0),
         )
 
     def __post_init__(self) -> None:
@@ -103,6 +113,12 @@ class TrendParams:
             raise ValueError("VOL_MULT должен быть > 0")
         if self.ema_min_spread_pct < 0:
             raise ValueError("EMA_MIN_SPREAD_PCT не может быть < 0")
+        if self.chop_period < 5:
+            raise ValueError("CHOP_PERIOD должен быть >= 5")
+        if not 0 <= self.chop_min_er <= 1:
+            raise ValueError("CHOP_MIN_ER должен быть в [0, 1]")
+        if self.max_ext_atr < 0:
+            raise ValueError("MAX_EXT_ATR не может быть < 0")
 
 
 @dataclass(frozen=True)
@@ -116,6 +132,7 @@ class _Snapshot:
     vol_ratio: float  # volume / SMA(volume)
     pullback_long: bool  # отскок от EMA_FAST снизу (лонг)
     pullback_short: bool  # отскок от EMA_FAST сверху (шорт)
+    er: float = 0.0  # efficiency ratio окна: 1 — тренд, ~0 — боковик
 
 
 @dataclass(frozen=True)
