@@ -21,6 +21,7 @@ class ScanConfig:
     candle_width_max: float = 0.59
     candle_width_min: float = 0.05
     min_turnover_24h: float = 30_000_000
+    max_price: float = 0.0
 
 
 DEFAULT_CONFIG = ScanConfig()
@@ -59,6 +60,8 @@ def analyze_symbol(
     closes = [float(c["close"]) for c in candles]
     current_price = closes[-1]
     if current_price <= 0:
+        return empty
+    if cfg.max_price > 0 and current_price > cfg.max_price:
         return empty
 
     tail = candles[-cfg.lookback:]

@@ -50,11 +50,15 @@ def _load_config() -> tuple[dict, ScanConfig]:
         "timeframe": os.getenv("TIMEFRAME", "D"),
         "scan_interval": get_env_int("SCAN_INTERVAL", 3600),
         "min_turnover_24h": get_env_float("MIN_TURNOVER_24H", 1_000_000),
+        "max_price": get_env_float("MAX_PRICE", 0.0),
         "lookback_bars": get_env_int("LOOKBACK_BARS", 100),
         "exclude_symbols": exclude,
     }
 
-    scan_cfg = ScanConfig()
+    scan_cfg = ScanConfig(
+        lookback=get_env_int("LOOKBACK_BARS", 100),
+        max_price=get_env_float("MAX_PRICE", 0.0),
+    )
 
     return env_cfg, scan_cfg
 

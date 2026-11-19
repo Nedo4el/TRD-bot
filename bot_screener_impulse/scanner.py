@@ -27,6 +27,7 @@ class ImpulseConfig:
     confirmation_candles: int = 0
     window_sec: int = 60
     impulse_type: str = "price"
+    max_price: float = 0.0
 
 
 @dataclass
@@ -87,6 +88,8 @@ def _analyze_price_window(
     current_price = float(candles[-1]["close"])
     if current_price <= 0:
         return None
+    if cfg.max_price > 0 and current_price > cfg.max_price:
+        return None
 
     move_pct = (current_price - base_price) / base_price * 100.0
     if abs(move_pct) < cfg.min_move_pct:
@@ -133,6 +136,8 @@ def _analyze_candle_body(
         move_pct = abs(body) / op * 100
 
         if move_pct < cfg.min_move_pct:
+            continue
+        if cfg.max_price > 0 and cl > cfg.max_price:
             continue
 
         direction = "LONG" if cl > op else "SHORT"

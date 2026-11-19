@@ -50,6 +50,7 @@ def _load_config() -> tuple[dict, ImpulseConfig]:
         "timeframe": os.getenv("TIMEFRAME", "1"),
         "scan_interval": get_env_int("SCAN_INTERVAL", 15),
         "min_turnover_24h": get_env_float("MIN_TURNOVER_24H", 30_000_000),
+        "max_price": get_env_float("MAX_PRICE", 0.0),
         "lookback_bars": get_env_int("LOOKBACK_BARS", 100),
         "exclude_symbols": exclude,
         "window_sec": window_sec,
@@ -62,6 +63,7 @@ def _load_config() -> tuple[dict, ImpulseConfig]:
         confirmation_candles=get_env_int("CONFIRMATION_CANDLES", 0),
         window_sec=window_sec,
         impulse_type=impulse_type,
+        max_price=get_env_float("MAX_PRICE", 0.0),
     )
 
     return env_cfg, impulse_cfg
@@ -219,6 +221,8 @@ async def _ticker_callback(
 
         move_pct = (price - base_price) / base_price * 100.0
         if abs(move_pct) < impulse_cfg.min_move_pct:
+            return
+        if impulse_cfg.max_price > 0 and price > impulse_cfg.max_price:
             return
 
         direction = "LONG" if move_pct > 0 else "SHORT"
