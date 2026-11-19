@@ -53,6 +53,7 @@ def _load_config() -> tuple[dict, SpikeConfig]:
         lookback_days=env_cfg["lookback_days"],
         interval=env_cfg["timeframe"],
         min_turnover_24h=env_cfg["min_turnover_24h"],
+        max_price=get_env_float("MAX_PRICE", 0.0),
         exclude_symbols=exclude,
     )
     return env_cfg, scan_cfg

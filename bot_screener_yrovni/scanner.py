@@ -172,6 +172,7 @@ def scan_symbol(
     *,
     num_bins: int = 100,
     proximity_pct: float = 10.0,
+    max_price: float = 0.0,
 ) -> VPSignal:
     """Просканировать один символ: POC по 4 периодам + дневные уровни.
 
@@ -181,6 +182,7 @@ def scan_symbol(
         hourly_candles: часовые свечи для построения дневных уровней.
         num_bins: количество ценовых корзин.
         proximity_pct: порог приближения в %.
+        max_price: максимальная цена монеты (0 = без фильтра).
 
     Returns:
         VPSignal с POC-уровнями и дневными уровнями.
@@ -196,6 +198,8 @@ def scan_symbol(
         return VPSignal(symbol=symbol, current_price=0.0, scan_time=now)
 
     if current_price <= 0:
+        return VPSignal(symbol=symbol, current_price=0.0, scan_time=now)
+    if max_price > 0 and current_price > max_price:
         return VPSignal(symbol=symbol, current_price=0.0, scan_time=now)
 
     poc_levels = []

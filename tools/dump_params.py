@@ -271,6 +271,10 @@ def screener_text(
         row("HTF_TIMEFRAME (тренд, мин)", trend_tf),
         row("SCAN_INTERVAL (сек)", str(env_cfg["scan_interval"])),
         row("MIN_TURNOVER_24H", f"${turnover / 1_000_000:.0f}M"),
+        row(
+            "MAX_PRICE (макс. цена монеты, USD)",
+            f"${num(cfg.max_price)}" if cfg.max_price > 0 else "выкл",
+        ),
         row("LOOKBACK_BARS (свечей)", str(env_cfg["lookback_bars"])),
         row("HTF_LOOKBACK_BARS (свечей)", str(env_cfg["htf_lookback_bars"])),
         row("EXCLUDE_SYMBOLS", exclude_note),

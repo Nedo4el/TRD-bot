@@ -106,6 +106,7 @@ async def scan_impulse(spec: ScreenerSpec) -> list[Signal]:
         confirmation_candles=dash.confirmation_candles,
         window_sec=dash.window_sec,
         impulse_type=dash.impulse_type,
+        max_price=env.number("MAX_PRICE", 0.0),
     )
     timeframe = dash.timeframe or env.string("TIMEFRAME", "1")
     lookback = env.integer("LOOKBACK_BARS", 100)
@@ -216,7 +217,7 @@ async def scan_uzkiy(spec: ScreenerSpec) -> list[Signal]:
     from bot_screener_uzkiy.scanner import ScanConfig, analyze_symbol
 
     env = _env(spec)
-    cfg = ScanConfig()
+    cfg = ScanConfig(max_price=env.number("MAX_PRICE", 0.0))
     timeframe = env.string("TIMEFRAME", "1")
     lookback = env.integer("LOOKBACK_BARS", 100)
     fetcher = _new_fetcher(env)
@@ -477,6 +478,7 @@ async def scan_yrovni(spec: ScreenerSpec) -> list[Signal]:
     env = _env(spec)
     num_bins = 100
     proximity = env.number("PROXIMITY_PCT", 10.0)
+    max_price = env.number("MAX_PRICE", 0.0)
     fetcher = _new_fetcher(env)
     universe = await _universe(fetcher, env, spec, 50_000_000)
 
@@ -496,6 +498,7 @@ async def scan_yrovni(spec: ScreenerSpec) -> list[Signal]:
             hourly,
             num_bins=num_bins,
             proximity_pct=proximity,
+            max_price=max_price,
         )
         if not result.poc_levels and not result.daily_levels:
             return []
@@ -707,6 +710,7 @@ async def scan_zakonomer(spec: ScreenerSpec) -> list[Signal]:
         lookback_days=lookback_days,
         interval=timeframe,
         min_turnover_24h=min_turnover,
+        max_price=env.number("MAX_PRICE", 0.0),
         exclude_symbols=exclude,
     )
     fetcher = _new_fetcher(env)

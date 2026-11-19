@@ -33,6 +33,7 @@ class SpikeConfig:
     lookback_days: int = 30
     interval: str = "1"
     min_turnover_24h: float = 30_000_000
+    max_price: float = 0.0
     exclude_symbols: list[str] = field(default_factory=list)
 
 
@@ -166,6 +167,8 @@ def analyze_symbol(
         return None
 
     candles = sorted(candles, key=lambda c: c["open_time"])
+    if cfg.max_price > 0 and float(candles[-1]["close"]) > cfg.max_price:
+        return None
     stats = SymbolStats(symbol=symbol, bars=len(candles))
     detector = _Detector(cfg, stats)
     last = len(candles) - 1

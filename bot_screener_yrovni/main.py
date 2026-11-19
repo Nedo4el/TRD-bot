@@ -37,6 +37,7 @@ def _load_config() -> dict:
         "testnet": get_env_bool("TESTNET", True),
         "scan_interval": get_env_int("SCAN_INTERVAL", 300),
         "min_turnover_24h": get_env_float("MIN_TURNOVER_24H", 50_000_000),
+        "max_price": get_env_float("MAX_PRICE", 0.0),
         "num_bins": 100,
         "proximity_pct": get_env_float("PROXIMITY_PCT", 10.0),
         "exclude_symbols": exclude,
@@ -107,6 +108,7 @@ async def scan_once(cfg: dict, metrics: ScreenerMetrics) -> None:
             hourly_candles=hourly_candles,
             num_bins=cfg["num_bins"],
             proximity_pct=cfg["proximity_pct"],
+            max_price=cfg["max_price"],
         )
 
         if result.poc_levels or result.daily_levels:
