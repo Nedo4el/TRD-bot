@@ -221,7 +221,7 @@ class OrderFlow:
 
     async def _enter(self, instruction: Instruction) -> None:
         """Вход по сигналу стратегии: гейты → Market → серверный SL/TP."""
-        blocked = await self._entry_blocked()
+        blocked = await self._entry_blocked(instruction.side)
         if blocked is not None:
             self._log_gate(blocked)
             return
@@ -242,6 +242,15 @@ class OrderFlow:
         if not slippage_ok(feed_price, rest_price, self.cfg.slippage_pct):
             self._log_gate("slippage")
             return
+
+        if instruction.ref_price > 0 and self.cfg.max_entry_deviation_pct > 0:
+            dev = abs(rest_price / instruction.ref_price - 1.0)
+            if dev > self.cfg.max_entry_deviation_pct:
+                self._log_gate(
+                    f"signal_deviation {dev * 100:.2f}% "
+                    f"(signal={instruction.ref_price:.6g})"
+                )
+                return
 
         qty = entry_qty(
             self.cfg.fixed_qty,
@@ -302,6 +311,26 @@ class OrderFlow:
         if not slippage_ok(rest_price, entry, self.cfg.slippage_pct):
             logger.warning("проскальзывание: ref=%.4f fill=%.4f", rest_price, entry)
 
+        # SL/TP считаем от фактического филла: иначе в падающем рынке
+        # стоп оказывается ближе заявленных процентов и выбивает шумом
+        stop = instruction.stop
+        take = instruction.take
+        if instruction.sl_pct > 0:
+            if instruction.side == "long":
+                stop = entry * (1.0 - instruction.sl_pct)
+                take = (
+                    entry * (1.0 + instruction.take_pct)
+                    if instruction.take_pct > 0
+                    else 0.0
+                )
+            else:
+                stop = entry * (1.0 + instruction.sl_pct)
+                take = (
+                    entry * (1.0 - instruction.take_pct)
+                    if instruction.take_pct > 0
+                    else 0.0
+                )
+
         # фиксируем позицию в state до SL: если стоп не встанет,
         # аварийное закрытие посчитает счётчики (день/кулдаун)
         st = self.store.state
@@ -309,8 +338,8 @@ class OrderFlow:
             entry_price=entry,
             qty=pos.size,
             side=instruction.side,
-            stop_loss=instruction.stop,
-            take_profit=instruction.take,
+            stop_loss=stop,
+            take_profit=take,
             opened_at=time.time(),
             peak_price=entry,
         )
@@ -320,8 +349,8 @@ class OrderFlow:
         try:
             await self.client.set_stop_loss_take_profit(
                 self.cfg.symbol,
-                instruction.stop,
-                instruction.take or None,
+                stop,
+                take or None,
             )
         except Exception as exc:  # noqa: BLE001
             # защита: без стопа в позиции не остаёмся
@@ -341,10 +370,10 @@ class OrderFlow:
             f"entry={entry:g} ({instruction.reason})",
         )
 
-    async def _entry_blocked(self) -> str | None:
+    async def _entry_blocked(self, side: str) -> str | None:
         """Причина блокировки входа (None — вход разрешён).
 
-        Порядок: kill → день UTC → cooldown → фандинг → слippаж.
+        Порядок: kill → день UTC → cooldown → лок серии стопов → фандинг → слippаж.
         """
         st = self.store.state
         if st.kill or self._kill_file_hit():
@@ -366,6 +395,8 @@ class OrderFlow:
             > 0
         ):
             return "cooldown"
+        if st.lock_until > time.time() and st.stop_streak_side == side:
+            return "reentry_lock"
         try:
             if self.cfg.funding_aware:
                 nxt = await self.client.get_next_funding_time(self.cfg.symbol)
@@ -684,6 +715,8 @@ class OrderFlow:
         st.day_trades += 1
         st.session_pnl += pnl
         st.peak_session_pnl = max(st.peak_session_pnl, st.session_pnl)
+        if pos is not None:
+            self._update_stop_streak(pos.side, pnl)
         await self.store.save()
         if pos is not None:
             self._record_trade(pos, pnl, reason)
@@ -695,6 +728,31 @@ class OrderFlow:
             st.day_trades,
         )
         self._notify(f"trend: закрыта ({reason}), PnL {pnl:+.2f} USDT")
+
+    def _update_stop_streak(self, side: str, pnl: float) -> None:
+        """Серия убытков в одну сторону: N стопов → блокировка входа в эту сторону."""
+        st = self.store.state
+        if pnl < 0:
+            if st.stop_streak_side == side:
+                st.stop_streak += 1
+            else:
+                st.stop_streak_side = side
+                st.stop_streak = 1
+            if (
+                self.cfg.reentry_lock_stops > 0
+                and self.cfg.reentry_lock_sec > 0
+                and st.stop_streak >= self.cfg.reentry_lock_stops
+            ):
+                st.lock_until = time.time() + self.cfg.reentry_lock_sec
+                until = datetime.fromtimestamp(st.lock_until, timezone.utc)
+                logger.warning(
+                    "серия стопов %s: %d — вход в эту сторону до %s UTC",
+                    side,
+                    st.stop_streak,
+                    until.strftime("%H:%M"),
+                )
+        elif pnl > 0 and st.stop_streak_side == side:
+            st.stop_streak = 0
 
     def _record_trade(self, pos: OpenPosition, pnl: float, reason: str) -> None:
         """Записать закрытую сделку в хранилище дашборда (статистика)."""
@@ -756,6 +814,9 @@ class OrderFlow:
         st.day = today
         st.day_pnl = 0.0
         st.day_trades = 0
+        st.stop_streak_side = ""
+        st.stop_streak = 0
+        st.lock_until = 0.0
         await self.store.save()
 
     # ==================== recover ====================

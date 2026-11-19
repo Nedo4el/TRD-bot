@@ -144,6 +144,8 @@ class _HTFSnapshot:
     adx: float
     di_plus: float
     di_minus: float
+    ema_fast: float = 0.0
+    atr: float = 0.0
 
 
 class TrendStrategy(BaseStrategy):
@@ -152,6 +154,8 @@ class TrendStrategy(BaseStrategy):
     Вход LONG, когда одновременно:
       * HTF: EMA_FAST > EMA_SLOW, цена > EMA_MACRO, ADX >= порог, +DI > -DI
       * LTF: EMA_FAST > EMA_SLOW, зазор >= ema_min_spread_pct, объём >= vol_mult x SMA
+      * ER рабочего ТФ >= chop_min_er (боковик не торгуем)
+      * цена не дальше max_ext_atr * ATR(HTF) от EMA_FAST(HTF) (без перегрева)
       * Цена откатилась к EMA_FAST (предыдущая свеча дотронулась до него снизу)
         и отскочила (закрылась выше EMA_FAST).
 
@@ -209,6 +213,7 @@ class TrendStrategy(BaseStrategy):
             vol_ratio=vol_ratio,
             pullback_long=pullback_long,
             pullback_short=pullback_short,
+            er=efficiency_ratio(closes, p.chop_period),
         )
 
     def _htf_snapshot(self, candles: list[Candle]) -> _HTFSnapshot | None:
@@ -226,7 +231,8 @@ class TrendStrategy(BaseStrategy):
             ema(closes, p.ema_macro),
         )
         adx_v, di_p, di_m = adx_di(highs, lows, closes, p.adx_period)
-        series = (fast, slow, macro, adx_v, di_p, di_m)
+        atr_v = atr(highs, lows, closes, p.adx_period)
+        series = (fast, slow, macro, adx_v, di_p, di_m, atr_v)
         if any(len(s) < 2 for s in series):
             return None
 
@@ -238,6 +244,8 @@ class TrendStrategy(BaseStrategy):
             adx=adx_v[-1],
             di_plus=di_p[-1],
             di_minus=di_m[-1],
+            ema_fast=f,
+            atr=atr_v[-1],
         )
 
     def _entry(self, ltf: _Snapshot, htf: _HTFSnapshot) -> str | None:
@@ -245,9 +253,17 @@ class TrendStrategy(BaseStrategy):
         p = self.params
         if ltf.vol_ratio < p.vol_mult:
             return None
+        if p.chop_min_er > 0 and ltf.er < p.chop_min_er:
+            return None
         if htf.adx < p.adx_threshold:
             return None
         if p.ema_min_spread_pct > 0 and ltf.spread_pct < p.ema_min_spread_pct:
+            return None
+        if (
+            p.max_ext_atr > 0
+            and htf.atr > 0
+            and abs(ltf.close - htf.ema_fast) / htf.atr > p.max_ext_atr
+        ):
             return None
 
         if (
@@ -313,8 +329,12 @@ class TrendStrategy(BaseStrategy):
             take=take,
             reason=(
                 f"EMA pullback {side}, HTF ADX {htf.adx:.1f}, "
-                f"vol {ltf.vol_ratio:.2f}x, spread {ltf.spread_pct:.2f}%"
+                f"vol {ltf.vol_ratio:.2f}x, spread {ltf.spread_pct:.2f}%, "
+                f"ER {ltf.er:.2f}"
             ),
+            ref_price=ltf.close,
+            sl_pct=self.params.sl_pct,
+            take_pct=self.params.take_pct,
         )
 
     # ==================== бэктест ====================

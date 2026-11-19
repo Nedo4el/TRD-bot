@@ -50,6 +50,10 @@ class TrendState:
     day: str = ""  # "YYYY-MM-DD" по UTC
     day_pnl: float = 0.0
     day_trades: int = 0
+    # серия убытков в одну сторону: сторона, счётчик и окно блокировки (unix, с)
+    stop_streak_side: str = ""
+    stop_streak: int = 0
+    lock_until: float = 0.0
     symbol: str = ""  # инструмент, которому принадлежит state
     schema_version: int = SCHEMA_VERSION
 
@@ -81,6 +85,9 @@ class StateStore:
                 day=str(raw.get("day", "")),
                 day_pnl=float(raw.get("day_pnl", 0.0)),
                 day_trades=int(raw.get("day_trades", 0)),
+                stop_streak_side=str(raw.get("stop_streak_side", "")),
+                stop_streak=int(raw.get("stop_streak", 0)),
+                lock_until=float(raw.get("lock_until", 0.0)),
                 symbol=str(raw.get("symbol", "")),
                 schema_version=int(raw.get("schema_version", SCHEMA_VERSION)),
             )

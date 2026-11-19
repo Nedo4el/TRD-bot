@@ -111,7 +111,9 @@ def robot_text(
         f"  LONG : {cfg.htf_timeframe}м тренд вверх (EMA {p.ema_fast} > "
         f"{p.ema_slow}, цена > EMA {p.ema_macro}, ADX >= {num(p.adx_threshold)}, "
         f"+DI > -DI) + откат к EMA и отскок, зазор EMA >= "
-        f"{num(p.ema_min_spread_pct)}%, объём >= {num(p.vol_mult)}x SMA"
+        f"{num(p.ema_min_spread_pct)}%, объём >= {num(p.vol_mult)}x SMA, "
+        f"ER({p.chop_period}) >= {num(p.chop_min_er)}, "
+        f"цена <= {num(p.max_ext_atr)} ATR от EMA(HTF)"
     )
     lines = header("ROBOT TREND — ПАРАМЕТРЫ", ROBOT_ENV, now)
     lines += [
@@ -140,6 +142,9 @@ def robot_text(
         row("EMA_MIN_SPREAD_PCT", f"{num(p.ema_min_spread_pct)}%"),
         row("ADX_PERIOD", str(p.adx_period)),
         row("ADX_THRESHOLD", num(p.adx_threshold)),
+        row("CHOP_PERIOD (свечей LTF)", str(p.chop_period)),
+        row("CHOP_MIN_ER (боковик)", num(p.chop_min_er)),
+        row("MAX_EXT_ATR (перегрев, ATR HTF)", num(p.max_ext_atr)),
         row("VOLUME_SMA_PERIOD", str(p.vol_period)),
         row("VOLUME_MULTIPLIER", f"{num(p.vol_mult)}x SMA"),
         row("ENTRY_ON_PULLBACK", flag(p.entry_on_pullback)),
@@ -163,6 +168,9 @@ def robot_text(
         row("MAX_TRADES_PER_DAY", str(cfg.max_trades_per_day)),
         row("MAX_LOSS_USD (kill)", num(cfg.max_loss_usd)),
         row("MAX_DRAWDOWN_PCT (kill)", signed_pct(cfg.max_drawdown_pct, down=True)),
+        row("MAX_ENTRY_DEVIATION_PCT", f"{num(cfg.max_entry_deviation_pct * 100)}%"),
+        row("REENTRY_LOCK_STOPS", str(cfg.reentry_lock_stops)),
+        row("REENTRY_LOCK_SEC (сек)", num(cfg.reentry_lock_sec)),
         row("SLIPPAGE_PCT", f"{num(cfg.slippage_pct)} (доля)"),
         row("FUNDING_AWARE", flag(cfg.funding_aware)),
         row("FUNDING_WINDOW_SEC", num(cfg.funding_window_sec)),

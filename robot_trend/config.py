@@ -85,6 +85,20 @@ class TrendConfig(BaseModel):
         default_factory=lambda: _env_int("MAX_TRADES_PER_DAY", 50)
     )
 
+    # --- Качество входа: боковик, перегрев, отклонение филла, серия стопов ---
+    chop_period: int = Field(default_factory=lambda: _env_int("CHOP_PERIOD", 36))
+    chop_min_er: float = Field(default_factory=lambda: _env_float("CHOP_MIN_ER", 0.0))
+    max_ext_atr: float = Field(default_factory=lambda: _env_float("MAX_EXT_ATR", 0.0))
+    max_entry_deviation_pct: float = Field(
+        default_factory=lambda: _env_float("MAX_ENTRY_DEVIATION_PCT", 0.005)
+    )
+    reentry_lock_stops: int = Field(
+        default_factory=lambda: _env_int("REENTRY_LOCK_STOPS", 2)
+    )
+    reentry_lock_sec: float = Field(
+        default_factory=lambda: _env_float("REENTRY_LOCK_SEC", 14400.0)
+    )
+
     # --- Устойчивость WS ---
     reconnect_sec: float = Field(
         default_factory=lambda: _env_float("RECONNECT_SEC", 2.0)
@@ -167,11 +181,34 @@ class TrendConfig(BaseModel):
         "daily_loss_limit",
         "max_loss_usd",
         "max_drawdown_pct",
+        "max_ext_atr",
+        "reentry_lock_sec",
     )
     @classmethod
     def _non_negative(cls, v: float) -> float:
         if v < 0:
             raise ValueError("значение не может быть < 0")
+        return v
+
+    @field_validator("max_entry_deviation_pct")
+    @classmethod
+    def _deviation_range(cls, v: float) -> float:
+        if not (0 <= v < 1):
+            raise ValueError("MAX_ENTRY_DEVIATION_PCT должен быть в [0, 1)")
+        return v
+
+    @field_validator("chop_min_er")
+    @classmethod
+    def _er_range(cls, v: float) -> float:
+        if not (0 <= v <= 1):
+            raise ValueError("CHOP_MIN_ER должен быть в [0, 1]")
+        return v
+
+    @field_validator("chop_period")
+    @classmethod
+    def _chop_period_min(cls, v: int) -> int:
+        if v < 5:
+            raise ValueError("CHOP_PERIOD должен быть >= 5")
         return v
 
     @field_validator("reconnect_sec", "heartbeat_sec", "poll_sec")
@@ -182,7 +219,11 @@ class TrendConfig(BaseModel):
         return v
 
     @field_validator(
-        "max_trades_per_day", "candles_warmup", "htf_candle_warmup", "wake_jitter_ms"
+        "max_trades_per_day",
+        "candles_warmup",
+        "htf_candle_warmup",
+        "wake_jitter_ms",
+        "reentry_lock_stops",
     )
     @classmethod
     def _int_non_negative(cls, v: int) -> int:
