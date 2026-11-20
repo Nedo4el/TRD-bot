@@ -124,17 +124,20 @@ class DashboardFetcher:
         symbol: str,
         interval: str,
         limit: int = 100,
+        end: int | None = None,
     ) -> list[dict]:
         """Свечи символа (от старых к новым, пустой список при сбое)."""
         func = self._http.get_kline
+        params: dict[str, Any] = {
+            "category": "linear",
+            "symbol": symbol,
+            "interval": interval,
+            "limit": limit,
+        }
+        if end is not None:
+            params["end"] = end
         try:
-            resp = await self._fetch(
-                func,
-                category="linear",
-                symbol=symbol,
-                interval=interval,
-                limit=limit,
-            )
+            resp = await self._fetch(func, **params)
         except RuntimeError as exc:
             logger.warning("get_klines %s: %s", symbol, exc)
             return []
