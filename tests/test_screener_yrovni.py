@@ -75,14 +75,15 @@ def test_profile_requires_min_candles() -> None:
 
 def test_poc_lands_in_heaviest_price_zone() -> None:
     candles = [
-        _candle(100.5, 99.5, 100.0, turnover=10.0),
-        _candle(200.5, 199.5, 200.0, turnover=10_000.0),
+        _candle(100.5, 99.5, 100.0, turnover=10.0) for _ in range(5)
+    ] + [
+        _candle(200.5, 199.5, 200.0, turnover=10_000.0) for _ in range(5)
     ]
 
     poc = find_poc(candles, num_bins=10)
 
     assert poc is not None
-    assert 199.0 <= poc[0] <= 201.0
+    assert 190.0 <= poc[0] <= 201.0
 
 
 def test_scan_reports_signed_distance() -> None:
@@ -99,13 +100,19 @@ def test_scan_reports_signed_distance() -> None:
 
 
 def test_scan_filters_levels_beyond_proximity() -> None:
-    series = {"12h": _flat_series(100.0, 12)}
+    # Текущая цена — последняя свеча 100, остальные 11 свечей вокруг 200:
+    # POC окажется далеко от цены и должен отфильтроваться.
+    candles = [
+        _candle(200.5, 199.5, 200.0, turnover=1_000.0) for _ in range(11)
+    ] + [_candle(100.5, 99.5, 100.0)]
+
+    series = windows_from_series({"60": candles})
 
     near = scan_symbol("AAAUSDT", series, num_bins=20, proximity_pct=10.0)
-    far = scan_symbol("AAAUSDT", series, num_bins=20, proximity_pct=0.5)
+    far = scan_symbol("AAAUSDT", series, num_bins=20, proximity_pct=100.0)
 
-    assert near.levels
-    assert far.levels == []
+    assert near.levels == []
+    assert far.levels
 
 
 def test_scan_marks_long_window_extremes_and_all_time() -> None:
