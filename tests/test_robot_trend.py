@@ -62,6 +62,7 @@ def _cfg(**overrides: Any) -> TrendConfig:
         "position_pct": 10.0,
         "candles_warmup": 5,
         "poll_sec": 0.3,
+        "pos_check_sec": 30.0,
         "wake_jitter_ms": 0,
         "max_loss_usd": 0.0,
         "max_drawdown_pct": 0.0,
@@ -1617,6 +1618,27 @@ def test_guard_live_closes_half_reduce_only(tmp_path: Path) -> None:
     assert last["reduce_only"] is True
     assert store.state.position is not None
     assert store.state.position.qty == pytest.approx(0.05)
+
+
+def test_position_check_by_ws_event_and_timer(tmp_path: Path) -> None:
+    """Позиция закрыта: REST по таймеру, WS-событие снимает позицию сразу."""
+    cfg = _cfg(pos_check_sec=60.0)
+    flow, client, feed, _strategy, store = _make_flow(tmp_path, cfg=cfg)
+    _open_position(flow, store)
+
+    asyncio.run(flow._tick())
+    assert store.state.position is not None
+
+    client.position = None
+    flow._last_pos_check = time.monotonic()
+    asyncio.run(flow._tick())
+    assert store.state.position is not None
+
+    feed.position_events.put_nowait(
+        {"topic": "position", "data": [{"symbol": cfg.symbol, "size": "0"}]}
+    )
+    asyncio.run(flow._tick())
+    assert store.state.position is None
 
 
 def test_guard_poll_skipped_when_disabled(tmp_path: Path) -> None:

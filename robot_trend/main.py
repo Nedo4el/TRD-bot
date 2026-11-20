@@ -8,7 +8,7 @@ import signal
 import time
 from typing import Any
 
-from core.bybit_client import BybitClient
+from core.bybit_client import BybitClient, probe_api_limit
 from core.config import Config
 from core.logger import setup_logging
 from core.notifier import Notifier
@@ -99,6 +99,7 @@ async def _amain() -> None:
         if trend.time_sync:
             # TIME_SYNC: сверка часов с биржей, лечение retCode 10002
             await client.sync_time()
+        await probe_api_limit(cfg.api_key, cfg.api_secret, cfg.testnet)
         filters = await client.get_instrument_filters(cfg.symbol)
         # hedge-режим боту не подходит (positionIdx=0)
         mode = await client.get_position_mode(cfg.symbol)

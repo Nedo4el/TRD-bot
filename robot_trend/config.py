@@ -57,6 +57,10 @@ class TrendConfig(BaseModel):
     # --- Свечи ---
     candles_warmup: int = Field(default_factory=lambda: _env_int("CANDLE_WARMUP", 300))
     poll_sec: float = Field(default_factory=lambda: _env_float("POLL_SEC", 10.0))
+    # сверка позиции с биржей: WS-событие срабатывает сразу, REST — по таймеру
+    pos_check_sec: float = Field(
+        default_factory=lambda: _env_float("POS_CHECK_SEC", 30.0)
+    )
     # разброс REST-тика, мс: процессы, поднятые пачкой, иначе бьют kline
     # в одну секунду (7 запросов подряд упираются в лимит Bybit, errCode 10006)
     wake_jitter_ms: int = Field(
@@ -211,7 +215,7 @@ class TrendConfig(BaseModel):
             raise ValueError("CHOP_PERIOD должен быть >= 5")
         return v
 
-    @field_validator("reconnect_sec", "heartbeat_sec", "poll_sec")
+    @field_validator("reconnect_sec", "heartbeat_sec", "poll_sec", "pos_check_sec")
     @classmethod
     def _seconds_positive(cls, v: float) -> float:
         if v <= 0:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Self
@@ -824,6 +825,7 @@ def test_robot_symbols_start_stop_and_status(
 
     monkeypatch.setattr(robots_module, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(robots_module, "_robots_cache", ["robot_trend"])
+    monkeypatch.setenv("DASH_ROBOT_START_WINDOW_SEC", "0")
     robot_dir = tmp_path / "robot_trend"
     robot_dir.mkdir()
     (robot_dir / "main.py").write_text("# stub\n", encoding="utf-8")
@@ -893,6 +895,112 @@ def _capture_stop(killed: list[int]) -> Any:
         return True
 
     return stop
+
+
+def _stagger_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symbols: list[str]
+) -> tuple[Any, list[tuple[str, str]], list[int]]:
+    """Робот с монетами и заглушкой spawn; фоновый поток старта отключён."""
+    import dashboard.robot_coins as coins_module
+    from dashboard import robots as robots_module
+
+    monkeypatch.setattr(robots_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(robots_module, "_robots_cache", ["robot_trend"])
+    monkeypatch.setattr(robots_module, "start_stagger_worker", lambda: None)
+    robot_dir = tmp_path / "robot_trend"
+    robot_dir.mkdir()
+    (robot_dir / "main.py").write_text("# stub\n", encoding="utf-8")
+    coins_file = tmp_path / "data" / "robot_coins.json"
+    coins_file.parent.mkdir()
+    monkeypatch.setattr(coins_module, "COINS_FILE", coins_file)
+    coins_file.write_text(json.dumps({"robot_trend": symbols}), encoding="utf-8")
+
+    spawned: list[tuple[str, str]] = []
+    killed: list[int] = []
+
+    def fake_spawn(robot: str, symbol: str) -> int:
+        spawned.append((robot, symbol))
+        return 100 + len(spawned)
+
+    monkeypatch.setattr(robots_module, "_spawn", fake_spawn)
+    monkeypatch.setattr(robots_module, "is_running", lambda pid: pid not in killed)
+    monkeypatch.setattr(robots_module, "_stop_symbol", _capture_stop(killed))
+    return robots_module, spawned, killed
+
+
+def test_start_robot_staggers_over_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Постепенный старт: первая монета сразу, остальные — по плану в окно."""
+    robots, spawned, _killed = _stagger_fixture(
+        tmp_path, monkeypatch, ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    )
+    monkeypatch.setenv("DASH_ROBOT_START_WINDOW_SEC", "600")
+
+    ok, message = robots.start_robot("robot_trend")
+
+    assert ok
+    assert spawned == [("robot_trend", "BTCUSDT")]
+    pending = robots._read_pending("robot_trend")
+    assert set(pending) == {"ETHUSDT", "SOLUSDT"}
+    assert all(at > time.time() for at in pending.values())
+    assert "в течение 10 мин" in message
+
+    ok, message = robots.start_robot("robot_trend")
+    assert ok and "стартует" in message
+    assert spawned == [("robot_trend", "BTCUSDT")]
+
+
+def test_stagger_tick_starts_only_due_symbols(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Тик стартует только созревшие монеты и снимает их с плана."""
+    robots, spawned, _killed = _stagger_fixture(
+        tmp_path, monkeypatch, ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    )
+    monkeypatch.setenv("DASH_ROBOT_START_WINDOW_SEC", "600")
+    robots.start_robot("robot_trend")
+
+    now = int(time.time())
+    robots._write_pending("robot_trend", {"ETHUSDT": now - 1, "SOLUSDT": now + 3600})
+    robots._stagger_tick()
+
+    assert spawned == [("robot_trend", "BTCUSDT"), ("robot_trend", "ETHUSDT")]
+    assert set(robots._read_pending("robot_trend")) == {"SOLUSDT"}
+
+    robots._stagger_tick()
+    assert len(spawned) == 2
+
+    robots._write_pending("robot_trend", {"SOLUSDT": now - 1})
+    robots._stagger_tick()
+    assert len(spawned) == 3
+    assert not robots.pendingfile_for("robot_trend").exists()
+
+
+def test_added_symbol_starts_now_pending_stays_planned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Новая монета стартует сразу, а ждущие в плане не перезапускаются."""
+    robots, spawned, _killed = _stagger_fixture(
+        tmp_path, monkeypatch, ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    )
+    monkeypatch.setenv("DASH_ROBOT_START_WINDOW_SEC", "600")
+    robots.start_robot("robot_trend")
+
+    ok, _msg = robots.set_robot_symbols(
+        "robot_trend", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"]
+    )
+
+    assert ok
+    assert ("robot_trend", "XRPUSDT") in spawned
+    assert ("robot_trend", "ETHUSDT") not in spawned
+    assert set(robots._read_pending("robot_trend")) == {"ETHUSDT", "SOLUSDT"}
+
+    ok, _msg = robots.set_robot_symbols("robot_trend", ["BTCUSDT", "XRPUSDT"])
+
+    assert ok
+    assert not robots.pendingfile_for("robot_trend").exists()
+    assert ("robot_trend", "SOLUSDT") not in spawned
 
 
 def test_symbols_cache_filter_sort_ttl(

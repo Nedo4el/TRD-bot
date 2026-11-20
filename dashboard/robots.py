@@ -12,6 +12,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +28,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Значение кода завершения процесса, который ещё работает (Windows).
 _STILL_ACTIVE = 259
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+# --- Постепенный старт -------------------------------------------------------
+# Восемь процессов, поднятых в одну секунду, дают залп kline-запросов и ловят
+# retCode 10006 (Too many visits). Поэтому первый символ стартует сразу, а
+# остальные — равномерно внутри окна DASH_ROBOT_START_WINDOW_SEC.
+_PENDING_SUFFIX = ".pending.json"
+_STAGGER_TICK_SEC = 3.0
+_STATE_LOCK = threading.Lock()
+_worker_started = False
 
 
 @dataclass
@@ -132,6 +142,51 @@ def _write_procs(robot_name: str, procs: dict[str, int]) -> None:
     temp.replace(path)
 
 
+def pendingfile_for(robot_name: str) -> Path:
+    """Путь к плану постепенного старта (символ -> момент запуска, unix)."""
+    return PROJECT_ROOT / "data" / f"{robot_name}{_PENDING_SUFFIX}"
+
+
+def _read_pending(robot_name: str) -> dict[str, int]:
+    """Прочитать план постепенного старта робота."""
+    import json
+
+    path = pendingfile_for(robot_name)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    pending: dict[str, int] = {}
+    for symbol, ready_at in raw.items():
+        try:
+            pending[str(symbol).upper()] = int(ready_at)
+        except (TypeError, ValueError):
+            continue
+    return pending
+
+
+def _write_pending(robot_name: str, pending: dict[str, int]) -> None:
+    """Записать план постепенного старта робота."""
+    import json
+
+    path = pendingfile_for(robot_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.replace(path)
+
+
+def stagger_window_sec() -> float:
+    """Окно постепенного старта, сек (0 — поднимать все процессы сразу)."""
+    raw = os.getenv("DASH_ROBOT_START_WINDOW_SEC", "1200").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 1200.0
+
+
 def _per_symbol_path(raw: str, robot_name: str, symbol: str) -> str:
     """Вставить символ в имя файла: data/trend_state.json -> data/trend_state_BTCUSDT.json."""
     text = raw.strip()
@@ -202,8 +257,88 @@ def _write_legacy_pid(robot_name: str, procs: dict[str, int]) -> None:
         pidfile.unlink(missing_ok=True)
 
 
+def _stagger_tick() -> None:
+    """Поднять процессы, у которых по плану уже наступило время старта."""
+    now = time.time()
+    for plan in sorted(PROJECT_ROOT.glob(f"data/*{_PENDING_SUFFIX}")):
+        robot_name = plan.name[: -len(_PENDING_SUFFIX)]
+        started: list[str] = []
+        with _STATE_LOCK:
+            pending = _read_pending(robot_name)
+            if not pending:
+                plan.unlink(missing_ok=True)
+                continue
+            due = [symbol for symbol, ready_at in pending.items() if ready_at <= now]
+            if not due:
+                continue
+            procs = _read_procs(robot_name)
+            for symbol in sorted(due):
+                pid = procs.get(symbol)
+                if pid and is_running(pid):
+                    pending.pop(symbol, None)
+                    continue
+                try:
+                    procs[symbol] = _spawn(robot_name, symbol)
+                except (OSError, ValueError) as exc:
+                    logger.error("Постепенный старт %s %s: %s", robot_name, symbol, exc)
+                    continue
+                pending.pop(symbol, None)
+                started.append(symbol)
+            _write_procs(robot_name, procs)
+            _write_legacy_pid(robot_name, procs)
+            if pending:
+                _write_pending(robot_name, pending)
+            else:
+                plan.unlink(missing_ok=True)
+        if started:
+            logger.info("Робот %s: подняты %s", robot_name, ", ".join(started))
+
+
+def _stagger_loop() -> None:
+    while True:
+        try:
+            _stagger_tick()
+        except Exception:
+            logger.exception("Постепенный старт: сбой итерации")
+        time.sleep(_STAGGER_TICK_SEC)
+
+
+def start_stagger_worker() -> None:
+    """Поднять фоновый поток постепенного старта (идемпотентно)."""
+    global _worker_started
+    with _STATE_LOCK:
+        if _worker_started:
+            return
+        _worker_started = True
+    threading.Thread(target=_stagger_loop, name="robot-stagger", daemon=True).start()
+
+
+def _start_all(
+    robot_name: str, symbols: list[str], procs: dict[str, int]
+) -> tuple[bool, str]:
+    """Поднять все процессы сразу (окно разноса выключено)."""
+    started: list[str] = []
+    try:
+        for symbol in symbols:
+            procs[symbol] = _spawn(robot_name, symbol)
+            started.append(symbol)
+    except (OSError, ValueError) as e:
+        for symbol in started:
+            _stop_symbol(robot_name, symbol, procs)
+        _write_procs(robot_name, procs)
+        return False, f"Ошибка запуска: {e}"
+    _write_procs(robot_name, procs)
+    _write_legacy_pid(robot_name, procs)
+    logger.info("Робот %s запущен: %s", robot_name, ", ".join(started))
+    return True, f"Робот {robot_name} запущен: {', '.join(started)}"
+
+
 def start_robot(robot_name: str) -> tuple[bool, str]:
-    """Запустить робота на всех его монетах. Возвращает (успех, сообщение)."""
+    """Запустить робота на всех его монетах. Возвращает (успех, сообщение).
+
+    При включённом окне разноса первая монета стартует сразу, остальные —
+    равномерно внутри окна. Монета, добавленная вручную, стартует немедленно.
+    """
     robot_path = PROJECT_ROOT / robot_name / "main.py"
     if not robot_path.exists():
         return False, f"Робот {robot_name} не найден"
@@ -212,27 +347,58 @@ def start_robot(robot_name: str) -> tuple[bool, str]:
     if not symbols:
         return False, f"У робота {robot_name} не выбраны монеты"
 
-    procs = _read_procs(robot_name)
-    started: list[str] = []
-    try:
-        for symbol in symbols:
-            pid = procs.get(symbol)
-            if pid and is_running(pid):
-                continue
-            procs[symbol] = _spawn(robot_name, symbol)
-            started.append(symbol)
-    except (OSError, ValueError) as e:
-        for symbol in started:
-            _stop_symbol(robot_name, symbol, procs)
-        _write_procs(robot_name, procs)
-        return False, f"Ошибка запуска: {e}"
+    start_stagger_worker()
+    with _STATE_LOCK:
+        procs = _read_procs(robot_name)
+        pending = _read_pending(robot_name)
+        todo = [
+            symbol
+            for symbol in symbols
+            if not (procs.get(symbol) and is_running(procs[symbol]))
+            and symbol not in pending
+        ]
+        if not todo:
+            if pending:
+                return (
+                    True,
+                    f"Робот {robot_name} стартует: {', '.join(sorted(pending))}",
+                )
+            return True, f"Робот {robot_name} уже работает"
 
-    _write_procs(robot_name, procs)
-    _write_legacy_pid(robot_name, procs)
-    if started:
-        logger.info("Робот %s запущен: %s", robot_name, ", ".join(started))
-        return True, f"Робот {robot_name} запущен: {', '.join(started)}"
-    return True, f"Робот {robot_name} уже работает"
+        window = stagger_window_sec()
+        if window <= 0:
+            return _start_all(robot_name, todo, procs)
+
+        first, rest = todo[0], todo[1:]
+        try:
+            procs[first] = _spawn(robot_name, first)
+        except (OSError, ValueError) as exc:
+            return False, f"Ошибка запуска: {exc}"
+
+        now = time.time()
+        spacing = window / len(rest) if rest else 0.0
+        pending = {s: int(now + spacing * (i + 1)) for i, s in enumerate(rest)}
+        _write_procs(robot_name, procs)
+        _write_legacy_pid(robot_name, procs)
+        if not pending:
+            logger.info("Робот %s запущен: %s", robot_name, first)
+            return True, f"Робот {robot_name} запущен: {first}"
+        _write_pending(robot_name, pending)
+        logger.info(
+            "Робот %s: старт %s, остальные %d — в течение %.0f мин",
+            robot_name,
+            first,
+            len(pending),
+            window / 60,
+        )
+        return (
+            True,
+            (
+                f"Робот {robot_name} запущен: {first}; "
+                f"остальные ({', '.join(sorted(pending))}) — "
+                f"в течение {window / 60:.0f} мин"
+            ),
+        )
 
 
 def _stop_symbol(robot_name: str, symbol: str, procs: dict[str, int]) -> bool:
@@ -262,14 +428,16 @@ def stop_robot(robot_name: str, timeout: float = 2.0) -> tuple[bool, str]:
         robot_name: Имя робота.
         timeout: Время ожидания перед SIGKILL (сек).
     """
-    procs = _read_procs(robot_name)
-    stopped: list[str] = []
-    for symbol in list(procs):
-        if _stop_symbol(robot_name, symbol, procs):
-            stopped.append(symbol)
-    _write_procs(robot_name, procs)
-    pidfile_for(robot_name).unlink(missing_ok=True)
-    procsfile_for(robot_name).unlink(missing_ok=True)
+    with _STATE_LOCK:
+        procs = _read_procs(robot_name)
+        pendingfile_for(robot_name).unlink(missing_ok=True)
+        stopped: list[str] = []
+        for symbol in list(procs):
+            if _stop_symbol(robot_name, symbol, procs):
+                stopped.append(symbol)
+        _write_procs(robot_name, procs)
+        pidfile_for(robot_name).unlink(missing_ok=True)
+        procsfile_for(robot_name).unlink(missing_ok=True)
     if stopped:
         return True, f"Робот {robot_name} остановлен: {', '.join(stopped)}"
     if not procs:
@@ -297,31 +465,42 @@ def set_robot_symbols(robot_name: str, symbols: list[str]) -> tuple[bool, str]:
     old = coins.symbols_for(robot_name)
     coins.set(robot_name, normalized)
 
-    procs = _read_procs(robot_name)
-    running = {sym: pid for sym, pid in procs.items() if is_running(pid)}
-    if not running:
+    with _STATE_LOCK:
+        procs = _read_procs(robot_name)
+        running = {sym: pid for sym, pid in procs.items() if is_running(pid)}
+        pending = _read_pending(robot_name)
+        if pending:
+            kept = {sym: at for sym, at in pending.items() if sym in normalized}
+            if kept:
+                _write_pending(robot_name, kept)
+            else:
+                pendingfile_for(robot_name).unlink(missing_ok=True)
+            pending = kept
+        if not running:
+            _write_procs(robot_name, procs)
+            return (
+                True,
+                f"Монеты робота {robot_name} сохранены: {', '.join(normalized) or '—'}",
+            )
+
+        removed = [sym for sym in old if sym not in normalized]
+        added = [
+            sym for sym in normalized if sym not in running and sym not in pending
+        ]
+        stopped: list[str] = []
+        for symbol in removed:
+            if _stop_symbol(robot_name, symbol, procs):
+                stopped.append(symbol)
+        started: list[str] = []
+        try:
+            for symbol in added:
+                procs[symbol] = _spawn(robot_name, symbol)
+                started.append(symbol)
+        except (OSError, ValueError) as e:
+            logger.error("Не удалось запустить %s: %s", robot_name, e)
+
         _write_procs(robot_name, procs)
-        return (
-            True,
-            f"Монеты робота {robot_name} сохранены: {', '.join(normalized) or '—'}",
-        )
-
-    removed = [sym for sym in old if sym not in normalized]
-    added = [sym for sym in normalized if sym not in running]
-    stopped: list[str] = []
-    for symbol in removed:
-        if _stop_symbol(robot_name, symbol, procs):
-            stopped.append(symbol)
-    started: list[str] = []
-    try:
-        for symbol in added:
-            procs[symbol] = _spawn(robot_name, symbol)
-            started.append(symbol)
-    except (OSError, ValueError) as e:
-        logger.error("Не удалось запустить %s: %s", robot_name, e)
-
-    _write_procs(robot_name, procs)
-    _write_legacy_pid(robot_name, procs)
+        _write_legacy_pid(robot_name, procs)
     parts = [f"Монеты робота {robot_name} обновлены"]
     if started:
         parts.append(f"запущено: {', '.join(started)}")
@@ -377,4 +556,5 @@ def get_robot_status(robot_name: str) -> RobotStatus:
 
 def get_all_robots_status() -> list[RobotStatus]:
     """Получить статус всех роботов."""
+    start_stagger_worker()
     return [get_robot_status(robot) for robot in get_available_robots()]

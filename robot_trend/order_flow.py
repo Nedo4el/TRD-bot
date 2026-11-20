@@ -95,6 +95,8 @@ class OrderFlow:
         )
         self._htf_cache: list[Candle] | None = None
         self._htf_cache_until_ms: int = 0
+        self._ws_position_flat = False
+        self._last_pos_check = 0.0
         self._gate_logged: str | None = None
         self._trades = TradeStore()
         self._guard = PositionGuard(GuardParams.from_env())
@@ -175,9 +177,12 @@ class OrderFlow:
                 self.feed.resync_needed = True
         self._drain_queues()
         st = self.store.state
-        if st.position is not None and await self._position_gone():
-            return
         if st.position is not None:
+            if self._ws_position_flat or self._pos_check_due():
+                self._ws_position_flat = False
+                self._last_pos_check = time.monotonic()
+                if await self._position_gone():
+                    return
             await self._update_risk()
         await self._wake_jitter()
         candles = await self._fetch_candles()
@@ -457,6 +462,31 @@ class OrderFlow:
             return
         if self.store.state.position is not None:
             await self._finalize_close(0.0, "sl_setup_failed")
+
+    def _pos_check_due(self) -> bool:
+        """Пора ли сверить позицию с биржей по REST (WS-событие — вне очереди)."""
+        return time.monotonic() - self._last_pos_check >= self.cfg.pos_check_sec
+
+    def _track_position_events(self) -> None:
+        """Отметить закрытие позиции по WS-событию (size=0), без REST."""
+        while not self.feed.position_events.empty():
+            try:
+                message = self.feed.position_events.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            payload = message.get("data") if isinstance(message, dict) else None
+            rows = payload if isinstance(payload, list) else [payload]
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("symbol") or "") != self.cfg.symbol:
+                    continue
+                try:
+                    size = float(row.get("size") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if size <= 0:
+                    self._ws_position_flat = True
 
     async def _position_gone(self) -> bool:
         """Позицию закрыла биржа (SL/TP) — зафиксировать итог."""
@@ -957,13 +987,17 @@ class OrderFlow:
         return f"{self.cfg.order_link_prefix}{secrets.token_hex(8)}"
 
     def _drain_queues(self) -> None:
-        """Сбросить WS-очереди: проверки идём через REST (проще и надёжнее)."""
+        """Сбросить WS-очереди: проверки идём через REST (проще и надёжнее).
+
+        Исключение — позиции: их события не выбрасываем, а читаем как
+        мгновенный сигнал «позиция закрылась» (см. ``_track_position_events``).
+        """
+        self._track_position_events()
         queues: tuple[Any, ...] = (
             self.feed.prices,
             self.feed.order_events,
             self.feed.exec_events,
             self.feed.wallet_events,
-            self.feed.position_events,
         )
         for queue in queues:
             while not queue.empty():

@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import math
 import os
 import threading
@@ -15,6 +17,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, cast
 
+import aiohttp
 from pybit.exceptions import FailedRequestError, InvalidRequestError
 from pybit.unified_trading import HTTP, WebSocket
 
@@ -66,6 +69,65 @@ def _gate_delay(spacing: float) -> float:
 def shared_gate_wait() -> float:
     """Забронировать слот в общем лимитере и вернуть паузу до него, сек."""
     return _gate_delay(1.0 / SHARED_RPS)
+
+
+async def probe_api_limit(
+    api_key: str,
+    api_secret: str,
+    testnet: bool = False,
+) -> dict[str, str] | None:
+    """Прочитать реальный лимит API из заголовков X-Bapi-Limit.
+
+    Market-методы (kline, tickers) этих заголовков не отдают — проверено на
+    живом API 20.11.2026. Их возвращают только приватные методы, поэтому
+    замер идёт по /v5/account/info: он показывает лимит аккаунта на UID,
+    то есть потолок для всех запросов бота (диагностика retCode 10006).
+
+    Args:
+        api_key: Ключ Bybit.
+        api_secret: Секрет Bybit.
+        testnet: Использовать тестовый хост.
+
+    Returns:
+        Параметры лимита либо None, если замер не удался.
+    """
+    if not api_key or not api_secret:
+        return None
+    host = "api-testnet.bybit.com" if testnet else "api.bybit.com"
+    timestamp = str(int(time.time() * 1000))
+    sign = hmac.new(
+        api_secret.encode(),
+        f"{timestamp}{api_key}5000".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    headers = {
+        "X-BAPI-API-KEY": api_key,
+        "X-BAPI-TIMESTAMP": timestamp,
+        "X-BAPI-RECV-WINDOW": "5000",
+        "X-BAPI-SIGN": sign,
+    }
+    timeout = aiohttp.ClientTimeout(total=5)
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(f"https://{host}/v5/account/info", headers=headers) as resp,
+        ):
+            limit = resp.headers.get("X-Bapi-Limit", "")
+            status = resp.headers.get("X-Bapi-Limit-Status", "")
+            reset = resp.headers.get("X-Bapi-Limit-Reset-Timestamp", "")
+    except (aiohttp.ClientError, TimeoutError, OSError) as exc:
+        logger.warning("лимит API: замер не удался (%s)", exc)
+        return None
+    if not limit:
+        logger.info("лимит API: заголовков X-Bapi-Limit нет в ответе")
+        return None
+    logger.info(
+        "лимит API: %s/с на UID (осталось %s, сброс %s)",
+        limit,
+        status or "?",
+        reset or "?",
+    )
+    return {"limit": limit, "status": status, "reset": reset}
 
 
 # --- Сдвиг локальных часов относительно сервера Bybit (TIME_SYNC) -----------
