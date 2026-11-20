@@ -1,14 +1,18 @@
-"""Volume Profile screener — POC + дневные уровни.
+"""Volume Profile screener: POC по окнам, экстремумы окон и ATH/ATL.
 
-POC — цена с максимальным накопленным объемом за период.
-Дневные уровни — открытие/закрытие вчерашней свечи.
+POC — цена с максимальным накопленным оборотом за окно. Оборот свечи
+делится поровну по ценовым корзинам её диапазона high-low: распределения
+объёма внутри свечи Bybit не отдаёт, это приближение.
+
+HIGH/LOW — экстремумы окна от месяца и длиннее, ATH/ATL — экстремумы всей
+истории инструмента. Это не POC: накопленного объёма у них нет.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from core.logger import get_logger
 
@@ -16,32 +20,43 @@ logger = get_logger(__name__)
 
 MSK = timezone(timedelta(hours=3))
 
-# Периоды для POC-анализа: (таймфрейм, количество свечей)
-POC_PERIODS = {
+# Окна анализа: имя -> (интервал Bybit, сколько последних свечей брать).
+# 12h-3d — часовые, 7d-1m — 4-часовые, длиннее — дневные: так в каждом
+# окне остаётся достаточно свечей, чтобы профиль из 100 корзин не был пустым.
+WINDOWS: dict[str, tuple[str, int]] = {
     "12h": ("60", 12),
     "24h": ("60", 24),
-    "7d": ("D", 7),
-    "30d": ("D", 30),
+    "3d": ("60", 72),
+    "7d": ("240", 42),
+    "14d": ("240", 84),
+    "1m": ("240", 180),
+    "3m": ("D", 90),
+    "6m": ("D", 180),
+    "1y": ("D", 365),
 }
 
+EXTREME_WINDOWS = ("1m", "3m", "6m", "1y")
+MIN_CANDLES = 10
+
+KIND_POC = "POC"
+KIND_HIGH = "HIGH"
+KIND_LOW = "LOW"
+KIND_ATH = "ATH"
+KIND_ATL = "ATL"
+
 
 @dataclass
-class POCLevel:
-    """Один POC-уровень."""
+class Level:
+    """Уровень в пределах порога приближения к текущей цене.
 
+    ``distance_pct`` со знаком: плюс — уровень выше цены, минус — ниже.
+    """
+
+    kind: str
     period: str
-    poc_price: float
-    poc_volume: float
-    distance_pct: float = 0.0
-
-
-@dataclass
-class DailyLevel:
-    """Дневной уровень (open/close вчера)."""
-
-    level_type: str  # "OPEN" | "CLOSE"
     price: float
-    distance_pct: float = 0.0
+    distance_pct: float
+    volume: float = 0.0
 
 
 @dataclass
@@ -50,22 +65,48 @@ class VPSignal:
 
     symbol: str
     current_price: float
-    poc_levels: list[POCLevel] = field(default_factory=list)
-    daily_levels: list[DailyLevel] = field(default_factory=list)
+    levels: list[Level] = field(default_factory=list)
     scan_time: str = ""
 
 
+def interval_limits() -> dict[str, int]:
+    """Сколько свечей качать на каждый интервал, чтобы покрыть все окна."""
+    limits: dict[str, int] = {}
+    for interval, count in WINDOWS.values():
+        limits[interval] = max(limits.get(interval, 0), count)
+    return limits
+
+
+def windows_from_series(
+    by_interval: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Нарезать окна из загруженных серий: одна серия на интервал."""
+    result: dict[str, list[dict[str, Any]]] = {}
+    for period, (interval, count) in WINDOWS.items():
+        candles = by_interval.get(interval)
+        if candles:
+            result[period] = candles[-count:]
+    return result
+
+
+def _weight(candle: dict[str, Any]) -> float:
+    """Вес свечи: оборот в USD, иначе объём в монетах."""
+    turnover = float(candle.get("turnover") or 0.0)
+    if turnover > 0:
+        return turnover
+    return float(candle.get("volume") or 0.0)
+
+
 def build_volume_profile(
-    candles: list[dict],
+    candles: list[dict[str, Any]],
     num_bins: int = 100,
 ) -> list[tuple[float, float]]:
-    """Построить Volume Profile — распределение объема по ценовым корзинам."""
-    if len(candles) < 10:
+    """Построить Volume Profile — распределение оборота по ценовым корзинам."""
+    if len(candles) < MIN_CANDLES:
         return []
 
     price_min = min(c["low"] for c in candles)
     price_max = max(c["high"] for c in candles)
-
     if price_max <= price_min:
         return []
 
@@ -75,167 +116,126 @@ def build_volume_profile(
     for candle in candles:
         c_low = candle["low"]
         c_high = candle["high"]
-        c_volume = candle["volume"]
-
-        if c_volume <= 0 or c_high <= c_low:
+        weight = _weight(candle)
+        if weight <= 0 or c_high <= c_low:
             continue
 
         low_bin = max(0, min(int((c_low - price_min) / bin_width), num_bins - 1))
         high_bin = max(0, min(int((c_high - price_min) / bin_width), num_bins - 1))
-
-        bins_covered = high_bin - low_bin + 1
-        vol_per_bin = c_volume / bins_covered
+        weight_per_bin = weight / (high_bin - low_bin + 1)
 
         for b in range(low_bin, high_bin + 1):
-            volume_by_bin[b] = volume_by_bin.get(b, 0.0) + vol_per_bin
+            volume_by_bin[b] = volume_by_bin.get(b, 0.0) + weight_per_bin
 
-    result = []
-    for bin_idx, vol in volume_by_bin.items():
-        price_level = price_min + bin_idx * bin_width + bin_width / 2
-        result.append((price_level, vol))
-
-    result.sort(key=lambda x: x[1], reverse=True)
+    result = [
+        (price_min + idx * bin_width + bin_width / 2, vol)
+        for idx, vol in volume_by_bin.items()
+    ]
+    result.sort(key=lambda item: item[1], reverse=True)
     return result
 
 
 def find_poc(
-    candles: list[dict],
+    candles: list[dict[str, Any]],
     num_bins: int = 100,
 ) -> tuple[float, float] | None:
-    """Найти POC — цену с максимальным объемом."""
+    """Найти POC — цену с максимальным накопленным оборотом."""
     profile = build_volume_profile(candles, num_bins)
-    if not profile:
+    return profile[0] if profile else None
+
+
+def window_extremes(candles: list[dict[str, Any]]) -> tuple[float, float] | None:
+    """High и low окна."""
+    if not candles:
         return None
-
-    poc_price, poc_volume = profile[0]
-    return poc_price, poc_volume
+    return max(c["high"] for c in candles), min(c["low"] for c in candles)
 
 
-def find_daily_levels(
-    hourly_candles: list[dict],
+def _current_price(series: dict[str, list[dict[str, Any]]]) -> float:
+    for period in WINDOWS:
+        candles = series.get(period)
+        if candles:
+            return float(candles[-1]["close"])
+    return 0.0
+
+
+def _add_level(
+    levels: list[Level],
+    kind: str,
+    period: str,
+    price: float,
+    volume: float,
     current_price: float,
-    proximity_pct: float = 10.0,
-) -> list[DailyLevel]:
-    """Найти дневные уровни (High/Low) по UTC (03:00 МСК).
-
-    Собирает дневную свечу из 1H баров: 00:00–23:00 UTC.
-    Уровни — High и Low вчерашней свечи (шпильки, не тело).
-
-    Args:
-        hourly_candles: часовые свечи (последние ~48ч).
-        current_price: текущая цена.
-        proximity_pct: порог приближения в %.
-
-    Returns:
-        Список дневных уровней в пределах proximity_pct.
-    """
-    if len(hourly_candles) < 24:
-        return []
-
-    days: dict[str, list[dict]] = defaultdict(list)
-    for c in hourly_candles:
-        dt = datetime.fromtimestamp(c["open_time"] / 1000, tz=timezone.utc)
-        day_key = dt.strftime("%Y-%m-%d")
-        days[day_key].append(c)
-
-    sorted_days = sorted(days.keys())
-    if len(sorted_days) < 2:
-        return []
-
-    yesterday_key = sorted_days[-2]
-    yesterday_candles = days[yesterday_key]
-
-    day_high = max(c["high"] for c in yesterday_candles)
-    day_low = min(c["low"] for c in yesterday_candles)
-
-    levels = []
-    for level_type, price in [("HIGH", day_high), ("LOW", day_low)]:
-        if price <= 0:
-            continue
-        distance_pct = abs(current_price - price) / current_price * 100
-        if distance_pct <= proximity_pct:
-            levels.append(
-                DailyLevel(
-                    level_type=level_type,
-                    price=price,
-                    distance_pct=round(distance_pct, 2),
-                )
-            )
-
-    return levels
+    proximity_pct: float,
+) -> None:
+    if price <= 0:
+        return
+    distance = (price - current_price) / current_price * 100
+    if abs(distance) > proximity_pct:
+        return
+    levels.append(Level(kind, period, price, round(distance, 2), volume))
 
 
 def scan_symbol(
     symbol: str,
-    candles_by_period: dict[str, list[dict]],
-    hourly_candles: list[dict],
+    series: dict[str, list[dict[str, Any]]],
     *,
+    all_time: tuple[float, float] | None = None,
     num_bins: int = 100,
     proximity_pct: float = 10.0,
     max_price: float = 0.0,
 ) -> VPSignal:
-    """Просканировать один символ: POC по 4 периодам + дневные уровни.
+    """Найти POC по окнам, экстремумы длинных окон и ATH/ATL.
 
     Args:
         symbol: торговая пара.
-        candles_by_period: {период: список свечей}.
-        hourly_candles: часовые свечи для построения дневных уровней.
-        num_bins: количество ценовых корзин.
-        proximity_pct: порог приближения в %.
-        max_price: максимальная цена монеты (0 = без фильтра).
+        series: {окно: свечи} — см. ``windows_from_series``.
+        all_time: (ATH, ATL) по всей истории или None.
+        num_bins: число ценовых корзин профиля.
+        proximity_pct: порог приближения к цене в %, в обе стороны.
+        max_price: максимальная цена монеты, 0 = без фильтра.
 
     Returns:
-        VPSignal с POC-уровнями и дневными уровнями.
+        VPSignal; уровни отсортированы по модулю расстояния до цены.
     """
     now = datetime.now(MSK).strftime("%H:%M")
-
-    # Берём текущую цену из любого периода
-    for period_candles in candles_by_period.values():
-        if period_candles:
-            current_price = period_candles[-1]["close"]
-            break
-    else:
-        return VPSignal(symbol=symbol, current_price=0.0, scan_time=now)
-
+    current_price = _current_price(series)
     if current_price <= 0:
-        return VPSignal(symbol=symbol, current_price=0.0, scan_time=now)
+        return VPSignal(symbol, 0.0, scan_time=now)
     if max_price > 0 and current_price > max_price:
-        return VPSignal(symbol=symbol, current_price=0.0, scan_time=now)
+        return VPSignal(symbol, 0.0, scan_time=now)
 
-    poc_levels = []
-
-    for period, candles in candles_by_period.items():
-        if not candles:
+    levels: list[Level] = []
+    for period, candles in series.items():
+        if len(candles) < MIN_CANDLES:
             continue
-
         poc = find_poc(candles, num_bins)
-        if poc is None:
-            continue
-
-        poc_price, poc_volume = poc
-        distance_pct = abs(current_price - poc_price) / current_price * 100
-
-        if distance_pct <= proximity_pct:
-            poc_levels.append(
-                POCLevel(
-                    period=period,
-                    poc_price=poc_price,
-                    poc_volume=poc_volume,
-                    distance_pct=round(distance_pct, 2),
-                )
+        if poc is not None:
+            _add_level(
+                levels, KIND_POC, period, poc[0], poc[1],
+                current_price, proximity_pct,
             )
+        if period in EXTREME_WINDOWS:
+            extremes = window_extremes(candles)
+            if extremes is not None:
+                high, low = extremes
+                _add_level(
+                    levels, KIND_HIGH, period, high, 0.0,
+                    current_price, proximity_pct,
+                )
+                _add_level(
+                    levels, KIND_LOW, period, low, 0.0,
+                    current_price, proximity_pct,
+                )
 
-    # Дневные уровни из часовых свечей (UTC)
-    daily_levels = find_daily_levels(hourly_candles, current_price, proximity_pct)
+    if all_time is not None:
+        ath, atl = all_time
+        _add_level(
+            levels, KIND_ATH, "all", ath, 0.0, current_price, proximity_pct,
+        )
+        _add_level(
+            levels, KIND_ATL, "all", atl, 0.0, current_price, proximity_pct,
+        )
 
-    # Сортируем по расстоянию
-    poc_levels.sort(key=lambda x: x.distance_pct)
-    daily_levels.sort(key=lambda x: x.distance_pct)
-
-    return VPSignal(
-        symbol=symbol,
-        current_price=current_price,
-        poc_levels=poc_levels,
-        daily_levels=daily_levels,
-        scan_time=now,
-    )
+    levels.sort(key=lambda level: abs(level.distance_pct))
+    return VPSignal(symbol, current_price, levels, now)

@@ -99,6 +99,7 @@ class Fetcher:
         symbol: str,
         interval: str,
         limit: int = 100,
+        end: int | None = None,
     ) -> list[dict]:
         """Получить свечи для символа.
 
@@ -114,11 +115,19 @@ class Fetcher:
             await asyncio.sleep(self._min_delay * (attempt + 1))
 
             def _fetch() -> dict:
+                if end is None:
+                    return self._http.get_kline(  # type: ignore[no-any-return]
+                        category="linear",
+                        symbol=symbol,
+                        interval=interval,
+                        limit=limit,
+                    )
                 return self._http.get_kline(  # type: ignore[no-any-return]
                     category="linear",
                     symbol=symbol,
                     interval=interval,
                     limit=limit,
+                    end=end,
                 )
 
             try:

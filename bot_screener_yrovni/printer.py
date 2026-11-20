@@ -3,13 +3,30 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-
-MSK = timezone(timedelta(hours=3))
 
 from tabulate import tabulate
 
 from bot_screener_yrovni.scanner import VPSignal
+
+MSK = timezone(timedelta(hours=3))
+
+WINDOW_LABELS = {"all": "всё время"}
+
+
+@dataclass
+class _Row:
+    """Строка таблицы: один уровень, окна объединены."""
+
+    symbol: str
+    price: float
+    kind: str
+    level: float
+    distance: float
+    time: str
+    periods: set[str] = field(default_factory=set)
+    volume: float = 0.0
 
 
 def clear_console() -> None:
@@ -18,14 +35,14 @@ def clear_console() -> None:
 
 
 def format_volume(value: float) -> str:
-    """Форматировать объем."""
+    """Форматировать оборот в USD."""
     if value >= 1_000_000_000:
         return f"${value / 1_000_000_000:.1f}B"
     if value >= 1_000_000:
         return f"${value / 1_000_000:.1f}M"
     if value >= 1_000:
         return f"${value / 1_000:.1f}K"
-    return f"${value:.0f}"
+    return f"${value:.0f}" if value > 0 else "—"
 
 
 def _fmt_price(price: float) -> str:
@@ -37,51 +54,51 @@ def _fmt_price(price: float) -> str:
     return f"{price:.2f}"
 
 
-def _dedup_poc(results: list[VPSignal]) -> list[dict]:
-    """Дедупликация POC: одинаковые цены → один ряд с несколькими периодами."""
-    # {symbol: {poc_price: {"periods": [], "volume": float, "distance": float, "time": str}}}
-    by_symbol: dict[str, dict[float, dict]] = {}
+def _collect_rows(results: list[VPSignal]) -> list[_Row]:
+    """Схлопнуть одинаковые уровни разных окон в одну строку."""
+    grouped: dict[tuple[str, str, float], _Row] = {}
 
     for result in results:
-        if result.symbol not in by_symbol:
-            by_symbol[result.symbol] = {}
+        for level in result.levels:
+            key = (result.symbol, level.kind, round(level.price, 8))
+            row = grouped.get(key)
+            if row is None:
+                grouped[key] = _Row(
+                    symbol=result.symbol,
+                    price=result.current_price,
+                    kind=level.kind,
+                    level=level.price,
+                    distance=level.distance_pct,
+                    time=result.scan_time,
+                    periods={level.period},
+                    volume=level.volume,
+                )
+                continue
+            row.periods.add(level.period)
+            if abs(level.distance_pct) < abs(row.distance):
+                row.distance = level.distance_pct
+            row.volume = max(row.volume, level.volume)
 
-        poc_map = by_symbol[result.symbol]
+    return list(grouped.values())
 
-        for level in result.poc_levels:
-            # Округляем цену для сравнения (6 знаков)
-            key = round(level.poc_price, 6)
 
-            if key in poc_map:
-                # Уже есть — добавляем период
-                if level.period not in poc_map[key]["periods"]:
-                    poc_map[key]["periods"].append(level.period)
-            else:
-                poc_map[key] = {
-                    "periods": [level.period],
-                    "price": result.current_price,
-                    "poc_price": level.poc_price,
-                    "volume": level.poc_volume,
-                    "distance": level.distance_pct,
-                    "time": result.scan_time,
-                }
-
-    # Собираем в список
-    rows = []
-    for symbol, poc_map in by_symbol.items():
-        for poc_data in poc_map.values():
-            periods_str = ", ".join(sorted(poc_data["periods"]))
-            rows.append([
-                symbol,
-                _fmt_price(poc_data["price"]),
-                periods_str,
-                _fmt_price(poc_data["poc_price"]),
-                format_volume(poc_data["volume"]),
-                f"{poc_data['distance']}%",
-                poc_data["time"],
-            ])
-
-    return rows
+def _table(rows: list[_Row]) -> list[list[str]]:
+    rows.sort(key=lambda row: abs(row.distance))
+    table: list[list[str]] = []
+    for row in rows:
+        periods = ", ".join(WINDOW_LABELS.get(p, p) for p in sorted(row.periods))
+        volume = format_volume(row.volume) if row.kind == "POC" else "—"
+        table.append([
+            row.symbol,
+            _fmt_price(row.price),
+            row.kind,
+            periods,
+            _fmt_price(row.level),
+            volume,
+            f"{row.distance:+.2f}%",
+            row.time,
+        ])
+    return table
 
 
 def print_results(
@@ -95,63 +112,35 @@ def print_results(
 
     now = datetime.now(MSK).strftime("%H:%M:%S MSK")
 
-    print("=" * 100)
-    print("  VOLUME PROFILE SCREENER — POC + Дневные уровни")
+    print("=" * 118)
+    print("  VOLUME PROFILE SCREENER — POC по окнам, экстремумы, ATH/ATL")
     print(f"  Bybit USDT-M | {now}")
-    print("=" * 100)
+    print("  POC — цена максимального оборота за окно | HIGH/LOW — экстремум окна")
+    print("  ATH/ATL — абсолютный хай/лой истории (не POC) | Расст.: + сверху, - снизу")
+    print("=" * 118)
     print()
 
-    if not results:
+    rows = _table(_collect_rows(results))
+
+    if rows:
+        headers = [
+            "Монета",
+            "Цена",
+            "Тип",
+            "Окна",
+            "Уровень",
+            "Оборот",
+            "Расст. %",
+            "Время",
+        ]
+        print(tabulate(rows, headers=headers, tablefmt="simple", stralign="right"))
+        print()
+    else:
         print("  Сигналов не найдено.")
         print()
-        print(f"  Пар под фильтром: {filtered_symbols}/{total_symbols}")
-        print(f"  Время сканирования: {scan_time:.1f} сек")
-        print("=" * 100)
-        return
 
-    # === Таблица 1: POC уровни (с дедупликацией) ===
-    poc_rows = _dedup_poc(results)
-
-    if poc_rows:
-        poc_rows.sort(key=lambda r: float(r[5].rstrip("%")))
-
-        print("  === POC УРОВНИ (макс. объем по цене) ===")
-        print()
-
-        headers = ["Монета", "Цена", "Периоды", "POC", "Объем", "Расст. %", "Время"]
-        print(tabulate(poc_rows, headers=headers, tablefmt="simple", stralign="right"))
-        print()
-
-    # === Таблица 2: Дневные уровни ===
-    daily_rows = []
-    for result in results:
-        for level in result.daily_levels:
-            label = "ОТКРЫТИЕ" if level.level_type == "OPEN" else "ЗАКРЫТИЕ"
-            daily_rows.append(
-                [
-                    result.symbol,
-                    _fmt_price(result.current_price),
-                    label,
-                    _fmt_price(level.price),
-                    f"{level.distance_pct}%",
-                    result.scan_time,
-                ]
-            )
-
-    if daily_rows:
-        daily_rows.sort(key=lambda r: float(r[4].rstrip("%")))
-
-        print("  === ДНЕВНЫЕ УРОВНИ (вчерашняя свеча) ===")
-        print()
-
-        headers = ["Монета", "Цена", "Тип", "Уровень", "Расст. %", "Время"]
-        print(tabulate(daily_rows, headers=headers, tablefmt="simple", stralign="right"))
-        print()
-
-    total_signals = len(poc_rows) + len(daily_rows)
     print(
-        f"  Сигналов: {total_signals} (POC: {len(poc_rows)}, Дневные: {len(daily_rows)}) | "
-        f"Пар: {filtered_symbols}/{total_symbols} | "
+        f"  Уровней: {len(rows)} | Пар: {filtered_symbols}/{total_symbols} | "
         f"Время: {scan_time:.1f} сек"
     )
-    print("=" * 100)
+    print("=" * 118)

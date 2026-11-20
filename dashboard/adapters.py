@@ -472,8 +472,13 @@ async def scan_pump(spec: ScreenerSpec) -> list[Signal]:
 
 
 async def scan_yrovni(spec: ScreenerSpec) -> list[Signal]:
-    """Volume Profile: POC по периодам и дневные уровни."""
-    from bot_screener_yrovni.scanner import POC_PERIODS, scan_symbol
+    """Volume Profile: POC по окнам, экстремумы окон и ATH/ATL."""
+    from bot_screener_yrovni.history import load_all_time
+    from bot_screener_yrovni.scanner import (
+        interval_limits,
+        scan_symbol,
+        windows_from_series,
+    )
 
     env = _env(spec)
     num_bins = 100
@@ -481,36 +486,33 @@ async def scan_yrovni(spec: ScreenerSpec) -> list[Signal]:
     max_price = env.number("MAX_PRICE", 0.0)
     fetcher = _new_fetcher(env)
     universe = await _universe(fetcher, env, spec, 50_000_000)
+    limits = interval_limits()
 
     async def work(item: tuple[str, float]) -> list[Signal]:
         symbol, turnover = item
-        candles_by_period: dict[str, list[dict]] = {}
-        for period, (interval, num_candles) in POC_PERIODS.items():
-            candles = await fetcher.get_klines(symbol, interval, num_candles)
+        by_interval: dict[str, list[dict]] = {}
+        for interval, limit in limits.items():
+            candles = await fetcher.get_klines(symbol, interval, limit)
             if candles:
-                candles_by_period[period] = candles
-        hourly = await fetcher.get_klines(symbol, "60", 48)
-        if not candles_by_period or not hourly:
+                by_interval[interval] = candles
+        if not by_interval:
             return []
+        all_time = await load_all_time(fetcher, symbol)
         result = scan_symbol(
             symbol,
-            candles_by_period,
-            hourly,
+            windows_from_series(by_interval),
+            all_time=all_time,
             num_bins=num_bins,
             proximity_pct=proximity,
             max_price=max_price,
         )
-        if not result.poc_levels and not result.daily_levels:
+        if not result.levels:
             return []
-        distances = [level.distance_pct for level in result.poc_levels]
-        distances += [level.distance_pct for level in result.daily_levels]
-        closest = min(distances)
+        closest = min(abs(level.distance_pct) for level in result.levels)
         score = max(0.0, 100.0 - closest * 10)
-        label = (
-            f"POC {result.poc_levels[0].period} {result.poc_levels[0].distance_pct:g}%"
-            if result.poc_levels
-            else f"уровень {result.daily_levels[0].level_type}"
-        )
+        first = result.levels[0]
+        poc = [level for level in result.levels if level.kind == "POC"]
+        extreme = [level for level in result.levels if level.kind != "POC"]
         return [
             make_signal(
                 screener=spec.name,
@@ -518,25 +520,26 @@ async def scan_yrovni(spec: ScreenerSpec) -> list[Signal]:
                 symbol=symbol,
                 price=result.current_price,
                 score=round(min(100.0, score), 1),
-                label=label,
+                label=f"{first.kind} {first.period} {first.distance_pct:+g}%",
                 turnover_24h=turnover,
                 found_at=_now_iso(),
                 detail={
                     "poc": [
                         {
                             "period": level.period,
-                            "price": level.poc_price,
-                            "distance_pct": level.distance_pct,
-                        }
-                        for level in result.poc_levels[:4]
-                    ],
-                    "daily": [
-                        {
-                            "type": level.level_type,
                             "price": level.price,
                             "distance_pct": level.distance_pct,
                         }
-                        for level in result.daily_levels[:4]
+                        for level in poc[:4]
+                    ],
+                    "extreme": [
+                        {
+                            "kind": level.kind,
+                            "period": level.period,
+                            "price": level.price,
+                            "distance_pct": level.distance_pct,
+                        }
+                        for level in extreme[:4]
                     ],
                 },
             )

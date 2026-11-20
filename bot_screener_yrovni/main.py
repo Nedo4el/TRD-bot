@@ -47,8 +47,13 @@ def _load_config() -> dict:
 async def scan_once(cfg: dict, metrics: ScreenerMetrics) -> None:
     """Один прогон сканирования."""
     from bot_screener_klin.fetcher import Fetcher
+    from bot_screener_yrovni.history import load_all_time
     from bot_screener_yrovni.printer import print_results
-    from bot_screener_yrovni.scanner import POC_PERIODS, scan_symbol
+    from bot_screener_yrovni.scanner import (
+        interval_limits,
+        scan_symbol,
+        windows_from_series,
+    )
 
     fetcher = Fetcher(
         api_key=cfg["api_key"],
@@ -75,50 +80,42 @@ async def scan_once(cfg: dict, metrics: ScreenerMetrics) -> None:
     )
 
     results = []
+    limits = interval_limits()
 
     for symbol, _ in filtered:
-        # Загружаем свечи для каждого периода с нужным ТФ
-        candles_by_period: dict[str, list[dict]] = {}
+        # Одна серия на интервал: окна нарезаются из неё, без лишних запросов
+        by_interval: dict[str, list[dict]] = {}
 
-        for period, (interval, num_candles) in POC_PERIODS.items():
+        for interval, limit in limits.items():
             candles = await fetcher.get_klines(
                 symbol=symbol,
                 interval=interval,
-                limit=num_candles,
+                limit=limit,
             )
             if candles:
-                candles_by_period[period] = candles
+                by_interval[interval] = candles
 
-        if not candles_by_period:
+        if not by_interval:
             continue
 
-        # Дневные свечи для дневных уровней — собираем из 1H по UTC
-        hourly_candles = await fetcher.get_klines(
-            symbol=symbol,
-            interval="60",
-            limit=48,
-        )
-
-        if not hourly_candles:
-            continue
+        all_time = await load_all_time(fetcher, symbol)
 
         result = scan_symbol(
             symbol=symbol,
-            candles_by_period=candles_by_period,
-            hourly_candles=hourly_candles,
+            series=windows_from_series(by_interval),
+            all_time=all_time,
             num_bins=cfg["num_bins"],
             proximity_pct=cfg["proximity_pct"],
             max_price=cfg["max_price"],
         )
 
-        if result.poc_levels or result.daily_levels:
+        if result.levels:
             results.append(result)
             logger.info(
-                "СИГНАЛ: %s price=%.4f poc=%d daily=%d",
+                "СИГНАЛ: %s price=%.6g уровней=%d",
                 result.symbol,
                 result.current_price,
-                len(result.poc_levels),
-                len(result.daily_levels),
+                len(result.levels),
             )
 
     elapsed = time.monotonic() - start
