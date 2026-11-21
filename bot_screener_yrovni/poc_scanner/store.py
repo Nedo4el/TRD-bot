@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,9 +13,9 @@ from bot_screener_yrovni.poc_scanner.config import (
     get_poc_age_days,
     parse_window_days,
 )
-from bot_screener_yrovni.poc_scanner.timeutil import utc_now_iso
+from bot_screener_yrovni.poc_scanner.timeutil import parse_iso, utc_now, utc_now_iso
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS poc_levels (
@@ -63,6 +64,15 @@ CREATE TABLE IF NOT EXISTS klines (
     turnover REAL,
     PRIMARY KEY (symbol, interval, open_time)
 );
+
+CREATE TABLE IF NOT EXISTS zone_state (
+    symbol TEXT PRIMARY KEY,
+    level_price REAL NOT NULL DEFAULT 0,
+    direction TEXT NOT NULL DEFAULT '',
+    in_zone INTEGER NOT NULL DEFAULT 0,
+    episode INTEGER NOT NULL DEFAULT 0,
+    updated_ts TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -102,6 +112,23 @@ class LevelState:
     id: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ZoneState:
+    """Состояние зоны ближайшего кластера: эпизод входа и направление.
+
+    Нужно, чтобы сигнал выдавался один раз за вход в зону (в том числе
+    после рестарта скринера): ``in_zone`` снимается, когда цена выходит
+    из зоны, а ``episode`` растёт на каждом новом входе.
+    """
+
+    symbol: str
+    level_price: float = 0.0
+    direction: str = ""
+    in_zone: bool = False
+    episode: int = 0
+    updated_ts: str = ""
+
+
 class POCStore:
     """Хранилище уровней и кэша свечей в одном SQLite-файле."""
 
@@ -122,6 +149,7 @@ class POCStore:
         if version == 0:
             self._conn.executescript(_SCHEMA)
         self._ensure_columns()
+        self._ensure_tables()
         if version < 2:
             self._backfill_age_days()
         if version < 3:
@@ -147,6 +175,22 @@ class POCStore:
         ):
             if name not in columns:
                 self._conn.execute(f"ALTER TABLE poc_levels ADD COLUMN {name} {ddl}")
+        self._conn.commit()
+
+    def _ensure_tables(self) -> None:
+        """Создать таблицы, появившиеся после первой версии схемы."""
+        self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS zone_state (
+                symbol TEXT PRIMARY KEY,
+                level_price REAL NOT NULL DEFAULT 0,
+                direction TEXT NOT NULL DEFAULT '',
+                in_zone INTEGER NOT NULL DEFAULT 0,
+                episode INTEGER NOT NULL DEFAULT 0,
+                updated_ts TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
         self._conn.commit()
 
     def _backfill_segments(self) -> None:
@@ -375,6 +419,82 @@ class POCStore:
         )
         self._conn.commit()
 
+    def prune_stale(
+        self,
+        symbol: str,
+        keep_windows: set[str],
+        older_than_sec: int = 3600,
+    ) -> int:
+        """Удалить rolling-уровни, чьи окна больше не считаются.
+
+        Уровень удаляется, если все его источники — имена rolling-окон
+        (``<дни>d``), ни одно не входит в ``keep_windows`` и запись не
+        обновлялась дольше ``older_than_sec``. Уровни исторических отрезков
+        (``2026-09``) не трогаются.
+        """
+        moment = utc_now()
+        removed = 0
+        for level in self.levels(symbol):
+            sources = list(level.source_windows)
+            if not sources:
+                continue
+            rolling = [name for name in sources if self._window_days(name) > 0]
+            if len(rolling) != len(sources):
+                continue
+            if any(name in keep_windows for name in rolling):
+                continue
+            if not self._is_stale(level.last_calculated_ts, moment, older_than_sec):
+                continue
+            self._conn.execute("DELETE FROM poc_levels WHERE id = ?", (level.id,))
+            removed += 1
+        if removed:
+            self._conn.commit()
+        return removed
+
+    # --- состояние зоны --------------------------------------------------
+
+    def get_zone_state(self, symbol: str) -> ZoneState | None:
+        """Состояние зоны символа или None, если сканов ещё не было."""
+        row = self._conn.execute(
+            "SELECT * FROM zone_state WHERE symbol = ?",
+            (symbol,),
+        ).fetchone()
+        if row is None:
+            return None
+        return ZoneState(
+            symbol=str(row["symbol"]),
+            level_price=float(row["level_price"]),
+            direction=str(row["direction"]),
+            in_zone=bool(row["in_zone"]),
+            episode=int(row["episode"]),
+            updated_ts=str(row["updated_ts"] or ""),
+        )
+
+    def save_zone_state(self, state: ZoneState) -> None:
+        """Записать состояние зоны (одна строка на символ)."""
+        self._conn.execute(
+            """
+            INSERT INTO zone_state (
+                symbol, level_price, direction, in_zone, episode, updated_ts
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                level_price = excluded.level_price,
+                direction = excluded.direction,
+                in_zone = excluded.in_zone,
+                episode = excluded.episode,
+                updated_ts = excluded.updated_ts
+            """,
+            (
+                state.symbol,
+                float(state.level_price),
+                state.direction,
+                int(state.in_zone),
+                int(state.episode),
+                state.updated_ts,
+            ),
+        )
+        self._conn.commit()
+
     # --- журнал сигналов -------------------------------------------------
 
     def log_signal(self, payload: dict[str, Any]) -> None:
@@ -511,6 +631,17 @@ class POCStore:
         """Более поздняя из двух ISO-дат; пустая строка означает «нет даты»."""
         stamps = [text for text in (first, second) if text]
         return max(stamps) if stamps else ""
+
+    @staticmethod
+    def _is_stale(ts: str, now: datetime, older_than_sec: int) -> bool:
+        """Запись не обновлялась дольше порога (пустая дата — устарела)."""
+        if not ts:
+            return True
+        try:
+            stamp = parse_iso(ts)
+        except ValueError:
+            return True
+        return (now - stamp).total_seconds() >= older_than_sec
 
     @staticmethod
     def _row_to_level(row: sqlite3.Row) -> LevelState:

@@ -700,6 +700,58 @@ async def scan_zakonomer(spec: ScreenerSpec) -> list[Signal]:
     return await _batched(universe, 5, work)
 
 
+async def scan_poc(spec: ScreenerSpec) -> list[Signal]:
+    """Уровни POC: ближайший кластер, сигнал при входе в 10 % зону.
+
+    Запускает POC-сканер по каждому символу из ``POC_SYMBOLS`` в ``.env``
+    скринера и возвращает только текущие сигналы (цена в зоне ближайшего
+    кластера). История и состояние зоны хранятся в ``data/poc_history.sqlite``,
+    поэтому повторные сканы быстрые — качается только хвост.
+    """
+    from bot_screener_yrovni.poc_scanner.config import POCConfig
+    from bot_screener_yrovni.poc_scanner.scanner import POCScanner
+
+    env = _env(spec)
+    env_file = PROJECT_ROOT / "bot_screener_yrovni" / ".env"
+    symbols = env.names("POC_SYMBOLS", ())[: spec.max_symbols]
+    if not symbols:
+        return []
+    signals: list[Signal] = []
+    for symbol in symbols:
+        try:
+            scanner = POCScanner(POCConfig.from_env(symbol, env_file), symbol)
+            found = scanner.refresh()
+            scanner.close()
+        except Exception as exc:  # noqa: BLE001 — символ не должен ронять скан
+            logger.warning("POC: ошибка по %s: %s", symbol, exc)
+            continue
+        if found is None:
+            continue
+        side = "LONG" if found.direction == "long" else "SHORT"
+        signals.append(
+            make_signal(
+                screener=spec.name,
+                title=spec.title,
+                symbol=found.symbol,
+                side=side,
+                price=found.entry_price,
+                score=None,
+                label=f"кластер {found.entry_price:g} ({found.distance_pct * 100:.2f} %)",
+                turnover_24h=0.0,
+                found_at=found.ts,
+                detail={
+                    "signal_id": found.signal_id,
+                    "price": round(found.price, 8),
+                    "distance_pct": round(found.distance_pct, 6),
+                    "zone_pct": round(found.zone_pct, 6),
+                    "windows": ",".join(found.windows),
+                    "volume": round(found.volume, 2),
+                },
+            )
+        )
+    return signals
+
+
 ADAPTERS: dict[str, Callable[[ScreenerSpec], Awaitable[list[Signal]]]] = {
     "impulse": scan_impulse,
     "klin": scan_klin,
@@ -708,5 +760,6 @@ ADAPTERS: dict[str, Callable[[ScreenerSpec], Awaitable[list[Signal]]]] = {
     "trend": scan_trend,
     "pump": scan_pump,
     "zakonomer": scan_zakonomer,
+    "yrovni": scan_poc,
     "all": scan_all_coins,
 }

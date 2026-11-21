@@ -11,10 +11,10 @@ import pandas as pd
 import pytest
 
 from bot_screener_yrovni.poc_scanner import klines
+from bot_screener_yrovni.poc_scanner.clusters import cluster_prices, round_level
 from bot_screener_yrovni.poc_scanner.config import POCConfig, get_poc_age_days
 from bot_screener_yrovni.poc_scanner.profile import compute_profile
 from bot_screener_yrovni.poc_scanner.scanner import POCScanner
-from bot_screener_yrovni.poc_scanner.signals import ACTION_PLACE
 from bot_screener_yrovni.poc_scanner.store import LevelState
 from bot_screener_yrovni.poc_scanner.timeutil import to_iso
 
@@ -89,7 +89,8 @@ def patch_history(
         days: int | None = None,
     ) -> pd.DataFrame:
         loaded = frames.get(interval) if frames else frame
-        assert isinstance(loaded, pd.DataFrame)
+        if not isinstance(loaded, pd.DataFrame):
+            loaded = pd.DataFrame()
         scanner._series[interval] = loaded
         return loaded
 
@@ -176,21 +177,17 @@ def test_poc_confirmed_by_volume_without_touch(tmp_path: Path) -> None:
 
 
 def test_price_returns_to_poc_generates_signal(tmp_path: Path) -> None:
-    """Возврат цены к $50 даёт сигнал POC_REACHED с confidence > 0.6."""
+    """Возврат цены к $50 даёт сигнал long с входом на уровне кластера."""
     scanner = make_scanner(tmp_path)
     add_level(scanner, 50.0, 80_000_000.0)
 
-    signals = scanner.check_price_proximity(50.1, atr=0.5, now=NOW)
+    signal = scanner.check_clusters(50.1, now=NOW)
 
-    assert len(signals) == 1
-    signal = signals[0]
-    assert signal.confidence > 0.6
-    assert signal.action == ACTION_PLACE
-    assert signal.touch_count == 1
-    assert signal.proximity_pct == pytest.approx(0.002, rel=0.05)
-    assert signal.order_params["buy_at"] == pytest.approx(49.5)
-    assert signal.order_params["sell_at"] == pytest.approx(50.5)
-    assert signal.order_params["stop_buy"] < signal.order_params["buy_at"]
+    assert signal is not None
+    assert signal.direction == "long"
+    assert signal.entry_price == pytest.approx(50.0)
+    assert signal.distance_pct == pytest.approx(0.002, rel=0.05)
+    assert signal.signal_id == "SOLUSDT:50:long:1"
     assert (tmp_path / "signals.jsonl").exists()
 
 
@@ -211,16 +208,14 @@ def test_close_pocs_merge_into_one_level(tmp_path: Path) -> None:
     assert merged.confirmed is True
 
 
-def test_small_volume_is_not_confirmed_and_gives_no_signal(
-    tmp_path: Path,
-) -> None:
-    """Уровень с объёмом $5M не подтверждён и сигнала не даёт."""
+def test_small_volume_level_still_gives_signal(tmp_path: Path) -> None:
+    """В модели «ближайший кластер» объём уровня не гейт: сигнал по зоне."""
     scanner = make_scanner(tmp_path)
 
     level = add_level(scanner, 50.0, 5_000_000.0)
 
     assert level.confirmed is False
-    assert scanner.check_price_proximity(50.0, now=NOW) == []
+    assert scanner.check_clusters(50.1, now=NOW) is not None
 
 
 def test_recalculation_does_not_inflate_volume(tmp_path: Path) -> None:
@@ -237,19 +232,58 @@ def test_recalculation_does_not_inflate_volume(tmp_path: Path) -> None:
     assert levels[0].source_windows == ("7d",)
 
 
-def test_signal_is_throttled_by_cooldown(tmp_path: Path) -> None:
-    """Второй сигнал по тому же уровню в пределах кулдауна не выдаётся."""
+def test_zone_signal_repeats_only_after_exit(tmp_path: Path) -> None:
+    """Пока цена в зоне — один сигнал; после выхода и возврата — новый эпизод."""
     scanner = make_scanner(tmp_path)
     add_level(scanner, 50.0, 80_000_000.0)
 
-    first = scanner.check_price_proximity(50.0, now=NOW)
-    second = scanner.check_price_proximity(
-        50.0,
-        now=NOW + timedelta(seconds=60),
-    )
+    first = scanner.check_clusters(50.1, now=NOW)
+    second = scanner.check_clusters(50.1, now=NOW + timedelta(minutes=5))
+    scanner.check_clusters(60.0, now=NOW + timedelta(minutes=10))
+    third = scanner.check_clusters(50.1, now=NOW + timedelta(minutes=15))
 
-    assert len(first) == 1
-    assert second == []
+    assert first is not None
+    assert second is None
+    assert third is not None
+    assert third.signal_id != first.signal_id
+    assert third.signal_id.endswith(":2")
+
+
+def test_zone_state_survives_reopen(tmp_path: Path) -> None:
+    """Эпизод зоны хранится в БД: после рестарта дубля нет."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 80_000_000.0)
+    assert scanner.check_clusters(50.1, now=NOW) is not None
+    scanner.close()
+
+    reopened = POCScanner(make_config(tmp_path), "SOLUSDT")
+    try:
+        assert reopened.check_clusters(50.1, now=NOW + timedelta(minutes=5)) is None
+    finally:
+        reopened.close()
+
+
+def test_only_nearest_cluster_is_monitored(tmp_path: Path) -> None:
+    """Дальний кластер игнорируется, даже если цена ближе к нему, чем к другому."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0)
+    add_level(scanner, 90.0, 40_000_000.0)
+
+    assert scanner.check_clusters(80.0, now=NOW) is None
+    signal = scanner.check_clusters(88.0, now=NOW)
+
+    assert signal is not None
+    assert signal.direction == "short"
+    assert signal.entry_price == pytest.approx(90.0)
+
+
+def test_clusters_merge_transitively() -> None:
+    """A~B и B~C склеивают три уровня; уровень кластера — среднее."""
+    groups = cluster_prices([100.0, 104.5, 108.9], merge_pct=0.05)
+
+    assert len(groups) == 1
+    assert groups[0] == [100.0, 104.5, 108.9]
+    assert round_level(sum(groups[0]) / 3) == pytest.approx(104.5)
 
 
 def test_windows_split_hourly_and_four_hour() -> None:
@@ -355,8 +389,6 @@ def test_new_symbol_skips_young_windows(
         "7d",
         "14d",
         "30d",
-        "180d",
-        "365d",
         "730d",
     }
     assert level.poc_age_days == 30
@@ -364,17 +396,16 @@ def test_new_symbol_skips_young_windows(
     assert level.confirmed is True
 
 
-def test_signal_uses_oldest_window_age(tmp_path: Path) -> None:
-    """Уровень из 7d и 30d проходит фильтр, возраст = 30, сигнал есть."""
+def test_signal_uses_merged_level_age(tmp_path: Path) -> None:
+    """Уровень из 7d и 30d проходит фильтр возраста (30 дней) и даёт сигнал."""
     scanner = make_scanner(tmp_path)
     add_level(scanner, 50.0, 40_000_000.0, windows=("7d",))
     add_level(scanner, 50.3, 40_000_000.0, windows=("30d",))
 
-    signals = scanner.check_price_proximity(50.1, now=NOW)
+    signal = scanner.check_clusters(50.1, now=NOW)
 
-    assert len(signals) == 1
-    assert signals[0].poc_age_days == 30
-    assert signals[0].action == ACTION_PLACE
+    assert signal is not None
+    assert signal.entry_price == pytest.approx(50.0)
 
 
 def test_young_level_gives_no_signal(tmp_path: Path) -> None:
@@ -384,7 +415,7 @@ def test_young_level_gives_no_signal(tmp_path: Path) -> None:
     level = add_level(scanner, 50.0, 80_000_000.0, windows=("3d",))
 
     assert level.poc_age_days == 3
-    assert scanner.check_price_proximity(50.0, now=NOW) == []
+    assert scanner.check_clusters(50.0, now=NOW) is None
 
 
 def test_first_created_ts_is_window_start(
@@ -448,7 +479,7 @@ def test_short_history_creates_partial_windows(
 
     assert len(levels) == 1
     level = levels[0]
-    assert set(level.source_windows) == {"180d", "365d", "730d"}
+    assert set(level.source_windows) == {"730d"}
     assert level.partial_window is True
     assert level.poc_age_days == 128
 
@@ -553,4 +584,37 @@ def test_young_calendar_level_is_filtered(
     assert november.segment_type == "calendar_month"
     assert november.poc_age_days == 3
     assert signal is None
-    assert scanner.check_price_proximity(60.0, now=NOW) == []
+    assert scanner.check_clusters(60.0, now=NOW) is None
+
+
+def test_price_for_zone_comes_from_closed_5m_candle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Цена сравнения — закрытая 5m свеча, а не 1h/4h (п.6)."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0)
+    frames = {
+        "5": make_frame(days=1, price=50.5),
+        "60": make_frame(days=30, price=60.0),
+        "240": make_history(NOW - timedelta(days=30), NOW, price=60.0),
+    }
+    patch_history(scanner, monkeypatch, frames)
+
+    signal = scanner.refresh(now=NOW)
+
+    assert signal is not None
+    assert signal.entry_price == pytest.approx(50.0)
+    assert signal.price == pytest.approx(50.5)
+
+
+def test_prune_removes_levels_of_removed_windows(tmp_path: Path) -> None:
+    """После смены окон старые rolling-уровни удаляются, актуальные остаются."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0, windows=("180d",))
+    add_level(scanner, 60.0, 40_000_000.0, windows=("30d",))
+
+    removed = scanner.store.prune_stale("SOLUSDT", {"30d"})
+
+    assert removed == 1
+    assert [level.poc_price for level in scanner.store.levels("SOLUSDT")] == [60.0]

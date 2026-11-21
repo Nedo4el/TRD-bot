@@ -8,9 +8,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
+from bot_screener_yrovni.poc_scanner.clusters import (
+    build_clusters,
+    direction_for,
+    nearest_cluster,
+    zone_distance,
+)
 from bot_screener_yrovni.poc_scanner.config import (
     HOURS_PER_CANDLE,
     INTERVAL_FOUR_HOUR,
@@ -21,14 +26,9 @@ from bot_screener_yrovni.poc_scanner.config import (
 )
 from bot_screener_yrovni.poc_scanner.klines import KlineCache, RateLimiter
 from bot_screener_yrovni.poc_scanner.profile import compute_profile
-from bot_screener_yrovni.poc_scanner.signals import (
-    ACTION_OBSERVE,
-    ACTION_PLACE,
-    POCSignal,
-)
-from bot_screener_yrovni.poc_scanner.store import LevelState, POCStore
+from bot_screener_yrovni.poc_scanner.signals import POCSignal
+from bot_screener_yrovni.poc_scanner.store import LevelState, POCStore, ZoneState
 from bot_screener_yrovni.poc_scanner.timeutil import (
-    parse_iso,
     to_iso,
     utc_now,
     utc_now_iso,
@@ -41,32 +41,11 @@ WALL_MIN_WINDOWS = 3
 MIN_PARTIAL_CANDLES = 2
 
 
-def compute_atr(df: pd.DataFrame, period: int = 14) -> float:
-    """Средний истинный диапазон по последним ``period`` свечам."""
-    if len(df) < period + 1:
-        return 0.0
-    high = df["high"].to_numpy(dtype=float)
-    low = df["low"].to_numpy(dtype=float)
-    close = df["close"].to_numpy(dtype=float)
-    prev_close = close[:-1]
-    true_range = np.maximum(
-        high[1:] - low[1:],
-        np.maximum(np.abs(high[1:] - prev_close), np.abs(low[1:] - prev_close)),
-    )
-    return float(true_range[-period:].mean())
-
-
 def _window_days(name: str) -> int:
     try:
         return parse_window_days(name)
     except ValueError:
         return 0
-
-
-def _window_sort_key(name: str) -> tuple[int, int, str]:
-    """Окна по возрастанию дней, затем календарные отрезки по имени."""
-    days = _window_days(name)
-    return (0, days, name) if days > 0 else (1, 0, name)
 
 
 def _span_days(candles: pd.DataFrame, interval: str) -> int:
@@ -334,99 +313,106 @@ class POCScanner:
 
     # --- сигналы ---------------------------------------------------------
 
-    def check_price_proximity(
+    def check_clusters(
         self,
         current_price: float,
-        atr: float = 0.0,
         now: datetime | None = None,
-    ) -> list[POCSignal]:
-        """Сигналы по уровням, к которым цена подошла вплотную.
+    ) -> POCSignal | None:
+        """Сигнал, когда цена вошла в зону ближайшего кластера.
 
-        Касание увеличивает ``touch_count`` не чаще, чем раз в
-        ``TOUCH_COOLDOWN_SEC``; сигнал по одному уровню — не чаще
-        ``SIGNAL_COOLDOWN_SEC``.
+        Мониторится только ближайший к цене кластер. Сигнал выдаётся один
+        раз за вход в зону: пока цена не вышла из зоны и не вернулась,
+        повторного сигнала нет (состояние переживает рестарт).
         """
         moment = now or utc_now()
         now_iso = to_iso(moment)
-        signals: list[POCSignal] = []
-
-        for level in self.store.levels(self.symbol):
-            if level.poc_price <= 0 or current_price <= 0:
-                continue
-            age_days = self._level_age_days(level)
-            if not (
-                self.config.min_poc_age_days <= age_days <= self.config.max_poc_age_days
-            ):
-                continue
-            proximity = abs(current_price - level.poc_price) / level.poc_price
-            if proximity > self.config.touch_proximity_pct:
-                continue
-
-            touch_count = level.touch_count
-            if self._touch_allowed(level, moment):
-                if level.id is not None:
-                    self.store.record_touch(level.id, now_iso)
-                touch_count += 1
-
-            strong = level.confirmed or (
-                level.total_volume_at_level >= self.config.min_signal_volume
-            )
-            if not strong or not self._signal_allowed(level, moment):
-                continue
-
-            confidence = self._confidence(level, age_days, touch_count)
-            signal = POCSignal(
-                ts=now_iso,
-                symbol=self.symbol,
-                poc_price=level.poc_price,
-                poc_windows=list(level.source_windows),
-                poc_age_days=age_days,
-                total_volume_at_level=level.total_volume_at_level,
-                touch_count=touch_count,
-                is_wall=self._is_wall(level),
-                proximity_pct=proximity,
-                vah=level.vah,
-                val=level.val,
-                confidence=confidence,
-                action=(
-                    ACTION_PLACE
-                    if confidence >= self.config.min_confidence
-                    else ACTION_OBSERVE
-                ),
-                side_hint="both",
-                order_params=self._order_params(level, atr),
-            )
-            payload = signal.to_dict()
-            self.store.log_signal(payload)
-            _append_jsonl(self.config.signal_log, payload)
-            logger.info(
-                "СИГНАЛ %s POC=%.10g proximity=%.3f%% confidence=%.3f %s",
-                self.symbol,
-                signal.poc_price,
-                signal.proximity_pct * 100,
-                signal.confidence,
-                signal.action,
-            )
-            signals.append(signal)
-        return signals
-
-    def combine_signals(
-        self,
-        signals: list[POCSignal],
-    ) -> POCSignal | None:
-        """Свести сигналы символа в один: сильнейший + окна соседних уровней."""
-        if not signals:
+        if current_price <= 0:
             return None
-        best = max(signals, key=lambda item: item.confidence)
-        windows: set[str] = set(best.poc_windows)
-        for signal in signals:
-            if signal is best or best.poc_price <= 0:
-                continue
-            relative = abs(signal.poc_price - best.poc_price) / best.poc_price
-            if relative <= self.config.merge_poc_pct:
-                windows.update(signal.poc_windows)
-        best.poc_windows = sorted(windows, key=_window_sort_key)
-        return best
+        levels = [
+            level
+            for level in self.store.levels(self.symbol)
+            if self._is_tradeable(level)
+        ]
+        target = nearest_cluster(
+            build_clusters(levels, self.config.cluster_merge_pct),
+            current_price,
+        )
+        if target is None:
+            return None
+
+        distance = zone_distance(current_price, target.level)
+        state = self.store.get_zone_state(self.symbol)
+        if distance > self.config.zone_pct:
+            if state is not None and state.in_zone:
+                self.store.save_zone_state(
+                    ZoneState(
+                        symbol=self.symbol,
+                        level_price=target.level,
+                        direction=state.direction,
+                        in_zone=False,
+                        episode=state.episode,
+                        updated_ts=now_iso,
+                    )
+                )
+                logger.info(
+                    "%s: цена вышла из зоны кластера %.10g — сигнал снова разрешён",
+                    self.symbol,
+                    target.level,
+                )
+            return None
+
+        direction = direction_for(current_price, target.level)
+        if direction is None:
+            return None
+        same_episode = (
+            state is not None
+            and state.in_zone
+            and state.direction == direction
+            and target.level > 0
+            and abs(state.level_price - target.level) / target.level
+            < self.config.cluster_merge_pct
+        )
+        if same_episode:
+            return None
+
+        episode = (state.episode if state is not None else 0) + 1
+        self.store.save_zone_state(
+            ZoneState(
+                symbol=self.symbol,
+                level_price=target.level,
+                direction=direction,
+                in_zone=True,
+                episode=episode,
+                updated_ts=now_iso,
+            )
+        )
+        signal = POCSignal(
+            ts=now_iso,
+            symbol=self.symbol,
+            direction=direction,
+            entry_price=target.level,
+            price=current_price,
+            distance_pct=distance,
+            zone_pct=self.config.zone_pct,
+            signal_id=f"{self.symbol}:{target.level:.10g}:{direction}:{episode}",
+            members=list(target.members),
+            windows=list(target.windows),
+            volume=target.volume,
+        )
+        payload = signal.to_dict()
+        self.store.log_signal(payload)
+        _append_jsonl(self.config.signal_log, payload)
+        logger.info(
+            "СИГНАЛ %s %s entry=%.10g (цена %.10g, %.2f%%) кластер из %d уровней: %s",
+            self.symbol,
+            direction,
+            target.level,
+            current_price,
+            distance * 100,
+            target.size,
+            ",".join(target.windows),
+        )
+        return signal
 
     def refresh(
         self,
@@ -442,7 +428,17 @@ class POCScanner:
                 logger.warning(
                     "история %s %s недоступна: %s", self.symbol, interval, exc
                 )
+        try:
+            self.load_history(self.config.price_interval, moment, days=1)
+        except Exception as exc:  # noqa: BLE001 — цена не должна ронять цикл
+            logger.warning(
+                "цена %s %s недоступна: %s",
+                self.symbol,
+                self.config.price_interval,
+                exc,
+            )
 
+        winners = self._span_winners()
         statuses: list[str] = []
         for spec in self.config.specs:
             age_days = get_poc_age_days(spec.name)
@@ -452,6 +448,11 @@ class POCScanner:
             frame = self._series.get(spec.interval)
             if frame is None or len(frame) < MIN_PARTIAL_CANDLES:
                 statuses.append(f"{spec.name}=skip(no_history)")
+                continue
+            span = min(len(frame), spec.candles)
+            winner = winners.get((spec.interval, span))
+            if winner is None or winner.name != spec.name:
+                statuses.append(f"{spec.name}=skip(duplicate_span={span})")
                 continue
             if len(frame) < spec.candles:
                 self._warn_short_history(spec, len(frame))
@@ -471,22 +472,44 @@ class POCScanner:
         if price <= 0:
             logger.warning("%s: нет цены для проверки близости", self.symbol)
             return None
-        frame_1h = self._series.get("60")
-        atr = (
-            compute_atr(frame_1h, self.config.atr_period)
-            if frame_1h is not None and not frame_1h.empty
-            else 0.0
-        )
-        return self.combine_signals(self.check_price_proximity(price, atr, moment))
+        return self.check_clusters(price, moment)
 
     # --- вспомогательное -------------------------------------------------
 
     def _last_price(self) -> float:
-        for interval in ("60", "240"):
+        """Цена последней закрытой свечи: 5m (п.6), затем 1h и 4h."""
+        for interval in (self.config.price_interval, "60", "240"):
             frame = self._series.get(interval)
             if frame is not None and not frame.empty:
                 return float(frame["close"].iloc[-1])
         return 0.0
+
+    def _span_winners(self) -> dict[tuple[str, int], WindowSpec]:
+        """По одному окну на каждый фактический охват истории.
+
+        Частичные окна с одинаковым охватом дают одинаковый POC (SOXSUSDT:
+        180d/365d/730d на 128 днях) — считаем только самое длинное из них,
+        иначе один и тот же оборот суммируется несколько раз.
+        """
+        winners: dict[tuple[str, int], WindowSpec] = {}
+        for spec in self.config.specs:
+            if get_poc_age_days(spec.name) < self.config.min_poc_age_days:
+                continue
+            frame = self._series.get(spec.interval)
+            if frame is None or len(frame) < MIN_PARTIAL_CANDLES:
+                continue
+            key = (spec.interval, min(len(frame), spec.candles))
+            current = winners.get(key)
+            if current is None or spec.days > current.days:
+                winners[key] = spec
+        return winners
+
+    def _is_tradeable(self, level: LevelState) -> bool:
+        """Уровень участвует в кластерах, если его возраст в допуске."""
+        if level.poc_price <= 0:
+            return False
+        age_days = self._level_age_days(level)
+        return self.config.min_poc_age_days <= age_days <= self.config.max_poc_age_days
 
     def _warn_short_history(self, spec: WindowSpec, available: int) -> None:
         """Предупредить один раз, что окну не хватает истории (partial)."""
@@ -546,52 +569,8 @@ class POCScanner:
             default=0,
         )
 
-    def _touch_allowed(self, level: LevelState, now: datetime) -> bool:
-        if not level.last_touch_ts:
-            return True
-        try:
-            last = parse_iso(level.last_touch_ts)
-        except ValueError:
-            return True
-        return (now - last).total_seconds() >= self.config.touch_cooldown_sec
-
-    def _signal_allowed(self, level: LevelState, now: datetime) -> bool:
-        last_text = self.store.last_signal_ts(self.symbol, level.poc_price)
-        if last_text is None:
-            return True
-        try:
-            last = parse_iso(last_text)
-        except ValueError:
-            return True
-        return (now - last).total_seconds() >= self.config.signal_cooldown_sec
-
-    def _confidence(
-        self,
-        level: LevelState,
-        age_days: int,
-        touch_count: int,
-    ) -> float:
-        """Вес уровня: объём 50 %, совпадение окон 30 %, возраст и касания по 10 %."""
-        threshold = self.config.confirm_volume_threshold
-        volume_part = (
-            level.total_volume_at_level / threshold * 0.5 if threshold > 0 else 0.0
-        )
-        windows_total = max(len(self.config.windows), 1)
-        windows_part = len(level.source_windows) / windows_total * 0.3
-        age_part = age_days / 365 * 0.1
-        touch_part = min(touch_count / 10, 1.0) * 0.1
-        return min(1.0, volume_part + windows_part + age_part + touch_part)
-
     def _is_wall(self, level: LevelState) -> bool:
         return (
             level.total_volume_at_level >= self.config.wall_volume_threshold
             or len(level.source_windows) >= WALL_MIN_WINDOWS
         )
-
-    @staticmethod
-    def _order_params(level: LevelState, atr: float) -> dict[str, float]:
-        params = {"buy_at": level.val, "sell_at": level.vah}
-        if atr > 0:
-            params["stop_buy"] = level.val - 0.5 * atr
-            params["stop_sell"] = level.vah + 0.5 * atr
-        return params

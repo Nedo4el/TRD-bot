@@ -3,6 +3,7 @@
 Примеры:
     python -m bot_screener_yrovni.poc_scanner.main SOLUSDT --once
     python -m bot_screener_yrovni.poc_scanner.main SOLUSDT ETHUSDT
+    python -m bot_screener_yrovni.poc_scanner.main SOLUSDT --prune
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from urllib.request import Request, urlopen
 
 from bot_screener_yrovni.poc_scanner.config import POCConfig
 from bot_screener_yrovni.poc_scanner.scanner import POCScanner
-from bot_screener_yrovni.poc_scanner.signals import ACTION_PLACE, POCSignal
+from bot_screener_yrovni.poc_scanner.signals import POCSignal
 from core.logger import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -86,15 +87,6 @@ def run_once(scanners: list[POCScanner]) -> int:
         if found is None:
             logger.info("%s: сигналов нет", scanner.symbol)
             continue
-        if found.action != ACTION_PLACE:
-            logger.info(
-                "%s: POC %.10g рядом, но confidence %.3f < %.2f — наблюдаем",
-                scanner.symbol,
-                found.poc_price,
-                found.confidence,
-                scanner.config.min_confidence,
-            )
-            continue
         if post_signal(
             found,
             scanner.config.signal_endpoint,
@@ -104,10 +96,24 @@ def run_once(scanners: list[POCScanner]) -> int:
     return sent
 
 
+def prune(scanners: list[POCScanner]) -> int:
+    """Удалить уровни, чьи окна больше не считаются (после смены POC_WINDOWS)."""
+    total = 0
+    for scanner in scanners:
+        removed = scanner.store.prune_stale(
+            scanner.symbol,
+            set(scanner.config.windows),
+        )
+        logger.info("%s: удалено устаревших уровней: %d", scanner.symbol, removed)
+        total += removed
+    return total
+
+
 def main() -> None:
     """Собрать сканеры и крутить цикл (или один проход с ``--once``)."""
     setup_logging("logs/poc_scanner.log")
     once = any(arg.lower() == "--once" for arg in sys.argv[1:])
+    prune_only = any(arg.lower() == "--prune" for arg in sys.argv[1:])
     symbols = symbols_from_env()
     if not symbols:
         logger.error("не заданы символы: укажите их аргументами или в POC_SYMBOLS")
@@ -129,6 +135,9 @@ def main() -> None:
         signal_module.signal(signal_module.SIGTERM, _handle)
 
     try:
+        if prune_only:
+            prune(scanners)
+            return
         if once:
             run_once(scanners)
             return

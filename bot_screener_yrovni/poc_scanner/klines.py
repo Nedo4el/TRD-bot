@@ -20,7 +20,11 @@ logger = get_logger(__name__)
 BYBIT_KLINE_URL = "https://api.bybit.com/v5/market/kline"
 CATEGORY = "linear"
 MAX_LIMIT = 1000
-INTERVAL_MS: dict[str, int] = {"60": 3_600_000, "240": 14_400_000}
+INTERVAL_MS: dict[str, int] = {
+    "5": 300_000,
+    "60": 3_600_000,
+    "240": 14_400_000,
+}
 FRAME_COLUMNS = ["ts", "open", "high", "low", "close", "volume", "turnover"]
 
 

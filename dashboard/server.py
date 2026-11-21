@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from starlette.applications import Starlette
@@ -20,6 +21,7 @@ from starlette.routing import Route
 from dashboard import tiger
 from dashboard.config import DashboardConfig
 from dashboard.health import build_robot_health
+from dashboard.poc_signals import AutoTradeFlag, PocSignalStore
 from dashboard.positions import close_robot_position, list_open_positions
 from dashboard.robots import (
     get_all_robots_status,
@@ -54,6 +56,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     app.state.scheduler = scheduler
     app.state.trade_store = trade_store
     app.state.symbols_cache = SymbolsCache()
+    app.state.poc_signals = PocSignalStore()
     scheduler.start()
     try:
         yield
@@ -73,6 +76,107 @@ async def api_signals(request: Request) -> JSONResponse:
     """Текущий снимок сигналов и статусов."""
     store: SignalStore = request.app.state.store
     return JSONResponse(store.snapshot(), headers=_NO_CACHE)
+
+
+def _signal_error(body: dict[str, Any]) -> str | None:
+    """Проверить тело POC-сигнала; вернуть текст ошибки или None."""
+    signal_id = str(body.get("signal_id") or "").strip()
+    symbol = str(body.get("symbol") or "").strip().upper()
+    direction = str(body.get("direction") or "").strip().lower()
+    if not signal_id:
+        return "signal_id обязателен"
+    if _bad_symbol(symbol):
+        return "неверный тикер"
+    if direction not in ("long", "short"):
+        return "direction: long или short"
+    try:
+        if float(body.get("entry_price", 0)) <= 0:
+            return "entry_price: положительное число ожидается"
+        float(body.get("price", 0))
+    except (TypeError, ValueError):
+        return "цена: число ожидается"
+    return None
+
+
+async def api_signal_receive(request: Request) -> JSONResponse:
+    """Принять сигнал POC-скринера (идемпотентно по signal_id)."""
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"ok": False, "error": "JSON object required"}, status_code=400
+        )
+    error = _signal_error(body)
+    if error:
+        return JSONResponse({"ok": False, "error": error}, status_code=400)
+    store: PocSignalStore = request.app.state.poc_signals
+    record, created = store.add(body)
+    return JSONResponse(
+        {
+            "ok": True,
+            "duplicate": not created,
+            "signal_id": record.signal_id,
+            "state": record.state,
+        },
+        headers=_NO_CACHE,
+    )
+
+
+async def api_poc_signals(request: Request) -> JSONResponse:
+    """Последние POC-сигналы и состояние AUTO_TRADE."""
+    store: PocSignalStore = request.app.state.poc_signals
+    return JSONResponse(store.snapshot(), headers=_NO_CACHE)
+
+
+async def api_poc_confirm(request: Request) -> JSONResponse:
+    """Подтвердить POC-сигнал: {"signal_id": "..."}."""
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"ok": False, "error": "JSON object required"}, status_code=400
+        )
+    signal_id = str(body.get("signal_id") or "").strip()
+    if not signal_id:
+        return JSONResponse(
+            {"ok": False, "error": "signal_id обязателен"}, status_code=400
+        )
+    store: PocSignalStore = request.app.state.poc_signals
+    record = store.confirm(signal_id)
+    if record is None:
+        return JSONResponse({"ok": False, "error": "сигнал не найден"}, status_code=404)
+    return JSONResponse({"ok": True, "signal": record.to_dict()}, headers=_NO_CACHE)
+
+
+async def api_auto_trade_get(request: Request) -> JSONResponse:
+    """Текущий режим AUTO_TRADE."""
+    return JSONResponse(
+        {"ok": True, "auto_trade": AutoTradeFlag.load().auto_trade},
+        headers=_NO_CACHE,
+    )
+
+
+async def api_auto_trade_post(request: Request) -> JSONResponse:
+    """Переключить AUTO_TRADE: {"auto_trade": true|false}."""
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict) or "auto_trade" not in body:
+        return JSONResponse(
+            {"ok": False, "error": "auto_trade обязателен"}, status_code=400
+        )
+    flag = AutoTradeFlag(auto_trade=bool(body["auto_trade"]))
+    flag.save()
+    logger.info("AUTO_TRADE: %s", flag.auto_trade)
+    return JSONResponse(
+        {"ok": True, "auto_trade": flag.auto_trade},
+        headers=_NO_CACHE,
+    )
 
 
 async def api_scan_all(request: Request) -> JSONResponse:
@@ -457,6 +561,11 @@ def create_app() -> Starlette:
     routes = [
         Route("/", homepage),
         Route("/api/signals", api_signals),
+        Route("/api/signal", api_signal_receive, methods=["POST"]),
+        Route("/api/poc-signals", api_poc_signals),
+        Route("/api/poc-signals/confirm", api_poc_confirm, methods=["POST"]),
+        Route("/api/auto-trade", api_auto_trade_get),
+        Route("/api/auto-trade", api_auto_trade_post, methods=["POST"]),
         Route("/api/scan", api_scan_all, methods=["POST"]),
         Route("/api/scan/{name}", api_scan_one, methods=["POST"]),
         Route("/api/open-tiger", api_open_tiger, methods=["POST"]),

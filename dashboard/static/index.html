@@ -375,6 +375,7 @@
 
    <div class="tabs">
       <button class="tab-btn active" id="tabScreeners">Скринеры</button>
+      <button class="tab-btn" id="tabPoc">POC-сигналы</button>
       <button class="tab-btn" id="tabRobots">Роботы</button>
       <button class="tab-btn" id="tabStats">Статистика сделок</button>
       <button class="tab-btn" id="tabPositions">Позиции</button>
@@ -677,6 +678,39 @@
         на один ключ подвешено слишком много монет. «Сеть» — таймауты и
         реконнекты WS/REST (шум, не ошибка логики). stderr в норме 0 байт —
         там лежит traceback упавшего процесса.
+      </div>
+    </div>
+
+    <div class="tab-content" id="contentPoc">
+      <h2>POC-сигналы</h2>
+      <div style="margin-bottom: 12px; display: flex; gap: 18px; flex-wrap: wrap; align-items: center; font-size: 13px;">
+        <div class="chk-field" style="margin: 0;">
+          <input type="checkbox" id="autoTrade" />
+          <label for="autoTrade">AUTO_TRADE — торговать сразу по сигналу</label>
+        </div>
+        <span class="muted">Ожидают подтверждения: <b id="pocPending">0</b></span>
+        <span class="muted">В работе: <b id="pocActive">0</b></span>
+        <span class="muted" id="pocUpdated">—</span>
+        <button class="primary" id="pocRefresh">Обновить</button>
+      </div>
+      <div class="table-wrap" style="max-height: 62vh;">
+        <table>
+          <thead>
+            <tr>
+              <th>Состояние</th><th>Монета</th><th>Направление</th>
+              <th>Вход (уровень)</th><th>Цена</th><th>До уровня</th>
+              <th>Окна</th><th>Сигнал (МСК)</th><th>Действие</th>
+            </tr>
+          </thead>
+          <tbody id="pocBody">
+            <tr><td colspan="9" class="empty">Загрузка…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="muted" style="margin-top: 6px; font-size: 12px;">
+        Сигнал приходит, когда цена входит в 10 % зону ближайшего кластера
+        POC-уровней (уровни ближе 5 % объединены, вход — среднее цен).
+        TP и SL считает робот. При AUTO_TRADE=false сигнал ждёт подтверждения.
       </div>
     </div>
    </div>
@@ -2046,6 +2080,10 @@ function switchTab(tabName) {
     $("tabHealth").classList.add("active");
     $("contentHealth").classList.add("active");
     loadHealth();
+  } else if (tabName === "poc") {
+    $("tabPoc").classList.add("active");
+    $("contentPoc").classList.add("active");
+    loadPocSignals();
   }
 }
 
@@ -2054,6 +2092,7 @@ $("tabRobots").addEventListener("click", () => switchTab("robots"));
 $("tabStats").addEventListener("click", () => switchTab("stats"));
 $("tabPositions").addEventListener("click", () => switchTab("positions"));
 $("tabHealth").addEventListener("click", () => switchTab("health"));
+$("tabPoc").addEventListener("click", () => switchTab("poc"));
 $("posRefresh").addEventListener("click", loadPositions);
 $("healthRefresh").addEventListener("click", loadHealth);
 $("robotRefresh").addEventListener("click", loadRobots);
@@ -2190,13 +2229,101 @@ $("statRobot").addEventListener("change", () => {
   loadStats();
 });
 
+// ==================== POC-сигналы ====================
+
+async function loadPocSignals() {
+  try {
+    const res = await fetch("/api/poc-signals", { cache: "no-store" });
+    const data = await res.json();
+    renderPocSignals(data);
+  } catch (err) {
+    $("pocBody").innerHTML =
+      `<tr><td colspan="9" class="empty">Ошибка: ${esc(err.message)}</td></tr>`;
+  }
+}
+
+function renderPocSignals(data) {
+  $("autoTrade").checked = !!data.auto_trade;
+  $("pocPending").textContent = data.pending || 0;
+  $("pocActive").textContent = data.active || 0;
+  $("pocUpdated").textContent = "Обновлено: " + fmtClock(data.generated_at);
+  const rows = (data.signals || []).map((s) => {
+    const pending = s.state === "pending";
+    const stateCell = pending
+      ? '<span class="muted">ожидает</span>'
+      : '<span style="color:var(--green)">в работе</span>';
+    const dirCls = s.direction === "long" ? "LONG" : "SHORT";
+    const dirText = s.direction === "long" ? "LONG" : "SHORT";
+    const action = pending
+      ? `<button class="primary poc-confirm" data-id="${esc(s.signal_id)}">Подтвердить</button>`
+      : "—";
+    const distance = ((s.distance_pct || 0) * 100).toFixed(2) + "%";
+    return `<tr>
+      <td>${stateCell}</td>
+      <td>${esc(s.symbol)}</td>
+      <td><span class="badge ${dirCls}">${dirText}</span></td>
+      <td>${fmtPrice(s.entry_price)}</td>
+      <td>${fmtPrice(s.price)}</td>
+      <td>${distance}</td>
+      <td class="muted" style="font-size:12px">${esc((s.windows || []).join(", "))}</td>
+      <td class="time">${fmtClock(s.ts)}</td>
+      <td>${action}</td>
+    </tr>`;
+  }).join("");
+  $("pocBody").innerHTML = rows || '<tr><td colspan="9" class="empty">Сигналов нет</td></tr>';
+  $("pocBody").querySelectorAll(".poc-confirm").forEach((btn) => {
+    btn.addEventListener("click", () => confirmPocSignal(btn.dataset.id));
+  });
+}
+
+async function confirmPocSignal(signalId) {
+  try {
+    const res = await fetch("/api/poc-signals/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ signal_id: signalId }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+    toast("Сигнал подтверждён");
+    loadPocSignals();
+  } catch (err) {
+    toast("Не удалось подтвердить: " + err.message, true);
+  }
+}
+
+async function toggleAutoTrade() {
+  const wanted = $("autoTrade").checked;
+  try {
+    const res = await fetch("/api/auto-trade", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ auto_trade: wanted }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+    toast(data.auto_trade ? "AUTO_TRADE включён" : "AUTO_TRADE выключен");
+    loadPocSignals();
+  } catch (err) {
+    $("autoTrade").checked = !wanted;
+    toast("Не удалось переключить: " + err.message, true);
+  }
+}
+
+$("pocRefresh").addEventListener("click", loadPocSignals);
+$("autoTrade").addEventListener("change", toggleAutoTrade);
+
 schedule();
 load();
 loadSettings();
 loadImpulseSettings();
 loadRobotStatus();
 loadPositions();
+loadPocSignals();
 setInterval(loadPositions, 10000);
+setInterval(() => {
+  if ($("contentPoc").classList.contains("active")) loadPocSignals();
+}, 10000);
 setInterval(() => {
   if ($("contentHealth").classList.contains("active")) loadHealth();
 }, 15000);

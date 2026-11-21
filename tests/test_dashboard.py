@@ -71,6 +71,7 @@ def test_registry_matches_expected_screeners() -> None:
         "trend",
         "pump",
         "zakonomer",
+        "yrovni",
         "all",
     }
     assert all(spec.interval_sec >= MIN_INTERVAL_SEC for spec in SCREENERS)
