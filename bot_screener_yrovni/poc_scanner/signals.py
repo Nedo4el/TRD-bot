@@ -1,60 +1,54 @@
-"""Сигнал POC_REACHED — то, что скринер отправляет роботу."""
+"""Сигнал кластера уровней — то, что скринер отправляет в дашборд.
+
+Модель «ближайший кластер»: сигнал появляется, когда цена входит в 10 %
+зону ближайшего кластера POC-уровней. TP и SL считает робот по параметрам
+пользователя — скринер передаёт только символ, направление, цену входа
+(уровень кластера) и время.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
-SIGNAL_TYPE = "POC_REACHED"
-ACTION_PLACE = "PLACE_LIMIT_ORDERS"
-ACTION_OBSERVE = "OBSERVE"
+SIGNAL_TYPE = "POC_CLUSTER"
 
 
 @dataclass
 class POCSignal:
-    """Подход цены к подтверждённому POC-уровню.
+    """Вход цены в зону ближайшего кластера.
 
-    ``action`` равен ``PLACE_LIMIT_ORDERS`` только при
-    ``confidence >= MIN_CONFIDENCE``; иначе ``OBSERVE`` — робот не торгует,
-    но уровень виден в журнале.
+    ``signal_id`` уникален для эпизода входа в зону
+    (``symbol:level:direction:episode``) и служит ключом идемпотентности
+    приёмника: повторная отправка того же сигнала не создаёт дубль.
     """
 
     ts: str
     symbol: str
-    poc_price: float
-    poc_windows: list[str] = field(default_factory=list)
-    poc_age_days: int = 0
-    total_volume_at_level: float = 0.0
-    touch_count: int = 0
-    is_wall: bool = False
-    proximity_pct: float = 0.0
-    vah: float = 0.0
-    val: float = 0.0
-    confidence: float = 0.0
-    action: str = ACTION_PLACE
-    side_hint: str = "both"
-    order_params: dict[str, float] = field(default_factory=dict)
+    direction: str
+    entry_price: float
+    price: float
+    distance_pct: float
+    zone_pct: float
+    signal_id: str
+    members: list[float] = field(default_factory=list)
+    windows: list[str] = field(default_factory=list)
+    volume: float = 0.0
     signal_type: str = SIGNAL_TYPE
 
     def to_dict(self) -> dict[str, Any]:
-        """JSON-представление сигнала (см. ТЗ, раздел «Формат сигнала»)."""
+        """JSON-представление сигнала для POST /api/signal."""
         return {
             "ts": self.ts,
             "symbol": self.symbol,
             "type": self.signal_type,
-            "poc_price": round(float(self.poc_price), 10),
-            "poc_windows": list(self.poc_windows),
-            "poc_age_days": int(self.poc_age_days),
-            "total_volume_at_level": round(float(self.total_volume_at_level), 2),
-            "touch_count": int(self.touch_count),
-            "is_wall": bool(self.is_wall),
-            "proximity_pct": round(float(self.proximity_pct), 6),
-            "vah": round(float(self.vah), 10),
-            "val": round(float(self.val), 10),
-            "confidence": round(float(self.confidence), 4),
-            "action": self.action,
-            "side_hint": self.side_hint,
-            "order_params": {
-                key: round(float(value), 10) for key, value in self.order_params.items()
-            },
+            "signal_id": self.signal_id,
+            "direction": self.direction,
+            "entry_price": round(float(self.entry_price), 10),
+            "price": round(float(self.price), 10),
+            "distance_pct": round(float(self.distance_pct), 6),
+            "zone_pct": round(float(self.zone_pct), 6),
+            "members": [round(float(price), 10) for price in self.members],
+            "windows": list(self.windows),
+            "volume": round(float(self.volume), 2),
         }
