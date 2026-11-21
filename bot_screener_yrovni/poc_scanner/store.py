@@ -14,7 +14,7 @@ from bot_screener_yrovni.poc_scanner.config import (
 )
 from bot_screener_yrovni.poc_scanner.timeutil import utc_now_iso
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS poc_levels (
@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS poc_levels (
     touch_count INTEGER DEFAULT 0,
     confirmed BOOLEAN DEFAULT 0,
     va_window TEXT DEFAULT '',
+    segment_type TEXT DEFAULT 'rolling',
+    segment_start_ts TEXT,
+    segment_end_ts TEXT,
+    partial_window BOOLEAN DEFAULT 0,
     UNIQUE(symbol, poc_price)
 );
 
@@ -70,10 +74,11 @@ class LevelState:
     а не накопительный счётчик: повторный расчёт того же окна заменяет его
     объём, поэтому объём не растёт от каждого скана.
 
-    ``poc_age_days`` — возраст самого зрелого окна уровня (длина окна),
-    ``first_created_ts`` — начало самого старого окна, по которому уровень
-    посчитан сейчас. Оба поля справочные: фильтр возраста смотрит
-    на ``poc_age_days``.
+    ``poc_age_days`` — возраст уровня: длина самого зрелого окна для
+    ``segment_type='rolling'`` или давность конца отрезка для
+    ``segment_type='calendar_month'``; ``first_created_ts`` — начало самого
+    старого окна, по которому уровень посчитан сейчас. Оба поля справочные:
+    фильтр возраста смотрит на ``poc_age_days``.
     """
 
     symbol: str
@@ -90,6 +95,10 @@ class LevelState:
     touch_count: int = 0
     confirmed: bool = False
     va_window: str = ""
+    segment_type: str = "rolling"
+    segment_start_ts: str = ""
+    segment_end_ts: str = ""
+    partial_window: bool = False
     id: int | None = None
 
 
@@ -113,8 +122,11 @@ class POCStore:
         if version == 0:
             self._conn.executescript(_SCHEMA)
         self._ensure_columns()
-        if version < SCHEMA_VERSION:
+        if version < 2:
             self._backfill_age_days()
+        if version < 3:
+            self._backfill_segments()
+        if version < SCHEMA_VERSION:
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
 
@@ -128,10 +140,32 @@ class POCStore:
             ("window_volumes", "TEXT"),
             ("va_window", "TEXT DEFAULT ''"),
             ("poc_age_days", "INTEGER DEFAULT 0"),
+            ("segment_type", "TEXT DEFAULT 'rolling'"),
+            ("segment_start_ts", "TEXT"),
+            ("segment_end_ts", "TEXT"),
+            ("partial_window", "BOOLEAN DEFAULT 0"),
         ):
             if name not in columns:
                 self._conn.execute(f"ALTER TABLE poc_levels ADD COLUMN {name} {ddl}")
         self._conn.commit()
+
+    def _backfill_segments(self) -> None:
+        """Проставить сегментные поля старым записям: они все rolling."""
+        self._conn.execute(
+            "UPDATE poc_levels SET segment_type = 'rolling' "
+            "WHERE segment_type IS NULL OR segment_type = ''"
+        )
+        self._conn.execute(
+            "UPDATE poc_levels SET segment_start_ts = first_created_ts "
+            "WHERE segment_start_ts IS NULL OR segment_start_ts = ''"
+        )
+        self._conn.execute(
+            "UPDATE poc_levels SET segment_end_ts = last_calculated_ts "
+            "WHERE segment_end_ts IS NULL OR segment_end_ts = ''"
+        )
+        self._conn.execute(
+            "UPDATE poc_levels SET partial_window = 0 WHERE partial_window IS NULL"
+        )
 
     def _backfill_age_days(self) -> None:
         """Заполнить ``poc_age_days`` старых записей по их ``source_windows``."""
@@ -197,8 +231,9 @@ class POCStore:
                 symbol, poc_price, vah, val, total_volume_at_level,
                 source_windows, window_volumes, poc_age_days, first_created_ts,
                 last_calculated_ts, last_touch_ts, touch_count, confirmed,
-                va_window
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                va_window, segment_type, segment_start_ts, segment_end_ts,
+                partial_window
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 candidate.symbol,
@@ -215,6 +250,10 @@ class POCStore:
                 int(candidate.touch_count),
                 int(total >= confirm_threshold),
                 candidate.va_window,
+                candidate.segment_type or "rolling",
+                candidate.segment_start_ts,
+                candidate.segment_end_ts,
+                int(candidate.partial_window),
             ),
         )
         self._conn.commit()
@@ -233,6 +272,10 @@ class POCStore:
             touch_count=int(candidate.touch_count),
             confirmed=total >= confirm_threshold,
             va_window=candidate.va_window,
+            segment_type=candidate.segment_type or "rolling",
+            segment_start_ts=candidate.segment_start_ts,
+            segment_end_ts=candidate.segment_end_ts,
+            partial_window=bool(candidate.partial_window),
             id=int(cursor.lastrowid or 0),
         )
 
@@ -255,6 +298,16 @@ class POCStore:
 
         age_days = max(int(target.poc_age_days), int(candidate.poc_age_days))
         created = self._oldest_ts(target.first_created_ts, candidate.first_created_ts)
+        segment_type = (
+            "rolling"
+            if "rolling" in (target.segment_type, candidate.segment_type)
+            else target.segment_type or "rolling"
+        )
+        segment_start = self._oldest_ts(
+            target.segment_start_ts, candidate.segment_start_ts
+        )
+        segment_end = self._newest_ts(target.segment_end_ts, candidate.segment_end_ts)
+        partial = bool(target.partial_window or candidate.partial_window)
 
         now = candidate.last_calculated_ts or utc_now_iso()
         confirmed = total >= confirm_threshold
@@ -264,7 +317,9 @@ class POCStore:
                 vah = ?, val = ?, total_volume_at_level = ?,
                 source_windows = ?, window_volumes = ?,
                 poc_age_days = ?, first_created_ts = ?,
-                last_calculated_ts = ?, confirmed = ?, va_window = ?
+                last_calculated_ts = ?, confirmed = ?, va_window = ?,
+                segment_type = ?, segment_start_ts = ?, segment_end_ts = ?,
+                partial_window = ?
             WHERE id = ?
             """,
             (
@@ -278,6 +333,10 @@ class POCStore:
                 now,
                 int(confirmed),
                 va_window,
+                segment_type,
+                segment_start,
+                segment_end,
+                int(partial),
                 target.id,
             ),
         )
@@ -297,6 +356,10 @@ class POCStore:
             touch_count=target.touch_count,
             confirmed=confirmed,
             va_window=va_window,
+            segment_type=segment_type,
+            segment_start_ts=segment_start,
+            segment_end_ts=segment_end,
+            partial_window=partial,
             id=target.id,
         )
 
@@ -430,13 +493,24 @@ class POCStore:
 
     @classmethod
     def _sorted_windows(cls, windows: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(sorted(windows, key=cls._window_days))
+        return tuple(sorted(windows, key=cls._sort_key))
+
+    @staticmethod
+    def _sort_key(name: str) -> tuple[int, int, str]:
+        days = POCStore._window_days(name)
+        return (0, days, name) if days > 0 else (1, 0, name)
 
     @staticmethod
     def _oldest_ts(first: str, second: str) -> str:
         """Более ранняя из двух ISO-дат; пустая строка означает «нет даты»."""
         stamps = [text for text in (first, second) if text]
         return min(stamps) if stamps else ""
+
+    @staticmethod
+    def _newest_ts(first: str, second: str) -> str:
+        """Более поздняя из двух ISO-дат; пустая строка означает «нет даты»."""
+        stamps = [text for text in (first, second) if text]
+        return max(stamps) if stamps else ""
 
     @staticmethod
     def _row_to_level(row: sqlite3.Row) -> LevelState:
@@ -457,5 +531,9 @@ class POCStore:
             touch_count=int(row["touch_count"] or 0),
             confirmed=bool(row["confirmed"]),
             va_window=str(row["va_window"] or ""),
+            segment_type=str(row["segment_type"] or "rolling"),
+            segment_start_ts=str(row["segment_start_ts"] or ""),
+            segment_end_ts=str(row["segment_end_ts"] or ""),
+            partial_window=bool(row["partial_window"]),
             id=int(row["id"]),
         )

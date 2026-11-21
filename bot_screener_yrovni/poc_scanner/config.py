@@ -44,6 +44,9 @@ WINDOW_AGE_DAYS: dict[str, int] = {
     "730d": 730,
 }
 
+# Режимы POC по историческим отрезкам: календарный месяц, блоки по 30 дней, выкл.
+SEGMENT_MODES: tuple[str, ...] = ("calendar_month", "fixed_30d", "off")
+
 # Пороги для низколиквидных/крупных инструментов: символ -> поля конфига.
 PER_SYMBOL_OVERRIDES: dict[str, dict[str, float]] = {
     "BTCUSDT": {"confirm_volume_threshold": 500_000_000.0},
@@ -135,6 +138,16 @@ def _env_path(name: str, default: str) -> Path:
     return Path(raw.strip()) if raw and raw.strip() else Path(default)
 
 
+def _env_str(name: str, default: str, allowed: tuple[str, ...] = ()) -> str:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if allowed and value not in allowed:
+        return default
+    return value
+
+
 def _env_windows(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -170,6 +183,9 @@ class POCConfig:
     touch_cooldown_sec: int = 3600
     signal_cooldown_sec: int = 3600
     atr_period: int = 14
+    segment_mode: str = "calendar_month"
+    top_n_segments: int = 12
+    segment_min_volume: float = 10_000_000.0
     poc_log: Path = Path("logs/poc_levels.jsonl")
     signal_log: Path = Path("logs/poc_signals.jsonl")
 
@@ -242,6 +258,9 @@ class POCConfig:
             touch_cooldown_sec=_env_int("TOUCH_COOLDOWN_SEC", 3600),
             signal_cooldown_sec=_env_int("SIGNAL_COOLDOWN_SEC", 3600),
             atr_period=_env_int("ATR_PERIOD", 14),
+            segment_mode=_env_str("SEGMENT_MODE", "calendar_month", SEGMENT_MODES),
+            top_n_segments=_env_int("TOP_N_SEGMENTS", 12),
+            segment_min_volume=_env_float("SEGMENT_MIN_VOLUME_USD", 10_000_000.0),
             poc_log=_env_path("POC_LEVELS_LOG", "logs/poc_levels.jsonl"),
             signal_log=_env_path("POC_SIGNALS_LOG", "logs/poc_signals.jsonl"),
         )

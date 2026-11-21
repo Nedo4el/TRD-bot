@@ -12,6 +12,8 @@ import numpy as np
 import pandas as pd
 
 from bot_screener_yrovni.poc_scanner.config import (
+    HOURS_PER_CANDLE,
+    INTERVAL_FOUR_HOUR,
     POCConfig,
     WindowSpec,
     get_poc_age_days,
@@ -36,7 +38,7 @@ from core.logger import get_logger
 logger = get_logger(__name__)
 
 WALL_MIN_WINDOWS = 3
-MIN_WINDOW_COVERAGE = 0.8
+MIN_PARTIAL_CANDLES = 2
 
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> float:
@@ -59,6 +61,22 @@ def _window_days(name: str) -> int:
         return parse_window_days(name)
     except ValueError:
         return 0
+
+
+def _window_sort_key(name: str) -> tuple[int, int, str]:
+    """Окна по возрастанию дней, затем календарные отрезки по имени."""
+    days = _window_days(name)
+    return (0, days, name) if days > 0 else (1, 0, name)
+
+
+def _span_days(candles: pd.DataFrame, interval: str) -> int:
+    """Сколько дней реально покрывают свечи (для частичных окон)."""
+    if candles.empty:
+        return 0
+    hours = HOURS_PER_CANDLE[interval]
+    delta = candles["ts"].iloc[-1] - candles["ts"].iloc[0]
+    span = float(delta.total_seconds()) / 86_400
+    return round(span + hours / 24)
 
 
 def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -107,12 +125,13 @@ class POCScanner:
         self,
         interval: str = "60",
         now: datetime | None = None,
+        days: int | None = None,
     ) -> pd.DataFrame:
-        """Свечи символа за самую длинную глубину окон этого интервала."""
-        days = self.config.days_for_interval(interval)
-        if days <= 0:
+        """Свечи символа за глубину окон интервала или явно заданную ``days``."""
+        depth = days if days is not None else self.config.days_for_interval(interval)
+        if depth <= 0:
             return pd.DataFrame()
-        frame = self.cache.load(self.symbol, interval, days, now)
+        frame = self.cache.load(self.symbol, interval, depth, now)
         self._series[interval] = frame
         return frame
 
@@ -125,9 +144,13 @@ class POCScanner:
     ) -> dict[str, Any] | None:
         """POC и Value Area по последним свечам окна ``window``.
 
+        Если истории меньше, чем нужно окну, профиль считается по фактическим
+        свечам: ``partial=True``, а возраст — реальный охват истории.
+
         Returns:
             {window, poc, vah, val, total_volume, ts_calculated, candles,
-            interval, window_start} или None, если профиль не построился.
+            interval, segment_type, segment_start, segment_end, age_days,
+            partial} или None, если профиль не построился.
         """
         spec = self.config.spec(window)
         candles = df.tail(spec.candles)
@@ -140,6 +163,10 @@ class POCScanner:
         )
         if result is None:
             return None
+        partial = len(candles) < spec.candles
+        age_days = (
+            _span_days(candles, spec.interval) if partial else get_poc_age_days(window)
+        )
         return {
             "window": window,
             "poc": result.poc,
@@ -149,12 +176,84 @@ class POCScanner:
             "ts_calculated": utc_now_iso(),
             "candles": len(candles),
             "interval": spec.interval,
-            "window_start": to_iso(candles["ts"].iloc[0].to_pydatetime()),
+            "segment_type": "rolling",
+            "segment_start": to_iso(candles["ts"].iloc[0].to_pydatetime()),
+            "segment_end": to_iso(candles["ts"].iloc[-1].to_pydatetime()),
+            "age_days": age_days,
+            "partial": partial,
         }
+
+    def calculate_calendar_poc(
+        self,
+        df: pd.DataFrame,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """POC по историческим отрезкам: календарный месяц или блоки 30 дней.
+
+        Возвращает до ``TOP_N_SEGMENTS`` последних отрезков с объёмом не ниже
+        ``SEGMENT_MIN_VOLUME_USD``. Возраст отрезка — сколько дней прошло
+        с его последней свечи.
+        """
+        if df.empty or self.config.segment_mode == "off":
+            return []
+        moment = now or utc_now()
+        keys = self._segment_keys(df, self.config.segment_mode)
+        frame = df.assign(_segment=keys)
+        first_key, last_key = keys[0], keys[-1]
+        results: list[dict[str, Any]] = []
+        for segment, part in frame.groupby("_segment", sort=True):
+            if len(part) < MIN_PARTIAL_CANDLES:
+                continue
+            result = compute_profile(
+                part,
+                num_bins=self.config.bins,
+                va_percent=self.config.va_percent,
+            )
+            if result is None:
+                continue
+            if result.total_volume < self.config.segment_min_volume:
+                continue
+            segment_end = part["ts"].iloc[-1].to_pydatetime()
+            results.append(
+                {
+                    "window": str(segment),
+                    "poc": result.poc,
+                    "vah": result.vah,
+                    "val": result.val,
+                    "total_volume": result.total_volume,
+                    "ts_calculated": utc_now_iso(),
+                    "candles": len(part),
+                    "interval": INTERVAL_FOUR_HOUR,
+                    "segment_type": (
+                        "calendar_month"
+                        if self.config.segment_mode == "calendar_month"
+                        else "fixed_30d"
+                    ),
+                    "segment_start": to_iso(part["ts"].iloc[0].to_pydatetime()),
+                    "segment_end": to_iso(segment_end),
+                    "age_days": max(0, (moment - segment_end).days),
+                    "partial": str(segment) in (first_key, last_key),
+                }
+            )
+        return results[-self.config.top_n_segments :]
+
+    @staticmethod
+    def _segment_keys(df: pd.DataFrame, mode: str) -> list[str]:
+        """Ключ отрезка для каждой свечи: ``2026-09`` или дата начала блока."""
+        stamps = df["ts"]
+        if mode == "fixed_30d":
+            block_seconds = 30 * 86_400
+            last = stamps.iloc[-1]
+            blocks = ((last - stamps).dt.total_seconds() // block_seconds).astype(int)
+            starts = stamps - pd.to_timedelta(blocks * block_seconds, unit="s")
+            return [str(stamp.strftime("%Y-%m-%d")) for stamp in starts]
+        return [str(value) for value in stamps.dt.strftime("%Y-%m")]
 
     def upsert_poc_level(self, poc_data: dict[str, Any]) -> LevelState:
         """Создать уровень POC или слить с уже известным в пределах 1 %."""
         window = str(poc_data["window"])
+        segment_type = str(poc_data.get("segment_type", "rolling"))
+        age_days = int(poc_data.get("age_days") or get_poc_age_days(window))
         candidate = LevelState(
             symbol=self.symbol,
             poc_price=float(poc_data["poc"]),
@@ -162,10 +261,14 @@ class POCScanner:
             val=float(poc_data["val"]),
             source_windows=(window,),
             window_volumes={window: float(poc_data["total_volume"])},
-            poc_age_days=get_poc_age_days(window),
-            first_created_ts=str(poc_data.get("window_start") or ""),
+            poc_age_days=age_days,
+            first_created_ts=str(poc_data.get("segment_start") or ""),
             last_calculated_ts=str(poc_data.get("ts_calculated") or utc_now_iso()),
             va_window=window,
+            segment_type=segment_type,
+            segment_start_ts=str(poc_data.get("segment_start") or ""),
+            segment_end_ts=str(poc_data.get("segment_end") or ""),
+            partial_window=bool(poc_data.get("partial", False)),
         )
         level = self.store.upsert_level(
             candidate,
@@ -187,19 +290,46 @@ class POCScanner:
                 "first_created_ts": level.first_created_ts,
                 "confirmed": level.confirmed,
                 "touch_count": level.touch_count,
+                "segment_type": level.segment_type,
+                "segment_start_ts": level.segment_start_ts,
+                "segment_end_ts": level.segment_end_ts,
+                "partial_window": level.partial_window,
             },
         )
-        logger.info(
-            "POC %s %s=%.10g (VA %.10g..%.10g) объём $%.1fM окна %s%s",
-            self.symbol,
-            window,
-            level.poc_price,
-            level.val,
-            level.vah,
-            level.total_volume_at_level / 1_000_000,
-            ",".join(level.source_windows),
-            " WALL" if self._is_wall(level) else "",
-        )
+        wall = " WALL" if self._is_wall(level) else ""
+        if segment_type == "rolling":
+            logger.info(
+                "POC %s %s=%.10g (VA %.10g..%.10g) объём $%.1fM окна %s%s",
+                self.symbol,
+                window,
+                level.poc_price,
+                level.val,
+                level.vah,
+                level.total_volume_at_level / 1_000_000,
+                ",".join(level.source_windows),
+                wall,
+            )
+        else:
+            logger.info(
+                "%s POC %s: price=%.10g, vol=$%.1fM, age=%dd%s",
+                segment_type,
+                window,
+                candidate.poc_price,
+                float(poc_data["total_volume"]) / 1_000_000,
+                age_days,
+                wall,
+            )
+        if (
+            segment_type != "rolling"
+            and level.segment_type == "rolling"
+            and len(level.source_windows) > 1
+        ):
+            logger.info(
+                "merged calendar %s POC %.10g into rolling level (age updated to %dd)",
+                window,
+                level.poc_price,
+                level.poc_age_days,
+            )
         return level
 
     # --- сигналы ---------------------------------------------------------
@@ -295,7 +425,7 @@ class POCScanner:
             relative = abs(signal.poc_price - best.poc_price) / best.poc_price
             if relative <= self.config.merge_poc_pct:
                 windows.update(signal.poc_windows)
-        best.poc_windows = sorted(windows, key=_window_days)
+        best.poc_windows = sorted(windows, key=_window_sort_key)
         return best
 
     def refresh(
@@ -320,20 +450,22 @@ class POCScanner:
                 statuses.append(f"{spec.name}=skip(age={age_days})")
                 continue
             frame = self._series.get(spec.interval)
-            if frame is None or frame.empty:
+            if frame is None or len(frame) < MIN_PARTIAL_CANDLES:
                 statuses.append(f"{spec.name}=skip(no_history)")
                 continue
-            if len(frame) < spec.candles * MIN_WINDOW_COVERAGE:
-                statuses.append(f"{spec.name}=skip(short_history)")
+            if len(frame) < spec.candles:
                 self._warn_short_history(spec, len(frame))
-                continue
             poc_data = self.calculate_poc(frame, spec.name)
             if poc_data is None:
                 statuses.append(f"{spec.name}=skip(no_profile)")
                 continue
             self.upsert_poc_level(poc_data)
-            statuses.append(f"{spec.name}=ok(age={age_days})")
+            status = f"{spec.name}=ok(age={poc_data['age_days']})"
+            if poc_data["partial"]:
+                status = f"{spec.name}=ok(age={poc_data['age_days']},partial)"
+            statuses.append(status)
         logger.info("%s: POC levels loaded: %s", self.symbol, ", ".join(statuses))
+        self._refresh_segments(moment)
 
         price = current_price if current_price is not None else self._last_price()
         if price <= 0:
@@ -357,17 +489,52 @@ class POCScanner:
         return 0.0
 
     def _warn_short_history(self, spec: WindowSpec, available: int) -> None:
-        """Предупредить один раз, что окну не хватает истории."""
+        """Предупредить один раз, что окну не хватает истории (partial)."""
         if spec.name in self._short_history_warned:
             return
         self._short_history_warned.add(spec.name)
         logger.warning(
-            "%s: окну %s нужно %d свечей, в истории %d — окно пропущено",
+            "%s: окну %s нужно %d свечей, в истории %d — считаю по фактической "
+            "истории (partial_window)",
             self.symbol,
             spec.name,
             spec.candles,
             available,
         )
+
+    def _refresh_segments(self, moment: datetime) -> None:
+        """Пересчитать POC по историческим отрезкам (месяцы или блоки 30 дней)."""
+        if self.config.segment_mode == "off":
+            return
+        frame = self._series.get(INTERVAL_FOUR_HOUR)
+        if frame is None or frame.empty:
+            try:
+                frame = self.load_history(
+                    INTERVAL_FOUR_HOUR,
+                    moment,
+                    days=self.config.history_cache_days,
+                )
+            except Exception as exc:  # noqa: BLE001 — сеть не должна ронять цикл
+                logger.warning(
+                    "история %s %s недоступна: %s",
+                    self.symbol,
+                    INTERVAL_FOUR_HOUR,
+                    exc,
+                )
+                return
+        segments = self.calculate_calendar_poc(frame, moment)
+        if not segments:
+            return
+        logger.info(
+            "%s: POC segments loaded: %s",
+            self.symbol,
+            ", ".join(
+                f"{item['window']} (vol=${item['total_volume'] / 1_000_000:.1f}M)"
+                for item in segments
+            ),
+        )
+        for item in segments:
+            self.upsert_poc_level(item)
 
     @staticmethod
     def _level_age_days(level: LevelState) -> int:

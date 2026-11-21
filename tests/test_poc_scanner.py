@@ -27,6 +27,22 @@ def make_config(tmp_path: Path) -> POCConfig:
         db_path=tmp_path / "poc.sqlite",
         poc_log=tmp_path / "levels.jsonl",
         signal_log=tmp_path / "signals.jsonl",
+        segment_mode="off",
+    )
+
+
+def make_segment_config(
+    tmp_path: Path,
+    windows: tuple[str, ...] = (),
+    mode: str = "calendar_month",
+) -> POCConfig:
+    return POCConfig(
+        symbol="SOLUSDT",
+        windows=windows,
+        db_path=tmp_path / "poc.sqlite",
+        poc_log=tmp_path / "levels.jsonl",
+        signal_log=tmp_path / "signals.jsonl",
+        segment_mode=mode,
     )
 
 
@@ -62,15 +78,59 @@ def make_frame(
 def patch_history(
     scanner: POCScanner,
     monkeypatch: pytest.MonkeyPatch,
-    frame: pd.DataFrame,
+    frame: pd.DataFrame | dict[str, pd.DataFrame],
 ) -> None:
-    """Подменить загрузку истории: все интервалы отдают один и тот же кадр."""
+    """Подменить загрузку истории: один кадр на все интервалы или по интервалам."""
+    frames = frame if isinstance(frame, dict) else {}
 
-    def fake_load(interval: str, now: datetime | None = None) -> pd.DataFrame:
-        scanner._series[interval] = frame
-        return frame
+    def fake_load(
+        interval: str,
+        now: datetime | None = None,
+        days: int | None = None,
+    ) -> pd.DataFrame:
+        loaded = frames.get(interval) if frames else frame
+        assert isinstance(loaded, pd.DataFrame)
+        scanner._series[interval] = loaded
+        return loaded
 
     monkeypatch.setattr(scanner, "load_history", fake_load)
+
+
+def make_history(
+    start: datetime,
+    end: datetime,
+    price: float = 50.0,
+    turnover: float = 1_000_000.0,
+    hours: int = 4,
+) -> pd.DataFrame:
+    """Четырёхчасовые свечи за период вокруг одной цены."""
+    stamps = pd.date_range(start, end, freq=timedelta(hours=hours), tz="UTC")
+    return pd.DataFrame(
+        {
+            "ts": stamps,
+            "open": price,
+            "high": price + 0.05,
+            "low": price - 0.05,
+            "close": price,
+            "volume": 1.0,
+            "turnover": turnover,
+        }
+    )
+
+
+def set_month(
+    frame: pd.DataFrame,
+    month: str,
+    price: float,
+    turnover: float,
+) -> pd.DataFrame:
+    """Перенести свечи одного месяца на другую цену и оборот."""
+    mask = frame["ts"].dt.strftime("%Y-%m") == month
+    frame.loc[mask, ["open", "close"]] = price
+    frame.loc[mask, "high"] = price + 0.05
+    frame.loc[mask, "low"] = price - 0.05
+    frame.loc[mask, "turnover"] = turnover
+    return frame
 
 
 def add_level(
@@ -281,7 +341,7 @@ def test_new_symbol_skips_young_windows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Новый символ с 30 днями истории: 3d/5d отброшены, 7d/14d/30d валидны."""
+    """30 дней истории: 3d/5d отброшены, остальные окна считаются как partial."""
     scanner = make_scanner(tmp_path)
     patch_history(scanner, monkeypatch, make_frame(days=30))
 
@@ -291,8 +351,16 @@ def test_new_symbol_skips_young_windows(
 
     assert len(levels) == 1
     level = levels[0]
-    assert set(level.source_windows) == {"7d", "14d", "30d"}
+    assert set(level.source_windows) == {
+        "7d",
+        "14d",
+        "30d",
+        "180d",
+        "365d",
+        "730d",
+    }
     assert level.poc_age_days == 30
+    assert level.partial_window is True
     assert level.confirmed is True
 
 
@@ -355,3 +423,134 @@ def test_migration_fills_age_from_windows(tmp_path: Path) -> None:
     level = reopened.store.levels("SOLUSDT")[0]
     assert level.poc_age_days == 30
     reopened.store.close()
+
+
+def test_short_history_creates_partial_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """128 дней истории: окна 180d/365d/730d считаются как partial, возраст 128."""
+    config = POCConfig(
+        symbol="SOLUSDT",
+        windows=("180d", "365d", "730d"),
+        db_path=tmp_path / "poc.sqlite",
+        poc_log=tmp_path / "levels.jsonl",
+        signal_log=tmp_path / "signals.jsonl",
+        segment_mode="off",
+    )
+    scanner = POCScanner(config, "SOLUSDT")
+    frame = make_history(NOW - timedelta(days=128), NOW)
+    patch_history(scanner, monkeypatch, frame)
+
+    scanner.refresh(current_price=50.0, now=NOW)
+
+    levels = scanner.store.levels("SOLUSDT")
+
+    assert len(levels) == 1
+    level = levels[0]
+    assert set(level.source_windows) == {"180d", "365d", "730d"}
+    assert level.partial_window is True
+    assert level.poc_age_days == 128
+
+
+def test_calendar_poc_created_for_september(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Сентябрь даёт calendar_month уровень 33.27 с возрастом от конца месяца."""
+    scanner = POCScanner(make_segment_config(tmp_path), "SOLUSDT")
+    frame = make_history(datetime(2026, 7, 1, tzinfo=timezone.utc), NOW)
+    set_month(frame, "2026-09", 33.27, 20_000_000.0)
+    patch_history(scanner, monkeypatch, {"240": frame})
+
+    scanner.refresh(current_price=50.0, now=NOW)
+
+    levels = scanner.store.levels("SOLUSDT")
+    september = next(item for item in levels if abs(item.poc_price - 33.27) < 0.1)
+    september_end = frame.loc[frame["ts"].dt.strftime("%Y-%m") == "2026-09", "ts"].iloc[
+        -1
+    ]
+
+    assert september.segment_type == "calendar_month"
+    assert september.poc_age_days == (NOW - september_end.to_pydatetime()).days
+    assert september.confirmed is True
+    assert september.partial_window is False
+
+
+def test_calendar_poc_merges_into_matching_rolling_level(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Сентябрьский POC 52.90 совпал с rolling 30d — один уровень, объёмы суммой."""
+    scanner = POCScanner(make_segment_config(tmp_path), "SOLUSDT")
+    add_level(scanner, 52.90, 40_000_000.0, windows=("30d",))
+    frame = make_history(datetime(2026, 7, 1, tzinfo=timezone.utc), NOW)
+    set_month(frame, "2026-09", 52.90, 20_000_000.0)
+    patch_history(scanner, monkeypatch, {"240": frame})
+
+    scanner.refresh(current_price=52.90, now=NOW)
+
+    levels = scanner.store.levels("SOLUSDT")
+    close = [
+        item
+        for item in levels
+        if abs(item.poc_price - 52.90) / 52.90 <= scanner.config.merge_poc_pct
+    ]
+    september_volume = float(
+        frame.loc[frame["ts"].dt.strftime("%Y-%m") == "2026-09", "turnover"].sum()
+    )
+
+    assert len(close) == 1
+    merged = close[0]
+    assert merged.segment_type == "rolling"
+    assert "2026-09" in merged.source_windows
+    assert merged.total_volume_at_level == pytest.approx(
+        40_000_000.0 + september_volume
+    )
+
+
+def test_unmatched_calendar_poc_becomes_separate_level(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Сентябрьский POC 33.27 не совпал с rolling 52.90 — отдельный уровень."""
+    scanner = POCScanner(make_segment_config(tmp_path), "SOLUSDT")
+    rolling = add_level(scanner, 52.90, 40_000_000.0, windows=("30d",))
+    frame = make_history(datetime(2026, 7, 1, tzinfo=timezone.utc), NOW)
+    set_month(frame, "2026-09", 33.27, 20_000_000.0)
+    patch_history(scanner, monkeypatch, {"240": frame})
+
+    scanner.refresh(current_price=33.27, now=NOW)
+
+    levels = scanner.store.levels("SOLUSDT")
+    september = next(item for item in levels if abs(item.poc_price - 33.27) < 0.1)
+    stored_rolling = next(item for item in levels if abs(item.poc_price - 52.90) < 0.1)
+
+    assert september.segment_type == "calendar_month"
+    assert september.id != rolling.id
+    assert stored_rolling.segment_type == "rolling"
+
+
+def test_young_calendar_level_is_filtered(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Текущий месяц с концом 3 дня назад: уровень есть, сигнала нет."""
+    scanner = POCScanner(make_segment_config(tmp_path), "SOLUSDT")
+    frame = make_history(
+        datetime(2026, 10, 1, tzinfo=timezone.utc),
+        NOW - timedelta(days=3),
+    )
+    set_month(frame, "2026-10", 50.0, 20_000_000.0)
+    set_month(frame, "2026-11", 60.0, 20_000_000.0)
+    patch_history(scanner, monkeypatch, {"240": frame})
+
+    signal = scanner.refresh(current_price=60.0, now=NOW)
+
+    levels = scanner.store.levels("SOLUSDT")
+    november = next(item for item in levels if abs(item.poc_price - 60.0) < 0.1)
+
+    assert november.segment_type == "calendar_month"
+    assert november.poc_age_days == 3
+    assert signal is None
+    assert scanner.check_price_proximity(60.0, now=NOW) == []
