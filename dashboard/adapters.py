@@ -471,83 +471,6 @@ async def scan_pump(spec: ScreenerSpec) -> list[Signal]:
     return await _batched(universe, 10, work)
 
 
-async def scan_yrovni(spec: ScreenerSpec) -> list[Signal]:
-    """Volume Profile: POC по окнам, экстремумы окон и ATH/ATL."""
-    from bot_screener_yrovni.history import load_all_time
-    from bot_screener_yrovni.scanner import (
-        interval_limits,
-        scan_symbol,
-        windows_from_series,
-    )
-
-    env = _env(spec)
-    num_bins = 100
-    proximity = env.number("PROXIMITY_PCT", 10.0)
-    max_price = env.number("MAX_PRICE", 0.0)
-    fetcher = _new_fetcher(env)
-    universe = await _universe(fetcher, env, spec, 50_000_000)
-    limits = interval_limits()
-
-    async def work(item: tuple[str, float]) -> list[Signal]:
-        symbol, turnover = item
-        by_interval: dict[str, list[dict]] = {}
-        for interval, limit in limits.items():
-            candles = await fetcher.get_klines(symbol, interval, limit)
-            if candles:
-                by_interval[interval] = candles
-        if not by_interval:
-            return []
-        all_time = await load_all_time(fetcher, symbol)
-        result = scan_symbol(
-            symbol,
-            windows_from_series(by_interval),
-            all_time=all_time,
-            num_bins=num_bins,
-            proximity_pct=proximity,
-            max_price=max_price,
-        )
-        if not result.levels:
-            return []
-        closest = min(abs(level.distance_pct) for level in result.levels)
-        score = max(0.0, 100.0 - closest * 10)
-        first = result.levels[0]
-        poc = [level for level in result.levels if level.kind == "POC"]
-        extreme = [level for level in result.levels if level.kind != "POC"]
-        return [
-            make_signal(
-                screener=spec.name,
-                title=spec.title,
-                symbol=symbol,
-                price=result.current_price,
-                score=round(min(100.0, score), 1),
-                label=f"{first.kind} {first.period} {first.distance_pct:+g}%",
-                turnover_24h=turnover,
-                found_at=_now_iso(),
-                detail={
-                    "poc": [
-                        {
-                            "period": level.period,
-                            "price": level.price,
-                            "distance_pct": level.distance_pct,
-                        }
-                        for level in poc[:4]
-                    ],
-                    "extreme": [
-                        {
-                            "kind": level.kind,
-                            "period": level.period,
-                            "price": level.price,
-                            "distance_pct": level.distance_pct,
-                        }
-                        for level in extreme[:4]
-                    ],
-                },
-            )
-        ]
-
-    return await _batched(universe, 5, work)
-
-
 async def scan_all_coins(spec: ScreenerSpec) -> list[Signal]:
     """Все монеты: ATR(14) + volume trend + Δ24ч, сортировка по ATR."""
     settings = AllCoinsSettings.load()
@@ -784,7 +707,6 @@ ADAPTERS: dict[str, Callable[[ScreenerSpec], Awaitable[list[Signal]]]] = {
     "krugloe": scan_krugloe,
     "trend": scan_trend,
     "pump": scan_pump,
-    "yrovni": scan_yrovni,
     "zakonomer": scan_zakonomer,
     "all": scan_all_coins,
 }

@@ -70,7 +70,6 @@ def test_registry_matches_expected_screeners() -> None:
         "krugloe",
         "trend",
         "pump",
-        "yrovni",
         "zakonomer",
         "all",
     }

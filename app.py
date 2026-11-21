@@ -104,7 +104,6 @@ NAV_ITEMS = [
     "—— СКРИНЕРЫ ——",
     "  Сжатие (uzkiy)",
     "  Накопление (pump)",
-    "  Volume Profile",
     "  Круглые числа",
     "  Импульс (impulse)",
     "—— ИНСТРУМЕНТЫ ——",
@@ -267,9 +266,7 @@ def page_screeners() -> None:
     """Страница скринеров: запуск и результаты."""
     st.title("🔍 Скринеры")
 
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["Сжатие (uzkiy)", "Накопление (pump)", "Volume Profile", "Круглые числа"]
-    )
+    tab1, tab2, tab3 = st.tabs(["Сжатие (uzkiy)", "Накопление (pump)", "Круглые числа"])
 
     with tab1:
         st.markdown(
@@ -282,10 +279,6 @@ def page_screeners() -> None:
         _run_screener_tab("bot_screener_pump")
 
     with tab3:
-        st.markdown("**Скринер Volume Profile** — анализирует профиль объёма.")
-        _run_screener_tab("bot_screener_yrovni")
-
-    with tab4:
         st.markdown("**Скринер круглых чисел** — психологические уровни.")
         _run_screener_tab("bot_screener_krugloe")
 
@@ -1548,9 +1541,6 @@ def main() -> None:
     elif page == "  Накопление (pump)":
         st.title("🔍 Накопление (pump)")
         _run_screener_tab("bot_screener_pump")
-    elif page == "  Volume Profile":
-        st.title("🔍 Volume Profile")
-        _run_screener_tab("bot_screener_yrovni")
     elif page == "  Круглые числа":
         st.title("🔍 Круглые числа")
         _run_screener_tab("bot_screener_krugloe")

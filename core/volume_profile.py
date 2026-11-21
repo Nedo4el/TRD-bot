@@ -3,9 +3,10 @@
 POC — цена корзины с максимальным объёмом; Value Area — диапазон
 крайних корзин, покрывший pct (70%) всего объёма профиля.
 
-Порт build_volume_profile/find_poc из bot_screener_yrovni/scanner.py
+Порт build_volume_profile/find_poc из старого скринера уровней
 (100 бинов, объём распределяется по high/low равномерно) + value area,
-которой в скринере не было.
+которой в скринере не было. Актуальная версия профиля —
+bot_screener_yrovni/poc_scanner/profile.py.
 """
 
 from __future__ import annotations
