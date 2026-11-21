@@ -36,7 +36,7 @@ class AutoTradeFlag:
     def load(cls) -> AutoTradeFlag:
         """Прочитать флаг с диска; ошибка чтения — безопасный false."""
         try:
-            raw = json.loads(AUTO_TRADE_FILE.read_text(encoding="utf-8"))
+            raw = json.loads(AUTO_TRADE_FILE.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             return cls()
         return cls(auto_trade=bool(raw.get("auto_trade", False)))
@@ -169,7 +169,7 @@ class PocSignalStore:
         if not POC_SIGNALS_FILE.exists():
             return
         try:
-            payload = json.loads(POC_SIGNALS_FILE.read_text(encoding="utf-8"))
+            payload = json.loads(POC_SIGNALS_FILE.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError) as exc:
             logger.warning("Не удалось прочитать POC-сигналы: %s", exc)
             return

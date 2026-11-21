@@ -12,9 +12,11 @@ from typing import Any, Self
 
 import pytest
 
+from bot_screener_yrovni.poc_scanner.signals import POCSignal
 from dashboard import scheduler as scheduler_module
 from dashboard import store as store_module
 from dashboard import tiger
+from dashboard.adapters import scan_poc
 from dashboard.config import (
     MIN_INTERVAL_SEC,
     SCREENERS,
@@ -143,6 +145,22 @@ def test_store_tracks_running_and_errors(store: SignalStore) -> None:
     assert status["running"] is False
     assert status["error"] == "RuntimeError: boom"
     assert status["last_run_at"] is not None
+
+
+def test_store_keeps_signals_when_scan_returns_nothing(store: SignalStore) -> None:
+    store.set_result(
+        "impulse",
+        [_signal("AAAUSDT", 10.0)],
+        1.0,
+        "2026-01-01T00:01:00+00:00",
+    )
+
+    store.set_result("impulse", [], 0.5, "2026-01-01T00:02:00+00:00")
+
+    snapshot = store.snapshot()
+    assert snapshot["total_signals"] == 1
+    assert snapshot["signals"][0]["symbol"] == "AAAUSDT"
+    assert snapshot["screeners"][0]["count"] == 1
 
 
 def test_store_restores_snapshot(
@@ -1159,3 +1177,50 @@ class _PathRequest:
 
 def _path_request(name: str, body: dict[str, Any] | None = None) -> Any:
     return _PathRequest(name, body)
+
+
+def test_scan_poc_returns_signal_from_scanner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Адаптер yrovni превращает сигнал сканера в сигнал вкладки «Скринеры»."""
+    spec = ScreenerSpec("yrovni", "Уровни POC", "bot_screener_yrovni", 300, 25)
+
+    class FakeScanner:
+        def __init__(self, config, symbol) -> None:
+            self.symbol = symbol
+
+        def refresh(self) -> POCSignal | None:
+            if self.symbol != "AKEUSDT":
+                return None
+            return POCSignal(
+                ts="2026-11-22T02:00:00+00:00",
+                symbol="AKEUSDT",
+                direction="long",
+                entry_price=0.005219,
+                price=0.005259,
+                distance_pct=0.0076,
+                zone_pct=0.10,
+                signal_id="AKEUSDT:0.005219:long:1",
+                members=[0.00521894],
+                windows=["30d"],
+                volume=4211.8,
+            )
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        "bot_screener_yrovni.poc_scanner.scanner.POCScanner", FakeScanner
+    )
+
+    signals = asyncio.run(scan_poc(spec))
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.screener == "yrovni"
+    assert signal.title == "Уровни POC"
+    assert signal.symbol == "AKEUSDT"
+    assert signal.side == "LONG"
+    assert signal.price == pytest.approx(0.005219)
+    assert signal.found_at == "2026-11-22T02:00:00+00:00"
+    assert signal.detail["signal_id"] == "AKEUSDT:0.005219:long:1"
+    assert signal.detail["windows"] == "30d"
+    assert signal.detail["price"] == pytest.approx(0.005259)

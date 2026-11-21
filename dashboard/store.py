@@ -82,7 +82,23 @@ class SignalStore:
         duration_sec: float,
         next_run_at: str,
     ) -> None:
-        """Сохранить результаты успешного прогона."""
+        """Сохранить результаты успешного прогона.
+
+        Пустой результат (биржа временно не отдала данные) не стирает
+        кэш старых сигналов — иначе после сбоя Bybit на дашборде пропадут
+        все сигналы.
+        """
+        status = self._status.get(name)
+        if status is not None:
+            status.running = False
+            status.last_run_at = now_iso()
+            status.duration_sec = round(duration_sec, 1)
+            status.next_run_at = next_run_at
+            status.error = None
+        if not signals:
+            # Биржа вернула 0 сигналов — не стирать кэш.
+            self._persist()
+            return
         unique: dict[str, Signal] = {}
         for signal in signals:
             previous = unique.get(signal.symbol)
@@ -94,14 +110,8 @@ class SignalStore:
             reverse=True,
         )
         self._signals[name] = ordered
-        status = self._status.get(name)
         if status is not None:
-            status.running = False
-            status.last_run_at = now_iso()
-            status.duration_sec = round(duration_sec, 1)
-            status.next_run_at = next_run_at
             status.count = len(ordered)
-            status.error = None
         self._persist()
 
     def set_error(
