@@ -30,6 +30,20 @@ INTERVAL_HOURLY = "60"
 INTERVAL_FOUR_HOUR = "240"
 HOURS_PER_CANDLE = {INTERVAL_HOURLY: 1, INTERVAL_FOUR_HOUR: 4}
 
+# Возраст POC по окну, в днях. Возраст уровня — это длина окна, по которому
+# он посчитан, а НЕ давность записи в БД: иначе на новом символе все уровни
+# «моложе суток» и MIN_POC_AGE_DAYS отбрасывает их все.
+WINDOW_AGE_DAYS: dict[str, int] = {
+    "3d": 3,
+    "5d": 5,
+    "7d": 7,
+    "14d": 14,
+    "30d": 30,
+    "180d": 180,
+    "365d": 365,
+    "730d": 730,
+}
+
 # Пороги для низколиквидных/крупных инструментов: символ -> поля конфига.
 PER_SYMBOL_OVERRIDES: dict[str, dict[str, float]] = {
     "BTCUSDT": {"confirm_volume_threshold": 500_000_000.0},
@@ -56,6 +70,21 @@ def parse_window_days(name: str) -> int:
 def window_interval(days: int) -> str:
     """Интервал свечей для окна: до 30 дней — 1h, длиннее — 4h."""
     return INTERVAL_HOURLY if days <= HOURLY_MAX_DAYS else INTERVAL_FOUR_HOUR
+
+
+def get_poc_age_days(window: str) -> int:
+    """Возраст POC по окну в днях: ``"30d"`` -> 30.
+
+    Окна вне ``WINDOW_AGE_DAYS`` оцениваются по имени (``"10d"`` -> 10),
+    нераспознанное имя даёт 0 — такой уровень считается слишком молодым.
+    """
+    name = window.strip().lower()
+    if name in WINDOW_AGE_DAYS:
+        return WINDOW_AGE_DAYS[name]
+    try:
+        return parse_window_days(name)
+    except ValueError:
+        return 0
 
 
 @dataclass(frozen=True)

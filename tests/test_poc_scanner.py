@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ import pandas as pd
 import pytest
 
 from bot_screener_yrovni.poc_scanner import klines
-from bot_screener_yrovni.poc_scanner.config import POCConfig
+from bot_screener_yrovni.poc_scanner.config import POCConfig, get_poc_age_days
 from bot_screener_yrovni.poc_scanner.profile import compute_profile
 from bot_screener_yrovni.poc_scanner.scanner import POCScanner
 from bot_screener_yrovni.poc_scanner.signals import ACTION_PLACE
@@ -33,14 +34,53 @@ def make_scanner(tmp_path: Path) -> POCScanner:
     return POCScanner(make_config(tmp_path), "SOLUSDT")
 
 
+def make_frame(
+    days: int,
+    price: float = 100.0,
+    turnover: float = 1_000_000.0,
+) -> pd.DataFrame:
+    """Часовые свечи за ``days`` дней вокруг одной цены."""
+    stamps = pd.date_range(
+        NOW - timedelta(days=days),
+        periods=days * 24,
+        freq=timedelta(hours=1),
+        tz="UTC",
+    )
+    return pd.DataFrame(
+        {
+            "ts": stamps,
+            "open": price,
+            "high": price + 0.05,
+            "low": price - 0.05,
+            "close": price,
+            "volume": 1.0,
+            "turnover": turnover,
+        }
+    )
+
+
+def patch_history(
+    scanner: POCScanner,
+    monkeypatch: pytest.MonkeyPatch,
+    frame: pd.DataFrame,
+) -> None:
+    """Подменить загрузку истории: все интервалы отдают один и тот же кадр."""
+
+    def fake_load(interval: str, now: datetime | None = None) -> pd.DataFrame:
+        scanner._series[interval] = frame
+        return frame
+
+    monkeypatch.setattr(scanner, "load_history", fake_load)
+
+
 def add_level(
     scanner: POCScanner,
     price: float,
     volume: float,
     windows: tuple[str, ...] = ("180d",),
-    age_days: int = 180,
 ) -> LevelState:
-    """Положить в хранилище уровень с заданной давностью и объёмом."""
+    """Положить в хранилище уровень с заданным объёмом и окнами."""
+    age_days = max(get_poc_age_days(name) for name in windows)
     created = to_iso(NOW - timedelta(days=age_days))
     candidate = LevelState(
         symbol=scanner.symbol,
@@ -49,6 +89,7 @@ def add_level(
         val=price * 0.99,
         source_windows=windows,
         window_volumes={name: volume / len(windows) for name in windows},
+        poc_age_days=age_days,
         first_created_ts=created,
         last_calculated_ts=created,
         va_window=windows[-1],
@@ -234,3 +275,83 @@ def test_fetch_klines_covers_full_range(
     assert len(candles) == total
     assert candles[0]["open_time"] == times[0]
     assert candles[-1]["open_time"] == times[-1]
+
+
+def test_new_symbol_skips_young_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Новый символ с 30 днями истории: 3d/5d отброшены, 7d/14d/30d валидны."""
+    scanner = make_scanner(tmp_path)
+    patch_history(scanner, monkeypatch, make_frame(days=30))
+
+    scanner.refresh(current_price=100.0, now=NOW)
+
+    levels = scanner.store.levels("SOLUSDT")
+
+    assert len(levels) == 1
+    level = levels[0]
+    assert set(level.source_windows) == {"7d", "14d", "30d"}
+    assert level.poc_age_days == 30
+    assert level.confirmed is True
+
+
+def test_signal_uses_oldest_window_age(tmp_path: Path) -> None:
+    """Уровень из 7d и 30d проходит фильтр, возраст = 30, сигнал есть."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0, windows=("7d",))
+    add_level(scanner, 50.3, 40_000_000.0, windows=("30d",))
+
+    signals = scanner.check_price_proximity(50.1, now=NOW)
+
+    assert len(signals) == 1
+    assert signals[0].poc_age_days == 30
+    assert signals[0].action == ACTION_PLACE
+
+
+def test_young_level_gives_no_signal(tmp_path: Path) -> None:
+    """Уровень только из 3d-окна моложе MIN_POC_AGE_DAYS и сигнала не даёт."""
+    scanner = make_scanner(tmp_path)
+
+    level = add_level(scanner, 50.0, 80_000_000.0, windows=("3d",))
+
+    assert level.poc_age_days == 3
+    assert scanner.check_price_proximity(50.0, now=NOW) == []
+
+
+def test_first_created_ts_is_window_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """first_created_ts уровня — начало самого старого окна, а не дата записи."""
+    scanner = make_scanner(tmp_path)
+    frame = make_frame(days=30)
+    patch_history(scanner, monkeypatch, frame)
+
+    scanner.refresh(current_price=100.0, now=NOW)
+
+    level = scanner.store.levels("SOLUSDT")[0]
+    window_start = to_iso(frame["ts"].iloc[0].to_pydatetime())
+
+    assert level.first_created_ts == window_start
+    assert level.first_created_ts < to_iso(NOW - timedelta(days=29))
+
+
+def test_migration_fills_age_from_windows(tmp_path: Path) -> None:
+    """Старая БД без poc_age_days получает возраст из source_windows."""
+    db_path = tmp_path / "poc.sqlite"
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0, windows=("7d", "30d"))
+    scanner.store.close()
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("ALTER TABLE poc_levels DROP COLUMN poc_age_days")
+    conn.execute("PRAGMA user_version = 1")
+    conn.commit()
+    conn.close()
+
+    reopened = POCScanner(make_config(tmp_path), "SOLUSDT")
+
+    level = reopened.store.levels("SOLUSDT")[0]
+    assert level.poc_age_days == 30
+    reopened.store.close()

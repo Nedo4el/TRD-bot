@@ -14,6 +14,7 @@ import pandas as pd
 from bot_screener_yrovni.poc_scanner.config import (
     POCConfig,
     WindowSpec,
+    get_poc_age_days,
     parse_window_days,
 )
 from bot_screener_yrovni.poc_scanner.klines import KlineCache, RateLimiter
@@ -126,10 +127,12 @@ class POCScanner:
 
         Returns:
             {window, poc, vah, val, total_volume, ts_calculated, candles,
-            interval} или None, если профиль не построился.
+            interval, window_start} или None, если профиль не построился.
         """
         spec = self.config.spec(window)
         candles = df.tail(spec.candles)
+        if candles.empty:
+            return None
         result = compute_profile(
             candles,
             num_bins=self.config.bins,
@@ -146,6 +149,7 @@ class POCScanner:
             "ts_calculated": utc_now_iso(),
             "candles": len(candles),
             "interval": spec.interval,
+            "window_start": to_iso(candles["ts"].iloc[0].to_pydatetime()),
         }
 
     def upsert_poc_level(self, poc_data: dict[str, Any]) -> LevelState:
@@ -158,6 +162,8 @@ class POCScanner:
             val=float(poc_data["val"]),
             source_windows=(window,),
             window_volumes={window: float(poc_data["total_volume"])},
+            poc_age_days=get_poc_age_days(window),
+            first_created_ts=str(poc_data.get("window_start") or ""),
             last_calculated_ts=str(poc_data.get("ts_calculated") or utc_now_iso()),
             va_window=window,
         )
@@ -177,6 +183,8 @@ class POCScanner:
                 "val": round(level.val, 10),
                 "total_volume_at_level": round(level.total_volume_at_level, 2),
                 "source_windows": list(level.source_windows),
+                "poc_age_days": level.poc_age_days,
+                "first_created_ts": level.first_created_ts,
                 "confirmed": level.confirmed,
                 "touch_count": level.touch_count,
             },
@@ -215,7 +223,7 @@ class POCScanner:
         for level in self.store.levels(self.symbol):
             if level.poc_price <= 0 or current_price <= 0:
                 continue
-            age_days = self._age_days(level, moment)
+            age_days = self._level_age_days(level)
             if not (
                 self.config.min_poc_age_days <= age_days <= self.config.max_poc_age_days
             ):
@@ -305,17 +313,27 @@ class POCScanner:
                     "история %s %s недоступна: %s", self.symbol, interval, exc
                 )
 
+        statuses: list[str] = []
         for spec in self.config.specs:
+            age_days = get_poc_age_days(spec.name)
+            if age_days < self.config.min_poc_age_days:
+                statuses.append(f"{spec.name}=skip(age={age_days})")
+                continue
             frame = self._series.get(spec.interval)
             if frame is None or frame.empty:
+                statuses.append(f"{spec.name}=skip(no_history)")
                 continue
             if len(frame) < spec.candles * MIN_WINDOW_COVERAGE:
+                statuses.append(f"{spec.name}=skip(short_history)")
                 self._warn_short_history(spec, len(frame))
                 continue
             poc_data = self.calculate_poc(frame, spec.name)
             if poc_data is None:
+                statuses.append(f"{spec.name}=skip(no_profile)")
                 continue
             self.upsert_poc_level(poc_data)
+            statuses.append(f"{spec.name}=ok(age={age_days})")
+        logger.info("%s: POC levels loaded: %s", self.symbol, ", ".join(statuses))
 
         price = current_price if current_price is not None else self._last_price()
         if price <= 0:
@@ -351,14 +369,15 @@ class POCScanner:
             available,
         )
 
-    def _age_days(self, level: LevelState, now: datetime) -> int:
-        if not level.first_created_ts:
-            return 0
-        try:
-            created = parse_iso(level.first_created_ts)
-        except ValueError:
-            return 0
-        return max(0, (now - created).days)
+    @staticmethod
+    def _level_age_days(level: LevelState) -> int:
+        """Возраст уровня в днях: из поля таблицы или по его окнам."""
+        if level.poc_age_days > 0:
+            return level.poc_age_days
+        return max(
+            (get_poc_age_days(name) for name in level.source_windows),
+            default=0,
+        )
 
     def _touch_allowed(self, level: LevelState, now: datetime) -> bool:
         if not level.last_touch_ts:

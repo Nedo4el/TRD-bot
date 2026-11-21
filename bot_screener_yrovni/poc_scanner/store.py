@@ -8,10 +8,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from bot_screener_yrovni.poc_scanner.config import parse_window_days
+from bot_screener_yrovni.poc_scanner.config import (
+    get_poc_age_days,
+    parse_window_days,
+)
 from bot_screener_yrovni.poc_scanner.timeutil import utc_now_iso
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS poc_levels (
@@ -23,6 +26,7 @@ CREATE TABLE IF NOT EXISTS poc_levels (
     total_volume_at_level REAL DEFAULT 0,
     source_windows TEXT,
     window_volumes TEXT,
+    poc_age_days INTEGER DEFAULT 0,
     first_created_ts TEXT,
     last_calculated_ts TEXT,
     last_touch_ts TEXT,
@@ -65,6 +69,11 @@ class LevelState:
     ``total_volume_at_level`` — сумма объёмов по окнам из ``window_volumes``,
     а не накопительный счётчик: повторный расчёт того же окна заменяет его
     объём, поэтому объём не растёт от каждого скана.
+
+    ``poc_age_days`` — возраст самого зрелого окна уровня (длина окна),
+    ``first_created_ts`` — начало самого старого окна, по которому уровень
+    посчитан сейчас. Оба поля справочные: фильтр возраста смотрит
+    на ``poc_age_days``.
     """
 
     symbol: str
@@ -74,6 +83,7 @@ class LevelState:
     total_volume_at_level: float = 0.0
     source_windows: tuple[str, ...] = ()
     window_volumes: dict[str, float] = field(default_factory=dict)
+    poc_age_days: int = 0
     first_created_ts: str = ""
     last_calculated_ts: str = ""
     last_touch_ts: str | None = None
@@ -102,10 +112,11 @@ class POCStore:
         version = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
         if version == 0:
             self._conn.executescript(_SCHEMA)
-            self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-            self._conn.commit()
-            return
         self._ensure_columns()
+        if version < SCHEMA_VERSION:
+            self._backfill_age_days()
+            self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        self._conn.commit()
 
     def _ensure_columns(self) -> None:
         """Добавить колонки, появившиеся после первой версии схемы."""
@@ -116,10 +127,24 @@ class POCStore:
         for name, ddl in (
             ("window_volumes", "TEXT"),
             ("va_window", "TEXT DEFAULT ''"),
+            ("poc_age_days", "INTEGER DEFAULT 0"),
         ):
             if name not in columns:
                 self._conn.execute(f"ALTER TABLE poc_levels ADD COLUMN {name} {ddl}")
         self._conn.commit()
+
+    def _backfill_age_days(self) -> None:
+        """Заполнить ``poc_age_days`` старых записей по их ``source_windows``."""
+        rows = self._conn.execute(
+            "SELECT id, source_windows FROM poc_levels"
+        ).fetchall()
+        for row in rows:
+            windows = json.loads(row["source_windows"] or "[]")
+            age = max((get_poc_age_days(str(name)) for name in windows), default=0)
+            self._conn.execute(
+                "UPDATE poc_levels SET poc_age_days = ? WHERE id = ?",
+                (age, int(row["id"])),
+            )
 
     # --- уровни ---------------------------------------------------------
 
@@ -170,10 +195,10 @@ class POCStore:
             """
             INSERT INTO poc_levels (
                 symbol, poc_price, vah, val, total_volume_at_level,
-                source_windows, window_volumes, first_created_ts,
+                source_windows, window_volumes, poc_age_days, first_created_ts,
                 last_calculated_ts, last_touch_ts, touch_count, confirmed,
                 va_window
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 candidate.symbol,
@@ -183,6 +208,7 @@ class POCStore:
                 total,
                 json.dumps(list(windows)),
                 json.dumps(volumes, sort_keys=True),
+                int(candidate.poc_age_days),
                 created,
                 now,
                 candidate.last_touch_ts,
@@ -200,6 +226,7 @@ class POCStore:
             total_volume_at_level=total,
             source_windows=windows,
             window_volumes=volumes,
+            poc_age_days=int(candidate.poc_age_days),
             first_created_ts=created,
             last_calculated_ts=now,
             last_touch_ts=candidate.last_touch_ts,
@@ -226,6 +253,9 @@ class POCStore:
         if self._window_days(candidate.va_window) > self._window_days(target.va_window):
             vah, val, va_window = candidate.vah, candidate.val, candidate.va_window
 
+        age_days = max(int(target.poc_age_days), int(candidate.poc_age_days))
+        created = self._oldest_ts(target.first_created_ts, candidate.first_created_ts)
+
         now = candidate.last_calculated_ts or utc_now_iso()
         confirmed = total >= confirm_threshold
         self._conn.execute(
@@ -233,6 +263,7 @@ class POCStore:
             UPDATE poc_levels SET
                 vah = ?, val = ?, total_volume_at_level = ?,
                 source_windows = ?, window_volumes = ?,
+                poc_age_days = ?, first_created_ts = ?,
                 last_calculated_ts = ?, confirmed = ?, va_window = ?
             WHERE id = ?
             """,
@@ -242,6 +273,8 @@ class POCStore:
                 total,
                 json.dumps(list(windows)),
                 json.dumps(volumes, sort_keys=True),
+                age_days,
+                created,
                 now,
                 int(confirmed),
                 va_window,
@@ -257,7 +290,8 @@ class POCStore:
             total_volume_at_level=total,
             source_windows=windows,
             window_volumes=volumes,
-            first_created_ts=target.first_created_ts,
+            poc_age_days=age_days,
+            first_created_ts=created,
             last_calculated_ts=now,
             last_touch_ts=target.last_touch_ts,
             touch_count=target.touch_count,
@@ -399,6 +433,12 @@ class POCStore:
         return tuple(sorted(windows, key=cls._window_days))
 
     @staticmethod
+    def _oldest_ts(first: str, second: str) -> str:
+        """Более ранняя из двух ISO-дат; пустая строка означает «нет даты»."""
+        stamps = [text for text in (first, second) if text]
+        return min(stamps) if stamps else ""
+
+    @staticmethod
     def _row_to_level(row: sqlite3.Row) -> LevelState:
         windows = json.loads(row["source_windows"] or "[]")
         volumes = json.loads(row["window_volumes"] or "{}")
@@ -410,6 +450,7 @@ class POCStore:
             total_volume_at_level=float(row["total_volume_at_level"] or 0.0),
             source_windows=tuple(str(name) for name in windows),
             window_volumes={str(k): float(v) for k, v in volumes.items()},
+            poc_age_days=int(row["poc_age_days"] or 0),
             first_created_ts=str(row["first_created_ts"] or ""),
             last_calculated_ts=str(row["last_calculated_ts"] or ""),
             last_touch_ts=(str(row["last_touch_ts"]) if row["last_touch_ts"] else None),
