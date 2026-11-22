@@ -785,7 +785,7 @@
       <button class="coin-tab-btn" data-robot-tab="uzkiy">Узкий диапазон</button>
       <button class="coin-tab-btn" data-robot-tab="krugloe">Круглые числа</button>
       <button class="coin-tab-btn" data-robot-tab="pump">Накопление</button>
-      <button class="coin-tab-btn" data-robot-tab="yrovni">Volume Profile</button>
+      <button class="coin-tab-btn" data-robot-tab="yrovni">POC уровни</button>
       <button class="coin-tab-btn" data-robot-tab="zakonomer">Закономерность</button>
     </div>
     <div class="robot-sig-list" id="robotSigList"></div>
@@ -1315,7 +1315,8 @@ function closeImpulseModal() {
 // ==================== Тренд-робот ====================
 // Робот, который запускается из окна «Новые сигналы»: сейчас привязан только тренд.
 const TREND_ROBOT = "robot_trend";
-const ROBOT_BY_TAB = { trend: TREND_ROBOT };
+const ROBOT_BY_TAB = { trend: TREND_ROBOT, yrovni: "robot_yrovni_D" };
+let robotStates = {};
 let trendRobot = { running: false, symbols: [] };
 let lastSeenAt = new Date(0).toISOString();
 let robotModalTab = "all";
@@ -1326,13 +1327,22 @@ async function loadRobotStatus() {
     const res = await fetch("/api/robots", { cache: "no-store" });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
-    const robot = (data.robots || []).find((r) => r.name === TREND_ROBOT);
-    trendRobot = {
-      running: Boolean(robot && robot.running),
-      symbols: (robot && robot.symbols) || [],
-    };
+    robotStates = {};
+    for (const r of data.robots || []) {
+      robotStates[r.name] = { running: Boolean(r.running), symbols: r.symbols || [] };
+    }
+    trendRobot = robotStates[TREND_ROBOT] || { running: false, symbols: [] };
     renderRobotBadge();
   } catch { /* ignore */ }
+}
+
+function currentRobot() {
+  return ROBOT_BY_TAB[robotModalTab] || null;
+}
+
+function currentRobotState() {
+  const robot = currentRobot();
+  return (robot && robotStates[robot]) || { running: false, symbols: [] };
 }
 
 function renderRobotBadge() {
@@ -1375,7 +1385,7 @@ function renderRobotModal() {
     uzkiy: "Узкий диапазон — запуск робота",
     krugloe: "Круглые числа — запуск робота",
     pump: "Накопление — запуск робота",
-    yrovni: "Volume Profile — запуск робота",
+    yrovni: "Уровни POC — запуск робота",
     zakonomer: "Закономерность — запуск робота",
   };
   $("robotModalTitle").textContent = titles[robotModalTab] || titles.all;
@@ -1385,7 +1395,7 @@ function renderRobotModal() {
   } else {
     list.innerHTML = robotModalList.map((s, i) => {
       const side = esc(s.side || "NEUTRAL");
-      const checked = trendRobot.symbols.includes(s.symbol) ? "checked" : "";
+      const checked = currentRobotState().symbols.includes(s.symbol) ? "checked" : "";
       const strat = esc((s.title || s.screener) + (s.label ? " · " + s.label : ""));
       return `<label class="robot-sig">
         <input type="checkbox" data-idx="${i}" ${checked} />
@@ -1402,11 +1412,12 @@ function renderRobotModal() {
 
 function updateRobotButtons() {
   const any = $("robotSigList").querySelectorAll("input:checked").length > 0;
+  const st = currentRobotState();
   $("robotStartBtn").disabled = !any;
-  $("robotStartBtn").textContent = trendRobot.running
+  $("robotStartBtn").textContent = st.running
     ? "Добавить и запустить"
     : "Запустить робота";
-  $("robotStopBtn").style.display = trendRobot.running ? "" : "none";
+  $("robotStopBtn").style.display = st.running ? "" : "none";
 }
 
 async function openRobotModal(filter) {
@@ -1440,13 +1451,14 @@ async function startRobotFromModal() {
     .map((cb) => Number(cb.dataset.idx));
   const symbols = idxs.map((i) => robotModalList[i].symbol);
   if (!symbols.length) return;
-  const robot = ROBOT_BY_TAB[robotModalTab];
+  const robot = currentRobot();
   if (!robot) {
     toast("Для этого скринера робот не привязан — выберите вкладку «Тренд EMA/ADX»", true);
     return;
   }
-  const running = trendRobot.running;
-  const fresh = symbols.filter((s) => !trendRobot.symbols.includes(s));
+  const st = currentRobotState();
+  const running = st.running;
+  const fresh = symbols.filter((s) => !st.symbols.includes(s));
   if (running && !fresh.length) {
     toast("Эти монеты уже у робота " + robot);
     return;
@@ -1494,16 +1506,18 @@ async function startRobotFromModal() {
   }
 }
 
-async function stopTrendRobot() {
+async function stopCurrentRobot() {
+  const robot = currentRobot();
+  if (!robot) return;
   try {
-    const res = await fetch("/api/robots/" + encodeURIComponent(TREND_ROBOT) + "/stop", {
+    const res = await fetch("/api/robots/" + encodeURIComponent(robot) + "/stop", {
       method: "POST",
     });
     const data = await res.json();
     if (!res.ok || !data.ok) {
       throw new Error(data.message || data.error || "HTTP " + res.status);
     }
-    toast("Робот остановлен");
+    toast("Робот " + robot + " остановлен");
     await loadRobotStatus();
     updateRobotButtons();
     loadRobots();
@@ -1635,7 +1649,7 @@ document.querySelectorAll("[data-robot-tab]").forEach((btn) => {
   });
 });
 $("robotStartBtn").addEventListener("click", startRobotFromModal);
-$("robotStopBtn").addEventListener("click", stopTrendRobot);
+$("robotStopBtn").addEventListener("click", stopCurrentRobot);
 
 // Роботы
 let robots = [];
