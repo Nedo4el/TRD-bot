@@ -231,9 +231,7 @@ def test_list_merges_state_with_exchange(
     )
     _patch_robots(monkeypatch, client, symbols=["AAAUSDT", "BBBUSDT"])
 
-    async def run() -> tuple[
-        list[dict[str, Any]], list[dict[str, str]], list[str]
-    ]:
+    async def run() -> tuple[list[dict[str, Any]], list[dict[str, str]], list[str]]:
         return await list_open_positions()
 
     rows, errors, notes = asyncio.run(run())
@@ -265,9 +263,7 @@ def test_list_falls_back_to_state_when_exchange_down(
     )
     _patch_robots(monkeypatch, FakeClient(error=RuntimeError("boom")))
 
-    async def run() -> tuple[
-        list[dict[str, Any]], list[dict[str, str]], list[str]
-    ]:
+    async def run() -> tuple[list[dict[str, Any]], list[dict[str, str]], list[str]]:
         return await list_open_positions()
 
     rows, errors, notes = asyncio.run(run())
@@ -299,9 +295,7 @@ def test_list_hides_stopped_robot_state_when_exchange_down(
         running=False,
     )
 
-    async def run() -> tuple[
-        list[dict[str, Any]], list[dict[str, str]], list[str]
-    ]:
+    async def run() -> tuple[list[dict[str, Any]], list[dict[str, str]], list[str]]:
         return await list_open_positions()
 
     rows, errors, notes = asyncio.run(run())

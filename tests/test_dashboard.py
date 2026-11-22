@@ -13,10 +13,9 @@ from typing import Any, Self
 import pytest
 
 from bot_screener_yrovni.poc_scanner.signals import POCSignal
-from dashboard import progress
+from dashboard import progress, tiger
 from dashboard import scheduler as scheduler_module
 from dashboard import store as store_module
-from dashboard import tiger
 from dashboard.adapters import scan_poc
 from dashboard.config import (
     MIN_INTERVAL_SEC,
@@ -162,6 +161,53 @@ def test_store_keeps_signals_when_scan_returns_nothing(store: SignalStore) -> No
     assert snapshot["total_signals"] == 1
     assert snapshot["signals"][0]["symbol"] == "AAAUSDT"
     assert snapshot["screeners"][0]["count"] == 1
+
+
+def test_store_live_screener_clears_signals_when_scan_returns_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(store_module, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(store_module, "STATE_FILE", tmp_path / "latest.json")
+    spec = ScreenerSpec(
+        name="yrovni",
+        title="Уровни POC",
+        dir_name="bot_screener_yrovni",
+        interval_sec=300,
+        max_symbols=25,
+        live_signals=True,
+    )
+    store = SignalStore([spec])
+    store.set_result(
+        "yrovni",
+        [_signal("AKEUSDT", 0.0, screener="yrovni")],
+        1.0,
+        "2026-01-01T00:01:00+00:00",
+    )
+
+    store.set_result("yrovni", [], 0.5, "2026-01-01T00:02:00+00:00")
+
+    snapshot = store.snapshot()
+    assert snapshot["total_signals"] == 0
+    assert snapshot["screeners"][0]["count"] == 0
+
+
+def test_store_clear_signals_removes_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(store_module, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(store_module, "STATE_FILE", tmp_path / "latest.json")
+    store = SignalStore([_spec("impulse"), _spec("klin")])
+    store.set_result("impulse", [_signal("AAAUSDT", 1.0)], 1.0, "")
+    store.set_result("klin", [_signal("BBBUSDT", 2.0, screener="klin")], 1.0, "")
+
+    cleared = store.clear_signals()
+
+    assert cleared == 2
+    snapshot = store.snapshot()
+    assert snapshot["total_signals"] == 0
+    assert all(item["count"] == 0 for item in snapshot["screeners"])
+    reloaded = SignalStore([_spec("impulse"), _spec("klin")])
+    assert reloaded.snapshot()["total_signals"] == 0
 
 
 def test_store_restores_snapshot(
@@ -1280,3 +1326,81 @@ def test_scan_poc_returns_signal_from_scanner(monkeypatch: pytest.MonkeyPatch) -
     assert signal.detail["signal_id"] == "AKEUSDT:0.005219:long:1"
     assert signal.detail["windows"] == "30d"
     assert signal.detail["price"] == pytest.approx(0.005259)
+
+
+def test_scan_poc_raises_when_every_symbol_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Если все символы недоступны — это сбой, а не «сигналов нет»."""
+    spec = ScreenerSpec("yrovni", "Уровни POC", "bot_screener_yrovni", 300, 25)
+
+    class FakeEnv:
+        def names(self, key: str, default: tuple[str, ...] = ()) -> list[str]:
+            return ["AAAUSDT", "BBBUSDT"]
+
+    class FailingScanner:
+        def __init__(self, config: object, symbol: str) -> None:
+            self.symbol = symbol
+
+        def refresh(self) -> POCSignal | None:
+            raise RuntimeError("403")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("dashboard.adapters._env", lambda spec: FakeEnv())
+    monkeypatch.setattr(
+        "bot_screener_yrovni.poc_scanner.scanner.POCScanner", FailingScanner
+    )
+
+    with pytest.raises(RuntimeError, match="недоступны все символы"):
+        asyncio.run(scan_poc(spec))
+
+
+def test_poc_pending_signal_expires(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pending старше TTL помечается expired и не висит в «ожидают»."""
+    import dashboard.poc_signals as poc_module
+
+    monkeypatch.setattr(poc_module, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(poc_module, "POC_SIGNALS_FILE", tmp_path / "poc.json")
+    monkeypatch.setattr(poc_module, "AUTO_TRADE_FILE", tmp_path / "auto.json")
+    monkeypatch.setenv("POC_SIGNAL_TTL_MIN", "60")
+    store = poc_module.PocSignalStore()
+    record, created = store.add(
+        {
+            "signal_id": "AAAUSDT:1:long:1",
+            "symbol": "AAAUSDT",
+            "direction": "long",
+            "entry_price": 1.0,
+            "price": 1.01,
+            "ts": "2026-11-22T00:00:00Z",
+        }
+    )
+
+    assert created is True
+    record.received_at = "2020-01-01T00:00:00+00:00"
+
+    snapshot = store.snapshot()
+
+    assert snapshot["pending"] == 0
+    assert snapshot["signals"][0]["state"] == "expired"
+
+
+def test_signals_clear_endpoint(store: SignalStore) -> None:
+    """POST /api/signals/clear стирает сигналы и возвращает их число."""
+    from dashboard.server import api_signals_clear
+
+    store.set_result("impulse", [_signal("AAAUSDT", 1.0)], 1.0, "")
+    fake_app = SimpleNamespace(state=SimpleNamespace(store=store))
+
+    async def run() -> Any:
+        request: Any = SimpleNamespace(app=fake_app)
+        return await api_signals_clear(request)
+
+    resp = asyncio.run(run())
+    body = json.loads(resp.body)
+
+    assert body == {"ok": True, "cleared": 1}
+    assert store.snapshot()["total_signals"] == 0

@@ -724,6 +724,7 @@ async def scan_poc(spec: ScreenerSpec) -> list[Signal]:
         return []
     progress.set_total(spec.name, len(symbols))
     signals: list[Signal] = []
+    failed = 0
     for symbol in symbols:
         try:
             scanner = POCScanner(POCConfig.from_env(symbol, env_file), symbol)
@@ -731,6 +732,7 @@ async def scan_poc(spec: ScreenerSpec) -> list[Signal]:
             scanner.close()
         except Exception as exc:  # noqa: BLE001 — символ не должен ронять скан
             logger.warning("POC: ошибка по %s: %s", symbol, exc)
+            failed += 1
             progress.advance(spec.name)
             continue
         progress.advance(spec.name)
@@ -758,6 +760,10 @@ async def scan_poc(spec: ScreenerSpec) -> list[Signal]:
                 },
             )
         )
+    if failed == len(symbols):
+        # Ни один символ не посчитан — это сбой, а не «сигналов нет»:
+        # иначе live-скринер сотрёт сигналы из-за недоступной биржи.
+        raise RuntimeError(f"POC: недоступны все символы ({failed}/{len(symbols)})")
     return signals
 
 

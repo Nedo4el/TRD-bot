@@ -10,7 +10,9 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from core.logger import get_logger
@@ -24,6 +26,17 @@ AUTO_TRADE_FILE = DATA_DIR / "auto_trade.json"
 MAX_RECORDS = 200
 STATE_PENDING = "pending"
 STATE_ACTIVE = "active"
+STATE_EXPIRED = "expired"
+DEFAULT_TTL_MIN = 120
+
+
+def _ttl_minutes() -> int:
+    """Срок жизни неподтверждённого сигнала в минутах (POC_SIGNAL_TTL_MIN)."""
+    raw = os.getenv("POC_SIGNAL_TTL_MIN", "").strip()
+    try:
+        return max(1, int(raw)) if raw else DEFAULT_TTL_MIN
+    except ValueError:
+        return DEFAULT_TTL_MIN
 
 
 @dataclass(slots=True)
@@ -133,6 +146,8 @@ class PocSignalStore:
 
     def snapshot(self) -> dict[str, Any]:
         """Снимок для дашборда: флаг режима, счётчики и список сигналов."""
+        if self._expire_pending():
+            self._persist()
         pending = sum(1 for item in self._records if item.state == STATE_PENDING)
         active = sum(1 for item in self._records if item.state == STATE_ACTIVE)
         return {
@@ -142,6 +157,26 @@ class PocSignalStore:
             "active": active,
             "signals": [item.to_dict() for item in self._records],
         }
+
+    def _expire_pending(self) -> bool:
+        """Пометить устаревшие pending как expired; вернуть, были ли изменения."""
+        ttl = _ttl_minutes()
+        limit = datetime.now(timezone.utc) - timedelta(minutes=ttl)
+        changed = False
+        for record in self._records:
+            if record.state != STATE_PENDING:
+                continue
+            try:
+                received = datetime.fromisoformat(record.received_at)
+            except (TypeError, ValueError):
+                received = None
+            if received is not None and received.tzinfo is None:
+                received = received.replace(tzinfo=timezone.utc)
+            if received is None or received < limit:
+                record.state = STATE_EXPIRED
+                changed = True
+                logger.info("POC-сигнал %s истёк (TTL %s мин)", record.signal_id, ttl)
+        return changed
 
     def _find(self, signal_id: str) -> PocSignalRecord | None:
         return next(

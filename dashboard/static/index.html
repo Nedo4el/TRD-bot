@@ -251,7 +251,7 @@
     .vol-up { color: var(--green); font-weight: 600; } .vol-dn { color: var(--red); font-weight: 600; }
     .vol-flat { color: var(--muted); }
     .chk-field { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-    .chk-field input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+    .chk-field input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; min-width: 0; }
     .chk-field label { color: var(--text); font-size: 13px; font-weight: 600; cursor: pointer; }
      @media (max-width: 900px) {
        .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -412,7 +412,6 @@
   <div class="screeners-layout">
     <aside class="screeners-side">
       <h2>Статус скринеров</h2>
-      <div class="cards" id="cards"></div>
   <div class="settings-panel" id="impulsePanel">
      <h3><span class="dot"></span> Импульс — настройки</h3>
      <div class="chk-field">
@@ -529,6 +528,7 @@
       <button id="spReset">Сбросить</button>
     </div>
   </div>
+      <div class="cards" id="cards"></div>
     </aside>
     <div class="screeners-main">
   <div class="stats">
@@ -565,6 +565,7 @@
       <option value="vol_trend_desc">Объём trend ↓</option>
       <option value="vol_trend_asc">Объём trend ↑</option>
     </select>
+    <button id="clearSignals" title="Удалить все сигналы со всех скринеров">Очистить сигналы</button>
   </div>
 
   <div class="table-wrap">
@@ -1125,6 +1126,19 @@ async function load() {
   }
 }
 
+async function clearSignals() {
+  if (!confirm("Удалить все сигналы со всех скринеров?")) return;
+  try {
+    const res = await fetch("/api/signals/clear", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+    toast("Сигналы очищены: " + data.cleared);
+    load();
+  } catch (err) {
+    toast("Не удалось очистить сигналы: " + err.message, true);
+  }
+}
+
 async function loadSettings() {
   try {
     const res = await fetch("/api/settings/all", { cache: "no-store" });
@@ -1593,6 +1607,7 @@ $("tbody").addEventListener("click", (e) => {
 });
 $("interval").addEventListener("change", schedule);
 $("search").addEventListener("input", renderTable);
+$("clearSignals").addEventListener("click", clearSignals);
 $("fScreener").addEventListener("change", renderTable);
 $("fSide").addEventListener("change", renderTable);
 $("fSort").addEventListener("change", renderTable);
@@ -2309,9 +2324,12 @@ function renderPocSignals(data) {
   $("pocUpdated").textContent = "Обновлено: " + fmtClock(data.generated_at);
   const rows = (data.signals || []).map((s) => {
     const pending = s.state === "pending";
+    const expired = s.state === "expired";
     const stateCell = pending
       ? '<span class="muted">ожидает</span>'
-      : '<span style="color:var(--green)">в работе</span>';
+      : expired
+        ? '<span class="muted">истёк</span>'
+        : '<span style="color:var(--green)">в работе</span>';
     const dirCls = s.direction === "long" ? "LONG" : "SHORT";
     const dirText = s.direction === "long" ? "LONG" : "SHORT";
     const action = pending

@@ -97,7 +97,13 @@ class SignalStore:
             status.next_run_at = next_run_at
             status.error = None
         if not signals:
-            # Биржа вернула 0 сигналов — не стирать кэш.
+            # У «доски» сигналов пустой ответ — это сбой биржи, кэш не
+            # стираем. У «живых» сигналов (POC: цена в зоне) пустой список —
+            # факт «сигналов сейчас нет», поэтому список очищаем.
+            if self._specs[name].live_signals:
+                self._signals[name] = []
+                if status is not None:
+                    status.count = 0
             self._persist()
             return
         unique: dict[str, Signal] = {}
@@ -131,6 +137,17 @@ class SignalStore:
             status.next_run_at = next_run_at
             status.error = error[:500]
         self._persist()
+
+    def clear_signals(self) -> int:
+        """Убрать все сигналы со всех скринеров; вернуть, сколько было."""
+        cleared = sum(len(items) for items in self._signals.values())
+        for name in self._signals:
+            self._signals[name] = []
+        for status in self._status.values():
+            status.count = 0
+        self._persist()
+        logger.info("Сигналы очищены: %s", cleared)
+        return cleared
 
     def snapshot(self) -> dict[str, Any]:
         """Собрать снимок для API."""

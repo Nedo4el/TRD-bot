@@ -78,6 +78,13 @@ async def api_signals(request: Request) -> JSONResponse:
     return JSONResponse(store.snapshot(), headers=_NO_CACHE)
 
 
+async def api_signals_clear(request: Request) -> JSONResponse:
+    """Очистить все сигналы на дашборде; статусы скринеров остаются."""
+    store: SignalStore = request.app.state.store
+    cleared = store.clear_signals()
+    return JSONResponse({"ok": True, "cleared": cleared}, headers=_NO_CACHE)
+
+
 def _signal_error(body: dict[str, Any]) -> str | None:
     """Проверить тело POC-сигнала; вернуть текст ошибки или None."""
     signal_id = str(body.get("signal_id") or "").strip()
@@ -562,6 +569,7 @@ def create_app() -> Starlette:
     routes = [
         Route("/", homepage),
         Route("/api/signals", api_signals),
+        Route("/api/signals/clear", api_signals_clear, methods=["POST"]),
         Route("/api/signal", api_signal_receive, methods=["POST"]),
         Route("/api/poc-signals", api_poc_signals),
         Route("/api/poc-signals/confirm", api_poc_confirm, methods=["POST"]),

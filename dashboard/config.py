@@ -26,6 +26,8 @@ class ScreenerSpec:
     interval_sec: int
     max_symbols: int
     heavy: bool = False
+    # live: пустой успешный скан очищает список (POC), а не хранит кэш.
+    live_signals: bool = False
 
 
 SCREENERS: tuple[ScreenerSpec, ...] = (
@@ -49,6 +51,7 @@ SCREENERS: tuple[ScreenerSpec, ...] = (
         "bot_screener_yrovni",
         300,
         25,
+        live_signals=True,
     ),
     ScreenerSpec("all", "Все монеты", "all", 60, 100),
 )
