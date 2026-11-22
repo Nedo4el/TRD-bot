@@ -10,6 +10,7 @@ from typing import Any
 from core.logger import get_logger
 from dashboard.config import DATA_DIR, STATE_FILE, ScreenerSpec
 from dashboard.models import Signal
+from dashboard.progress import snapshot as progress_snapshot
 
 logger = get_logger(__name__)
 
@@ -138,7 +139,11 @@ class SignalStore:
             for name in self._specs
             for signal in self._signals.get(name, [])
         ]
-        statuses = [status.to_dict() for status in self._status.values()]
+        statuses = []
+        for status in self._status.values():
+            item = status.to_dict()
+            item["progress"] = progress_snapshot(status.name)
+            statuses.append(item)
         errors = sum(1 for status in self._status.values() if status.error)
         return {
             "generated_at": now_iso(),

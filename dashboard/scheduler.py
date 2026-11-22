@@ -11,6 +11,7 @@ import asyncio
 import time
 
 from core.logger import get_logger
+from dashboard import progress
 from dashboard.adapters import ADAPTERS
 from dashboard.config import DashboardConfig, ScreenerSpec
 from dashboard.store import SignalStore
@@ -70,6 +71,7 @@ class Scheduler:
     async def _run(self, spec: ScreenerSpec) -> None:
         async with self._semaphore:
             self._store.mark_running(spec.name)
+            progress.start(spec.name)
             started = time.monotonic()
             scan = ADAPTERS[spec.name]
             try:
@@ -92,3 +94,5 @@ class Scheduler:
                     duration,
                 )
                 self._store.set_result(spec.name, signals, duration, "")
+            finally:
+                progress.clear(spec.name)

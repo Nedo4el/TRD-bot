@@ -193,14 +193,43 @@ def _state_row(robot: str, state: StatePosition, running: bool) -> dict[str, Any
     }
 
 
-async def list_open_positions() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    """Открытые позиции всех роботов: (строки, ошибки по роботам).
+def _add_unconfirmed(
+    rows: list[dict[str, Any]],
+    notes: list[str],
+    robot: str,
+    states: dict[str, StatePosition],
+    running: set[str],
+) -> None:
+    """Добавить позиции из state, когда биржа их не подтвердила.
+
+    У работающего робота state обновляется на каждом тике — показываем с
+    пометкой source=state. У остановленного state — снимок на момент
+    остановки: после ручного закрытия там остаётся «позиция», которой на
+    бирже уже нет. Такую строку не показываем, только поясняем.
+    """
+    if not states:
+        return
+    if robot in running:
+        rows.extend(_state_row(robot, item, True) for item in states.values())
+        return
+    notes.append(
+        f"{robot}: {', '.join(sorted(states))} — есть в state-файле, но робот "
+        "остановлен и биржа недоступна; как открытые не показываем"
+    )
+
+
+async def list_open_positions() -> tuple[
+    list[dict[str, Any]], list[dict[str, str]], list[str]
+]:
+    """Открытые позиции всех роботов: (строки, ошибки, пояснения).
 
     Позицию, которой нет на бирже, не показываем (её уже закрыли). Если
-    биржа недоступна, показываем state-позиции с пометкой source=state.
+    биржа недоступна, показываем state-позиции только работающих роботов:
+    state остановленного робота — устаревший снимок (фантомная строка).
     """
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    notes: list[str] = []
     running = {status.name for status in get_all_robots_status() if status.running}
     for robot in get_available_robots():
         states = state_positions(robot)
@@ -210,7 +239,7 @@ async def list_open_positions() -> tuple[list[dict[str, Any]], list[dict[str, st
         if client is None:
             message = "нет API-ключей в .env робота"
             errors.append({"robot": robot, "error": message})
-            rows.extend(_state_row(robot, item, False) for item in states.values())
+            _add_unconfirmed(rows, notes, robot, states, running)
             continue
         try:
             positions = await client.get_all_positions()
@@ -218,9 +247,7 @@ async def list_open_positions() -> tuple[list[dict[str, Any]], list[dict[str, st
             message = f"биржа недоступна: {exc}"
             logger.warning("позиции %s: %s", robot, message)
             errors.append({"robot": robot, "error": message})
-            rows.extend(
-                _state_row(robot, item, robot in running) for item in states.values()
-            )
+            _add_unconfirmed(rows, notes, robot, states, running)
             continue
         allowed = set(get_robot_symbols(robot)) | set(states)
         for position in positions:
@@ -230,7 +257,7 @@ async def list_open_positions() -> tuple[list[dict[str, Any]], list[dict[str, st
                 _row(robot, position, states.get(position.symbol), robot in running)
             )
     rows.sort(key=lambda row: (row["robot"], row["symbol"]))
-    return rows, errors
+    return rows, errors, notes
 
 
 async def _wait_flat(client: BybitClient, symbol: str) -> bool:

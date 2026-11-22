@@ -464,13 +464,14 @@ async def api_robot_statistics_clear(request: Request) -> JSONResponse:
 
 async def api_positions(request: Request) -> JSONResponse:
     """Открытые позиции всех роботов (биржа + state-файлы)."""
-    positions, errors = await list_open_positions()
+    positions, errors, notes = await list_open_positions()
     return JSONResponse(
         {
             "ok": True,
             "generated_at": now_iso(),
             "positions": positions,
             "errors": errors,
+            "notes": notes,
         },
         headers=_NO_CACHE,
     )

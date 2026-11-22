@@ -15,6 +15,7 @@ from typing import Any
 
 from core.indicators import atr as atr_ind
 from core.logger import get_logger
+from dashboard import progress
 from dashboard.config import PROJECT_ROOT, ScreenerEnv, ScreenerSpec
 from dashboard.fetcher import DashboardFetcher
 from dashboard.models import Signal, make_signal
@@ -73,11 +74,13 @@ async def _universe(
 
 
 async def _batched(
+    spec: ScreenerSpec,
     items: list[tuple[str, float]],
     size: int,
     worker: Worker,
 ) -> list[Signal]:
     """Выполнить worker пачками, переживая ошибки отдельных символов."""
+    progress.set_total(spec.name, len(items))
     signals: list[Signal] = []
     for start in range(0, len(items), size):
         batch = items[start : start + size]
@@ -85,6 +88,7 @@ async def _batched(
             *(worker(item) for item in batch),
             return_exceptions=True,
         )
+        progress.advance(spec.name, len(batch))
         for item, result in zip(batch, results, strict=True):
             if isinstance(result, BaseException):
                 logger.warning("Скринер: ошибка по %s: %s", item[0], result)
@@ -145,7 +149,7 @@ async def scan_impulse(spec: ScreenerSpec) -> list[Signal]:
             )
         ]
 
-    return await _batched(universe, 10, work)
+    return await _batched(spec, universe, 10, work)
 
 
 async def scan_klin(spec: ScreenerSpec) -> list[Signal]:
@@ -209,7 +213,7 @@ async def scan_klin(spec: ScreenerSpec) -> list[Signal]:
             )
         return found
 
-    return await _batched(universe, 10, work)
+    return await _batched(spec, universe, 10, work)
 
 
 async def scan_uzkiy(spec: ScreenerSpec) -> list[Signal]:
@@ -255,7 +259,7 @@ async def scan_uzkiy(spec: ScreenerSpec) -> list[Signal]:
             )
         ]
 
-    return await _batched(universe, 10, work)
+    return await _batched(spec, universe, 10, work)
 
 
 async def scan_krugloe(spec: ScreenerSpec) -> list[Signal]:
@@ -304,7 +308,7 @@ async def scan_krugloe(spec: ScreenerSpec) -> list[Signal]:
             )
         ]
 
-    return await _batched(universe, 10, work)
+    return await _batched(spec, universe, 10, work)
 
 
 async def scan_trend(spec: ScreenerSpec) -> list[Signal]:
@@ -379,7 +383,7 @@ async def scan_trend(spec: ScreenerSpec) -> list[Signal]:
             )
         ]
 
-    return await _batched(universe, 5, work)
+    return await _batched(spec, universe, 5, work)
 
 
 async def scan_pump(spec: ScreenerSpec) -> list[Signal]:
@@ -468,7 +472,7 @@ async def scan_pump(spec: ScreenerSpec) -> list[Signal]:
             )
         ]
 
-    return await _batched(universe, 10, work)
+    return await _batched(spec, universe, 10, work)
 
 
 async def scan_all_coins(spec: ScreenerSpec) -> list[Signal]:
@@ -522,6 +526,7 @@ async def scan_all_coins(spec: ScreenerSpec) -> list[Signal]:
 
     candidates.sort(key=lambda x: x["turnover"], reverse=True)
     candidates = candidates[: settings.max_symbols]
+    progress.set_total(spec.name, len(candidates))
 
     atr_period = settings.atr_period
     tf = settings.timeframe
@@ -551,6 +556,7 @@ async def scan_all_coins(spec: ScreenerSpec) -> list[Signal]:
                         )
 
             await asyncio.gather(*(one(item) for item in batch))
+            progress.advance(spec.name, len(batch))
 
     await enrich_all()
 
@@ -697,7 +703,7 @@ async def scan_zakonomer(spec: ScreenerSpec) -> list[Signal]:
             )
         ]
 
-    return await _batched(universe, 5, work)
+    return await _batched(spec, universe, 5, work)
 
 
 async def scan_poc(spec: ScreenerSpec) -> list[Signal]:
@@ -716,6 +722,7 @@ async def scan_poc(spec: ScreenerSpec) -> list[Signal]:
     symbols = env.names("POC_SYMBOLS", ())[: spec.max_symbols]
     if not symbols:
         return []
+    progress.set_total(spec.name, len(symbols))
     signals: list[Signal] = []
     for symbol in symbols:
         try:
@@ -724,7 +731,9 @@ async def scan_poc(spec: ScreenerSpec) -> list[Signal]:
             scanner.close()
         except Exception as exc:  # noqa: BLE001 — символ не должен ронять скан
             logger.warning("POC: ошибка по %s: %s", symbol, exc)
+            progress.advance(spec.name)
             continue
+        progress.advance(spec.name)
         if found is None:
             continue
         side = "LONG" if found.direction == "long" else "SHORT"

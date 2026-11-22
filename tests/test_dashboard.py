@@ -13,6 +13,7 @@ from typing import Any, Self
 import pytest
 
 from bot_screener_yrovni.poc_scanner.signals import POCSignal
+from dashboard import progress
 from dashboard import scheduler as scheduler_module
 from dashboard import store as store_module
 from dashboard import tiger
@@ -255,6 +256,61 @@ def test_scheduler_run_records_failure(
     status = store.snapshot()["screeners"][0]
     assert status["running"] is False
     assert "RuntimeError: boom" in status["error"]
+    assert status["progress"] is None
+
+
+def test_progress_reports_percent_and_eta() -> None:
+    progress.start("impulse")
+    progress.set_total("impulse", 20)
+    progress.advance("impulse", 5)
+
+    snap = progress.snapshot("impulse")
+
+    assert snap is not None
+    assert snap["total"] == 20
+    assert snap["done"] == 5
+    assert snap["percent"] == 25.0
+    assert snap["eta_sec"] is not None
+    assert snap["eta_sec"] >= 0.0
+
+    progress.clear("impulse")
+    assert progress.snapshot("impulse") is None
+
+
+def test_store_snapshot_includes_scan_progress(store: SignalStore) -> None:
+    progress.start("impulse")
+    progress.set_total("impulse", 10)
+    progress.advance("impulse", 4)
+
+    status = store.snapshot()["screeners"][0]
+
+    assert status["progress"]["done"] == 4
+    assert status["progress"]["total"] == 10
+
+    progress.clear("impulse")
+    assert store.snapshot()["screeners"][0]["progress"] is None
+
+
+def test_scheduler_clears_progress_after_run(
+    store: SignalStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[dict[str, Any] | None] = []
+
+    async def fake_scan(spec: ScreenerSpec) -> list[Signal]:
+        progress.set_total(spec.name, 2)
+        progress.advance(spec.name, 2)
+        seen.append(progress.snapshot(spec.name))
+        return []
+
+    monkeypatch.setitem(scheduler_module.ADAPTERS, "impulse", fake_scan)
+    scheduler = Scheduler([_spec()], store, DashboardConfig(enabled=("impulse",)))
+
+    asyncio.run(scheduler._run(_spec()))
+
+    assert seen and seen[0] is not None
+    assert seen[0]["done"] == 2
+    assert progress.snapshot("impulse") is None
 
 
 def test_settings_defaults_and_roundtrip(

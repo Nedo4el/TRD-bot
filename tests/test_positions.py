@@ -231,12 +231,15 @@ def test_list_merges_state_with_exchange(
     )
     _patch_robots(monkeypatch, client, symbols=["AAAUSDT", "BBBUSDT"])
 
-    async def run() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    async def run() -> tuple[
+        list[dict[str, Any]], list[dict[str, str]], list[str]
+    ]:
         return await list_open_positions()
 
-    rows, errors = asyncio.run(run())
+    rows, errors, notes = asyncio.run(run())
 
     assert errors == []
+    assert notes == []
     assert len(rows) == 1  # ZZZUSDT не принадлежит роботу
     row = rows[0]
     assert row["robot"] == ROBOT
@@ -262,16 +265,51 @@ def test_list_falls_back_to_state_when_exchange_down(
     )
     _patch_robots(monkeypatch, FakeClient(error=RuntimeError("boom")))
 
-    async def run() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    async def run() -> tuple[
+        list[dict[str, Any]], list[dict[str, str]], list[str]
+    ]:
         return await list_open_positions()
 
-    rows, errors = asyncio.run(run())
+    rows, errors, notes = asyncio.run(run())
 
     assert len(rows) == 1
     assert rows[0]["source"] == "state"
     assert rows[0]["symbol"] == "AAAUSDT"
+    assert notes == []
     assert errors and errors[0]["robot"] == ROBOT
     assert "boom" in errors[0]["error"]
+
+
+def test_list_hides_stopped_robot_state_when_exchange_down(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """State остановленного робота — устаревший снимок, не открытая позиция.
+
+    Фантом: позицию закрыли руками, а state не обновился; при недоступной
+    бирже такая строка раньше висела в «Открытых позициях» с кнопкой 50%.
+    """
+    _setup_robot(tmp_path, monkeypatch)
+    _write_state(
+        tmp_path, "trend_state_AAAUSDT.json", symbol="AAAUSDT", position=_position()
+    )
+    _patch_robots(
+        monkeypatch,
+        FakeClient(error=RuntimeError("boom")),
+        running=False,
+    )
+
+    async def run() -> tuple[
+        list[dict[str, Any]], list[dict[str, str]], list[str]
+    ]:
+        return await list_open_positions()
+
+    rows, errors, notes = asyncio.run(run())
+
+    assert rows == []
+    assert errors and errors[0]["robot"] == ROBOT
+    assert len(notes) == 1
+    assert ROBOT in notes[0] and "AAAUSDT" in notes[0]
 
 
 def test_close_full_position_market_reduce_only(
@@ -393,7 +431,9 @@ def test_close_rejects_foreign_symbol_and_missing_position(
 def test_api_positions_endpoints(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_list() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    async def fake_list() -> tuple[
+        list[dict[str, Any]], list[dict[str, str]], list[str]
+    ]:
         return (
             [
                 {
@@ -412,6 +452,7 @@ def test_api_positions_endpoints(
                     "source": "exchange",
                 }
             ],
+            [],
             [],
         )
 
@@ -432,6 +473,7 @@ def test_api_positions_endpoints(
         assert resp.status_code == 200
         assert data["ok"] is True
         assert data["positions"][0]["symbol"] == "AAAUSDT"
+        assert data["notes"] == []
 
         resp = await server_module.api_positions_close(
             _plain_request({"robot": ROBOT, "symbol": "aaausdt", "pct": 50})
