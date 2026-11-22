@@ -14,7 +14,7 @@ from bot_screener_yrovni.poc_scanner import klines
 from bot_screener_yrovni.poc_scanner.clusters import cluster_prices, round_level
 from bot_screener_yrovni.poc_scanner.config import POCConfig, get_poc_age_days
 from bot_screener_yrovni.poc_scanner.profile import compute_profile
-from bot_screener_yrovni.poc_scanner.scanner import POCScanner
+from bot_screener_yrovni.poc_scanner.scanner import POCScanner, zone_contact_hours
 from bot_screener_yrovni.poc_scanner.store import LevelState
 from bot_screener_yrovni.poc_scanner.timeutil import to_iso
 
@@ -115,6 +115,31 @@ def make_history(
             "close": price,
             "volume": 1.0,
             "turnover": turnover,
+        }
+    )
+
+
+def make_price_frame(
+    prices: list[float],
+    end: datetime = NOW,
+    minutes: int = 5,
+) -> pd.DataFrame:
+    """Свечи цены с заданными закрытиями; последняя — в ``end``."""
+    stamps = pd.date_range(
+        end=end,
+        periods=len(prices),
+        freq=timedelta(minutes=minutes),
+        tz="UTC",
+    )
+    return pd.DataFrame(
+        {
+            "ts": stamps,
+            "open": prices,
+            "high": prices,
+            "low": prices,
+            "close": prices,
+            "volume": 1.0,
+            "turnover": 1_000.0,
         }
     )
 
@@ -261,6 +286,55 @@ def test_zone_state_survives_reopen(tmp_path: Path) -> None:
         assert reopened.check_clusters(50.1, now=NOW + timedelta(minutes=5)) is None
     finally:
         reopened.close()
+
+
+def test_zone_contact_hours_measures_run_and_quiet() -> None:
+    """Функция считает время в зоне и паузу до текущего подхода."""
+    frame = make_price_frame([50.5] * 3 + [60.0] * 10 + [50.5] * 3)
+
+    quiet, contact = zone_contact_hours(frame, 50.0, 0.10, NOW)
+
+    assert contact == pytest.approx(10 / 60)
+    assert quiet == pytest.approx(55 / 60)
+
+
+def test_zone_contact_hours_none_when_price_outside_zone() -> None:
+    """Последняя свеча вне зоны — фильтру нечего проверять."""
+    frame = make_price_frame([60.0] * 10)
+
+    assert zone_contact_hours(frame, 50.0, 0.10, NOW) is None
+
+
+def test_signal_skipped_when_price_sits_in_zone_for_days(tmp_path: Path) -> None:
+    """Цена торгуется у уровня двое суток — это не сигнал."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0)
+    scanner._series["5"] = make_price_frame([50.5] * 576)
+
+    assert scanner.check_clusters(50.5, now=NOW) is None
+
+
+def test_signal_skipped_after_recent_contact(tmp_path: Path) -> None:
+    """Подход был 4.75 часа назад — сигнал слабый, пропускаем."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0)
+    prices = [60.0] * 800 + [50.5] * 6 + [60.0] * 56 + [50.5] * 2
+    scanner._series["5"] = make_price_frame(prices)
+
+    assert scanner.check_clusters(50.5, now=NOW) is None
+
+
+def test_signal_allowed_after_long_absence(tmp_path: Path) -> None:
+    """Цена вернулась к уровню после трёх суток вне зоны — сильный сигнал."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0)
+    scanner._series["5"] = make_price_frame([60.0] * 864 + [50.5] * 2)
+
+    signal = scanner.check_clusters(50.5, now=NOW)
+
+    assert signal is not None
+    assert signal.direction == "long"
+    assert signal.entry_price == pytest.approx(50.0)
 
 
 def test_only_nearest_cluster_is_monitored(tmp_path: Path) -> None:
@@ -595,7 +669,7 @@ def test_price_for_zone_comes_from_closed_5m_candle(
     scanner = make_scanner(tmp_path)
     add_level(scanner, 50.0, 40_000_000.0)
     frames = {
-        "5": make_frame(days=1, price=50.5),
+        "5": make_price_frame([60.0] * 286 + [50.5] * 2),
         "60": make_frame(days=30, price=60.0),
         "240": make_history(NOW - timedelta(days=30), NOW, price=60.0),
     }

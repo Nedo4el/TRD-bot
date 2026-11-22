@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -66,6 +67,40 @@ def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
     except OSError as exc:
         logger.warning("не удалось записать %s: %s", path, exc)
+
+
+def zone_contact_hours(
+    frame: pd.DataFrame,
+    level: float,
+    zone_pct: float,
+    moment: datetime,
+) -> tuple[float, float] | None:
+    """Пауза до подхода и время в зоне по закрытым свечам.
+
+    Возвращает ``(quiet_hours, contact_hours)``: сколько часов цена была
+    вне зоны до текущего подхода и сколько часов уже находится в зоне.
+    ``quiet_hours`` — ``inf``, если в загруженной истории подходов не было.
+    ``None`` — если истории нет или последняя свеча вне зоны.
+    """
+    if frame.empty or level <= 0:
+        return None
+    closes = frame["close"].astype(float)
+    flags = (((closes - level).abs() / closes) <= zone_pct).to_numpy()
+    if not bool(flags[-1]):
+        return None
+    start = len(flags) - 1
+    while start > 0 and flags[start - 1]:
+        start -= 1
+    run_start = frame["ts"].iloc[start].to_pydatetime()
+    contact_hours = max(0.0, (moment - run_start).total_seconds() / 3600.0)
+    previous = start - 1
+    while previous >= 0 and not flags[previous]:
+        previous -= 1
+    if previous < 0:
+        return float("inf"), contact_hours
+    last_contact = frame["ts"].iloc[previous].to_pydatetime()
+    quiet_hours = max(0.0, (run_start - last_contact).total_seconds() / 3600.0)
+    return quiet_hours, contact_hours
 
 
 class POCScanner:
@@ -375,6 +410,28 @@ class POCScanner:
         if same_episode:
             return None
 
+        contact = self._contact_stats(target.level, moment)
+        if contact is not None:
+            quiet_hours, contact_hours = contact
+            if contact_hours > self.config.zone_fresh_hours:
+                logger.info(
+                    "%s: цена у уровня %.10g уже %.1fч — вход не свежий, сигнала нет",
+                    self.symbol,
+                    target.level,
+                    contact_hours,
+                )
+                return None
+            if quiet_hours < self.config.zone_quiet_hours:
+                logger.info(
+                    "%s: подход к уровню %.10g был %.1fч назад (< %.0fч) — "
+                    "слабый сигнал, пропуск",
+                    self.symbol,
+                    target.level,
+                    quiet_hours,
+                    self.config.zone_quiet_hours,
+                )
+                return None
+
         episode = (state.episode if state is not None else 0) + 1
         self.store.save_zone_state(
             ZoneState(
@@ -428,8 +485,14 @@ class POCScanner:
                 logger.warning(
                     "история %s %s недоступна: %s", self.symbol, interval, exc
                 )
+        price_days = max(
+            2,
+            math.ceil(
+                (self.config.zone_quiet_hours + self.config.zone_fresh_hours) / 24
+            ),
+        )
         try:
-            self.load_history(self.config.price_interval, moment, days=1)
+            self.load_history(self.config.price_interval, moment, days=price_days)
         except Exception as exc:  # noqa: BLE001 — цена не должна ронять цикл
             logger.warning(
                 "цена %s %s недоступна: %s",
@@ -478,11 +541,32 @@ class POCScanner:
 
     def _last_price(self) -> float:
         """Цена последней закрытой свечи: 5m (п.6), затем 1h и 4h."""
+        frame = self._price_frame()
+        if frame is None:
+            return 0.0
+        return float(frame["close"].iloc[-1])
+
+    def _price_frame(self) -> pd.DataFrame | None:
+        """Кадр цены для фильтра подхода: 5m, затем 1h и 4h."""
         for interval in (self.config.price_interval, "60", "240"):
             frame = self._series.get(interval)
             if frame is not None and not frame.empty:
-                return float(frame["close"].iloc[-1])
-        return 0.0
+                return frame
+        return None
+
+    def _contact_stats(
+        self,
+        level: float,
+        moment: datetime,
+    ) -> tuple[float, float] | None:
+        """Пауза до подхода и время в зоне; None — данных нет, фильтр не проверен."""
+        frame = self._price_frame()
+        if frame is None:
+            logger.warning(
+                "%s: нет истории цены — фильтр подхода не проверен", self.symbol
+            )
+            return None
+        return zone_contact_hours(frame, level, self.config.zone_pct, moment)
 
     def _span_winners(self) -> dict[tuple[str, int], WindowSpec]:
         """По одному окну на каждый фактический охват истории.
