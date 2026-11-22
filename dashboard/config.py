@@ -50,7 +50,7 @@ SCREENERS: tuple[ScreenerSpec, ...] = (
         "Уровни POC",
         "bot_screener_yrovni",
         300,
-        25,
+        100,
         live_signals=True,
     ),
     ScreenerSpec("all", "Все монеты", "all", 60, 100),

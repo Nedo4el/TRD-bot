@@ -1313,6 +1313,21 @@ def test_scan_poc_returns_signal_from_scanner(monkeypatch: pytest.MonkeyPatch) -
         "bot_screener_yrovni.poc_scanner.scanner.POCScanner", FakeScanner
     )
 
+    class FakeEnv:
+        def names(self, key: str, default: tuple[str, ...] = ()) -> list[str]:
+            return ["AKEUSDT"]
+
+    class FakeFetcher:
+        async def get_tickers(self) -> list[dict[str, Any]]:
+            return []
+
+    def fake_load(cls: type[AllCoinsSettings]) -> AllCoinsSettings:
+        return AllCoinsSettings()
+
+    monkeypatch.setattr("dashboard.adapters._env", lambda spec: FakeEnv())
+    monkeypatch.setattr("dashboard.adapters._new_fetcher", lambda env: FakeFetcher())
+    monkeypatch.setattr(AllCoinsSettings, "load", classmethod(fake_load))
+
     signals = asyncio.run(scan_poc(spec))
 
     assert len(signals) == 1
@@ -1353,8 +1368,78 @@ def test_scan_poc_raises_when_every_symbol_fails(
         "bot_screener_yrovni.poc_scanner.scanner.POCScanner", FailingScanner
     )
 
+    class FakeFetcher:
+        async def get_tickers(self) -> list[dict[str, Any]]:
+            return []
+
+    def fake_load(cls: type[AllCoinsSettings]) -> AllCoinsSettings:
+        return AllCoinsSettings()
+
+    monkeypatch.setattr("dashboard.adapters._new_fetcher", lambda env: FakeFetcher())
+    monkeypatch.setattr(AllCoinsSettings, "load", classmethod(fake_load))
+
     with pytest.raises(RuntimeError, match="недоступны все символы"):
         asyncio.run(scan_poc(spec))
+
+
+def test_scan_poc_universe_uses_dashboard_filter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POC берёт рынок по общему фильтру: оборот, исключения, лимит монет."""
+    spec = ScreenerSpec("yrovni", "Уровни POC", "bot_screener_yrovni", 300, 25)
+    calls: list[str] = []
+
+    class FakeEnv:
+        def names(self, key: str, default: tuple[str, ...] = ()) -> list[str]:
+            return ["ZZZUSDT"]
+
+    class FakeFetcher:
+        async def get_tickers(self) -> list[dict[str, Any]]:
+            return [
+                {"symbol": "AAAUSDT", "turnover24h": "100",
+                 "priceChangePercent": "5", "lastPrice": "1"},
+                {"symbol": "BBBUSDT", "turnover24h": "300",
+                 "priceChangePercent": "2", "lastPrice": "1"},
+                {"symbol": "CCCUSDT", "turnover24h": "200",
+                 "priceChangePercent": "0", "lastPrice": "1"},
+                {"symbol": "DDDUSDT", "turnover24h": "50",
+                 "priceChangePercent": "9", "lastPrice": "1"},
+                {"symbol": "EEEUSDT", "turnover24h": "400",
+                 "priceChangePercent": "1", "lastPrice": "0"},
+                {"symbol": "BTCUSDT", "turnover24h": "900",
+                 "priceChangePercent": "1", "lastPrice": "1"},
+                {"symbol": "ZZZUSDT", "turnover24h": "1",
+                 "priceChangePercent": "1", "lastPrice": "1"},
+            ]
+
+    class FakeScanner:
+        def __init__(self, config: object, symbol: str) -> None:
+            calls.append(symbol)
+
+        def refresh(self) -> POCSignal | None:
+            return None
+
+        def close(self) -> None:
+            pass
+
+    settings = AllCoinsSettings(
+        min_turnover_24h=100,
+        max_symbols=3,
+        exclude_symbols=["BTCUSDT"],
+    )
+
+    def fake_load(cls: type[AllCoinsSettings]) -> AllCoinsSettings:
+        return settings
+
+    monkeypatch.setattr("dashboard.adapters._env", lambda spec: FakeEnv())
+    monkeypatch.setattr("dashboard.adapters._new_fetcher", lambda env: FakeFetcher())
+    monkeypatch.setattr(AllCoinsSettings, "load", classmethod(fake_load))
+    monkeypatch.setattr(
+        "bot_screener_yrovni.poc_scanner.scanner.POCScanner", FakeScanner
+    )
+
+    assert asyncio.run(scan_poc(spec)) == []
+    assert calls == ["ZZZUSDT", "BBBUSDT", "CCCUSDT"]
 
 
 def test_poc_pending_signal_expires(

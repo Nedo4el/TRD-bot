@@ -11,6 +11,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from core.indicators import atr as atr_ind
@@ -706,20 +707,59 @@ async def scan_zakonomer(spec: ScreenerSpec) -> list[Signal]:
     return await _batched(spec, universe, 5, work)
 
 
-async def scan_poc(spec: ScreenerSpec) -> list[Signal]:
-    """Уровни POC: ближайший кластер, сигнал при входе в 10 % зону.
-
-    Запускает POC-сканер по каждому символу из ``POC_SYMBOLS`` в ``.env``
-    скринера и возвращает только текущие сигналы (цена в зоне ближайшего
-    кластера). История и состояние зоны хранятся в ``data/poc_history.sqlite``,
-    поэтому повторные сканы быстрые — качается только хвост.
-    """
+def _refresh_poc(symbol: str, env_file: Path) -> Any:
+    """Посчитать POC одного символа (sync: вызывается из потока)."""
     from bot_screener_yrovni.poc_scanner.config import POCConfig
     from bot_screener_yrovni.poc_scanner.scanner import POCScanner
 
+    scanner = POCScanner(POCConfig.from_env(symbol, env_file), symbol)
+    try:
+        return scanner.refresh()
+    finally:
+        scanner.close()
+
+
+async def _poc_universe(
+    fetcher: DashboardFetcher,
+    env: ScreenerEnv,
+    settings: AllCoinsSettings,
+) -> list[str]:
+    """Символы POC: явные POC_SYMBOLS + рынок по общему фильтру дашборда."""
+    manual = [symbol.upper() for symbol in env.names("POC_SYMBOLS", ())]
+    exclude = set(settings.exclude_symbols) | set(manual)
+    market: list[tuple[str, float]] = []
+    for ticker in await fetcher.get_tickers():
+        symbol = str(ticker.get("symbol", ""))
+        if not symbol.endswith("USDT") or symbol in exclude:
+            continue
+        try:
+            turnover = float(ticker.get("turnover24h", "0"))
+            change = float(ticker.get("priceChangePercent", "0"))
+            price = float(ticker.get("lastPrice", "0"))
+        except (TypeError, ValueError):
+            continue
+        if turnover < settings.min_turnover_24h or price <= 0:
+            continue
+        if abs(change) < settings.min_abs_change_24h:
+            continue
+        market.append((symbol, turnover))
+    market.sort(key=lambda item: item[1], reverse=True)
+    ordered = manual + [symbol for symbol, _ in market]
+    return ordered[: settings.max_symbols]
+
+
+async def scan_poc(spec: ScreenerSpec) -> list[Signal]:
+    """Уровни POC: рынок по общему фильтру дашборда, сигнал при входе в зону.
+
+    Явные ``POC_SYMBOLS`` сканируются всегда, остальные — по настройкам
+    панели «Все монеты» (оборот, исключения, Δ24ч, число монет). История и
+    состояние зоны лежат в ``data/poc_history.sqlite``, поэтому повторные
+    сканы быстрые — качается только хвост.
+    """
     env = _env(spec)
     env_file = PROJECT_ROOT / "bot_screener_yrovni" / ".env"
-    symbols = env.names("POC_SYMBOLS", ())[: spec.max_symbols]
+    settings = AllCoinsSettings.load()
+    symbols = await _poc_universe(_new_fetcher(env), env, settings)
     if not symbols:
         return []
     progress.set_total(spec.name, len(symbols))
@@ -727,9 +767,7 @@ async def scan_poc(spec: ScreenerSpec) -> list[Signal]:
     failed = 0
     for symbol in symbols:
         try:
-            scanner = POCScanner(POCConfig.from_env(symbol, env_file), symbol)
-            found = scanner.refresh()
-            scanner.close()
+            found = await asyncio.to_thread(_refresh_poc, symbol, env_file)
         except Exception as exc:  # noqa: BLE001 — символ не должен ронять скан
             logger.warning("POC: ошибка по %s: %s", symbol, exc)
             failed += 1
