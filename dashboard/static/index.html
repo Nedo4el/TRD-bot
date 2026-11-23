@@ -721,6 +721,22 @@
           <input type="checkbox" id="autoTrade" />
           <label for="autoTrade">AUTO_TRADE — торговать сразу по сигналу</label>
         </div>
+        <div class="chk-field" style="margin: 0;">
+          <label for="scanMode">Скан POC:</label>
+          <select id="scanMode">
+            <option value="manual">вручную</option>
+            <option value="auto">авто</option>
+          </select>
+          <label for="scanInterval">интервал</label>
+          <select id="scanInterval">
+            <option value="60">1 мин</option>
+            <option value="600">10 мин</option>
+            <option value="1800">30 мин</option>
+            <option value="3600">1 час</option>
+          </select>
+          <button id="pocScanNow">Сканировать сейчас</button>
+          <span class="muted" id="scanModeNote"></span>
+        </div>
         <span class="muted">Ожидают подтверждения: <b id="pocPending">0</b></span>
         <span class="muted">В работе: <b id="pocActive">0</b></span>
         <span class="muted" id="pocUpdated">—</span>
@@ -2173,6 +2189,7 @@ function switchTab(tabName) {
     $("tabPoc").classList.add("active");
     $("contentPoc").classList.add("active");
     loadPocSignals();
+    loadScanMode();
   }
 }
 
@@ -2402,8 +2419,48 @@ async function toggleAutoTrade() {
   }
 }
 
+async function loadScanMode() {
+  try {
+    const res = await fetch("/api/scan-mode", { cache: "no-store" });
+    const data = await res.json();
+    $("scanMode").value = data.mode || "manual";
+    $("scanInterval").value = String(data.interval_sec || 600);
+    $("scanModeNote").textContent = data.mode === "auto"
+      ? "фоновый скан каждые " + (data.interval_sec === 3600 ? "1 час" : (data.interval_sec / 60) + " мин")
+      : "только по кнопке";
+  } catch (err) {
+    // режим скана не критичен для показа сигналов
+  }
+}
+
+async function saveScanMode() {
+  const body = {
+    mode: $("scanMode").value,
+    interval_sec: Number($("scanInterval").value),
+  };
+  try {
+    const res = await fetch("/api/scan-mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+    toast(data.mode === "auto" ? "Автоскан POC включён" : "Автоскан POC выключен");
+  } catch (err) {
+    toast("Не удалось сохранить режим скана: " + err.message, true);
+  }
+  loadScanMode();
+}
+
 $("pocRefresh").addEventListener("click", loadPocSignals);
 $("autoTrade").addEventListener("change", toggleAutoTrade);
+$("pocScanNow").addEventListener("click", () => {
+  post("/api/scan/yrovni");
+  toast("Скан POC запущен — результат появится на вкладке сигналов");
+});
+$("scanMode").addEventListener("change", saveScanMode);
+$("scanInterval").addEventListener("change", saveScanMode);
 
 schedule();
 load();
@@ -2412,6 +2469,7 @@ loadImpulseSettings();
 loadRobotStatus();
 loadPositions();
 loadPocSignals();
+loadScanMode();
 setInterval(loadPositions, 10000);
 setInterval(() => {
   if ($("contentPoc").classList.contains("active")) loadPocSignals();

@@ -31,6 +31,7 @@ from dashboard.robots import (
     stop_all_robots,
     stop_robot,
 )
+from dashboard.scan_mode import AUTO_SCREENER, INTERVALS, ScanModeSettings
 from dashboard.scheduler import Scheduler
 from dashboard.settings import AllCoinsSettings, ImpulseSettings
 from dashboard.store import SignalStore, now_iso
@@ -49,14 +50,15 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     config = DashboardConfig.from_env()
     specs = config.resolved_specs()
     store = SignalStore(specs)
-    scheduler = Scheduler(specs, store, config)
+    poc_signals = PocSignalStore()
+    scheduler = Scheduler(specs, store, config, poc_signals)
     trade_store = TradeStore()
     app.state.config = config
     app.state.store = store
     app.state.scheduler = scheduler
     app.state.trade_store = trade_store
     app.state.symbols_cache = SymbolsCache()
-    app.state.poc_signals = PocSignalStore()
+    app.state.poc_signals = poc_signals
     scheduler.start()
     try:
         yield
@@ -184,6 +186,35 @@ async def api_auto_trade_post(request: Request) -> JSONResponse:
         {"ok": True, "auto_trade": flag.auto_trade},
         headers=_NO_CACHE,
     )
+
+
+async def api_scan_mode_get(request: Request) -> JSONResponse:
+    """Текущий режим скана POC и доступные интервалы таймера."""
+    return JSONResponse(
+        {
+            "ok": True,
+            **ScanModeSettings.load().to_dict(),
+            "intervals": list(INTERVALS),
+            "screener": AUTO_SCREENER,
+        },
+        headers=_NO_CACHE,
+    )
+
+
+async def api_scan_mode_post(request: Request) -> JSONResponse:
+    """Переключить режим скана POC: {"mode": ..., "interval_sec": 60..3600}."""
+    try:
+        body = await request.json()
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "invalid JSON"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"ok": False, "error": "JSON object required"}, status_code=400
+        )
+    settings = ScanModeSettings.from_dict(body)
+    settings.save()
+    logger.info("Скан POC: %s, интервал %d с", settings.mode, settings.interval_sec)
+    return JSONResponse({"ok": True, **settings.to_dict()}, headers=_NO_CACHE)
 
 
 async def api_scan_all(request: Request) -> JSONResponse:
@@ -575,6 +606,8 @@ def create_app() -> Starlette:
         Route("/api/poc-signals/confirm", api_poc_confirm, methods=["POST"]),
         Route("/api/auto-trade", api_auto_trade_get),
         Route("/api/auto-trade", api_auto_trade_post, methods=["POST"]),
+        Route("/api/scan-mode", api_scan_mode_get),
+        Route("/api/scan-mode", api_scan_mode_post, methods=["POST"]),
         Route("/api/scan", api_scan_all, methods=["POST"]),
         Route("/api/scan/{name}", api_scan_one, methods=["POST"]),
         Route("/api/open-tiger", api_open_tiger, methods=["POST"]),
