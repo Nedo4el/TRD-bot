@@ -598,6 +598,7 @@ class BybitClient:
         *,
         reduce_only: bool = True,
         position_idx: int | None = None,
+        order_link_id: str | None = None,
     ) -> dict[str, Any]:
         """Выставить conditional stop-market ордер (срабатывает по triggerPrice).
 
@@ -608,6 +609,7 @@ class BybitClient:
             trigger_price: цена срабатывания (MarkPrice).
             reduce_only: только уменьшение позиции.
             position_idx: 1/2 — хедж-режим; None — one-way.
+            order_link_id: клиентский id (orderLinkId) для идемпотентности.
 
         Returns:
             Ответ API с данными созданного ордера.
@@ -628,6 +630,8 @@ class BybitClient:
             params["reduceOnly"] = True
         if position_idx is not None:
             params["positionIdx"] = position_idx
+        if order_link_id:
+            params["orderLinkId"] = order_link_id
         return cast(dict[str, Any], await self._call("place_order", **params))
 
     @dataclass(frozen=True)
