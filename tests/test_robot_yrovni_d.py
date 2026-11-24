@@ -14,7 +14,12 @@ import pytest
 from robot_yrovni_D.broker import OrderResult, PositionInfo
 from robot_yrovni_D.config import LevelConfig
 from robot_yrovni_D.json_log import JsonlLogger
-from robot_yrovni_D.main import MAX_PROCESSED, ProcessedSignals, handle_signal
+from robot_yrovni_D.main import (
+    MAX_PROCESSED,
+    ProcessedSignals,
+    for_this_instance,
+    handle_signal,
+)
 from robot_yrovni_D.signals import PocSignal, SignalError, parse_signal
 from robot_yrovni_D.strategy import Action, LevelStrategy, PositionState
 
@@ -682,6 +687,21 @@ def test_processed_signals_keeps_last_thousand(tmp_path: Path) -> None:
     assert len(stored) == MAX_PROCESSED
     assert "sig-0" not in stored
     assert f"sig-{MAX_PROCESSED + 4}" in stored
+
+
+def test_per_symbol_process_takes_only_its_coin() -> None:
+    """Per-symbol запуск: процесс берёт свою монету, чужие — нет."""
+    record = {"symbol": "MMTUSDT", "state": "active"}
+
+    assert for_this_instance(record, "MMTUSDT") is True
+    assert for_this_instance(record, "ELSAUSDT") is False
+    assert for_this_instance({"symbol": "mmtusdt"}, "MMTUSDT") is True
+
+
+def test_single_instance_process_takes_every_coin() -> None:
+    """Без SYMBOL (один процесс на всё) фильтра по монете нет."""
+    assert for_this_instance({"symbol": "MMTUSDT"}, "") is True
+    assert for_this_instance({"symbol": "ELSAUSDT"}, "") is True
 
 
 def test_handle_signal_ignores_duplicate(tmp_path: Path) -> None:

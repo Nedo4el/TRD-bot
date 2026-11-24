@@ -178,6 +178,13 @@ class LevelConfig(BaseModel):
     )
 
     # --- Источники сигналов ---
+    # Символ этого процесса (задаёт дашборд при per-symbol запуске).
+    # Пусто — процесс один на все монеты: держит HTTP-приёмник и берёт
+    # все сигналы дашборда. Непусто — только своя монета, без HTTP-приёмника
+    # (поллинг дашборда), чтобы процессы не дрались за SIGNAL_PORT.
+    symbol: str = Field(
+        default_factory=lambda: os.getenv("SYMBOL", "").strip().upper(),
+    )
     signal_host: str = Field(
         default_factory=lambda: os.getenv("SIGNAL_HOST", "127.0.0.1"),
     )

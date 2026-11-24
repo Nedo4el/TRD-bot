@@ -145,6 +145,13 @@ async def handle_signal(
     return True
 
 
+def for_this_instance(record: Mapping[str, Any], symbol: str) -> bool:
+    """Фильтр per-symbol запуска: процесс берёт сигналы только своей монеты."""
+    if not symbol:
+        return True
+    return str(record.get("symbol") or "").strip().upper() == symbol
+
+
 class SignalServer:
     """HTTP-приёмник сигналов POC-скринера."""
 
@@ -226,6 +233,8 @@ async def poll_dashboard(
                 if not isinstance(record, dict):
                     continue
                 if str(record.get("state") or "") != "active":
+                    continue
+                if not for_this_instance(record, config.symbol):
                     continue
                 await handle_signal(record, queue, processed, log)
         await asyncio.sleep(config.signal_poll_sec)
@@ -324,18 +333,27 @@ async def run(config: LevelConfig) -> None:
     processed = ProcessedSignals(_PROJECT_ROOT / config.processed_file)
     queue: asyncio.Queue[PocSignal] = asyncio.Queue()
 
-    server = SignalServer(config, queue, processed, log)
-    runner = web.AppRunner(server.app())
-    await runner.setup()
-    site = web.TCPSite(runner, config.signal_host, config.signal_port)
-    await site.start()
-    logger.info(
-        "robot_yrovni_D: приёмник на %s:%s, DRY_RUN=%s, поллинг дашборда %s с",
-        config.signal_host,
-        config.signal_port,
-        config.dry_run,
-        config.signal_poll_sec or "выкл",
-    )
+    runner: web.AppRunner | None = None
+    if config.symbol:
+        logger.info(
+            "robot_yrovni_D: %s, DRY_RUN=%s, поллинг дашборда %s с (без HTTP-приёмника)",
+            config.symbol,
+            config.dry_run,
+            config.signal_poll_sec or "выкл",
+        )
+    else:
+        server = SignalServer(config, queue, processed, log)
+        runner = web.AppRunner(server.app())
+        await runner.setup()
+        site = web.TCPSite(runner, config.signal_host, config.signal_port)
+        await site.start()
+        logger.info(
+            "robot_yrovni_D: приёмник на %s:%s, DRY_RUN=%s, поллинг дашборда %s с",
+            config.signal_host,
+            config.signal_port,
+            config.dry_run,
+            config.signal_poll_sec or "выкл",
+        )
 
     tasks = [
         asyncio.create_task(consume_signals(strategy, queue, log)),
@@ -347,7 +365,8 @@ async def run(config: LevelConfig) -> None:
     finally:
         for task in tasks:
             task.cancel()
-        await runner.cleanup()
+        if runner is not None:
+            await runner.cleanup()
         client.close()
 
 

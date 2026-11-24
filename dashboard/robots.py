@@ -220,6 +220,11 @@ def _symbol_env(robot_name: str, symbol: str) -> dict[str, str]:
     env["KILL_SWITCH"] = _per_symbol_path(
         str(raw.get("KILL_SWITCH") or f"data/{robot_name}.kill"), robot_name, symbol
     )
+    env["PROCESSED_FILE"] = _per_symbol_path(
+        str(raw.get("PROCESSED_FILE") or f"data/{robot_name}_processed.json"),
+        robot_name,
+        symbol,
+    )
     return env
 
 

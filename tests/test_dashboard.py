@@ -880,6 +880,9 @@ def test_per_symbol_paths_and_env(
     assert env["STATE_FILE"] == str(Path("data/state_SOLUSDT.json"))
     assert env["LOG_FILE"] == str(Path("logs/robot_trend_SOLUSDT.log"))
     assert env["KILL_SWITCH"] == str(Path("data/robot_trend_SOLUSDT.kill"))
+    assert env["PROCESSED_FILE"] == str(
+        Path("data/robot_trend_processed_SOLUSDT.json")
+    )
 
 
 def test_spawn_runs_robot_as_module(
