@@ -123,7 +123,7 @@ def departure_pct(
     closes = frame.loc[frame["ts"] >= since, "close"].astype(float)
     if closes.empty:
         return None
-    return float((((closes - level).abs() / level).max()))
+    return float(((closes - level).abs() / level).max())
 
 
 class POCScanner:
@@ -391,10 +391,11 @@ class POCScanner:
         for level in self.store.levels(self.symbol):
             if not self._is_tradeable(level):
                 continue
-            departure = self._level_departure(level)
-            if departure is not None and departure < self.config.min_departure_pct:
-                skipped.append(f"{level.poc_price:.6g}({departure * 100:.0f}%)")
-                continue
+            if self.config.min_departure_pct > 0:
+                departure = self._level_departure(level)
+                if departure is not None and departure < self.config.min_departure_pct:
+                    skipped.append(f"{level.poc_price:.6g}({departure * 100:.0f}%)")
+                    continue
             levels.append(level)
         if skipped:
             logger.info(
