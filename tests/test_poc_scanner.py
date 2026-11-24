@@ -17,6 +17,7 @@ from bot_screener_yrovni.poc_scanner.profile import compute_profile
 from bot_screener_yrovni.poc_scanner.scanner import (
     POCScanner,
     departure_pct,
+    level_touched_since,
     zone_contact_hours,
 )
 from bot_screener_yrovni.poc_scanner.store import LevelState
@@ -25,7 +26,11 @@ from bot_screener_yrovni.poc_scanner.timeutil import to_iso
 NOW = datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc)
 
 
-def make_config(tmp_path: Path, min_departure_pct: float = 0.0) -> POCConfig:
+def make_config(
+    tmp_path: Path,
+    min_departure_pct: float = 0.0,
+    touch_lookback_hours: float = 48.0,
+) -> POCConfig:
     return POCConfig(
         symbol="SOLUSDT",
         db_path=tmp_path / "poc.sqlite",
@@ -33,6 +38,7 @@ def make_config(tmp_path: Path, min_departure_pct: float = 0.0) -> POCConfig:
         signal_log=tmp_path / "signals.jsonl",
         segment_mode="off",
         min_departure_pct=min_departure_pct,
+        touch_lookback_hours=touch_lookback_hours,
     )
 
 
@@ -51,8 +57,13 @@ def make_segment_config(
     )
 
 
-def make_scanner(tmp_path: Path, min_departure_pct: float = 0.0) -> POCScanner:
-    return POCScanner(make_config(tmp_path, min_departure_pct), "SOLUSDT")
+def make_scanner(
+    tmp_path: Path,
+    min_departure_pct: float = 0.0,
+    touch_lookback_hours: float = 48.0,
+) -> POCScanner:
+    config = make_config(tmp_path, min_departure_pct, touch_lookback_hours)
+    return POCScanner(config, "SOLUSDT")
 
 
 def make_frame(
@@ -316,6 +327,67 @@ def test_departure_pct_is_max_excursion_since_start() -> None:
 
     assert departure_pct(frame, 100.0, NOW - timedelta(hours=4)) == pytest.approx(0.30)
     assert departure_pct(frame, 100.0, NOW) == pytest.approx(0.05)
+
+
+def test_level_touched_since_detects_wick() -> None:
+    """Диапазон свечи накрыл уровень — касание; до окна и мимо — нет."""
+    frame = make_price_frame([100.0, 100.0, 100.0], minutes=60)
+    frame.loc[1, "low"] = 99.0
+
+    assert level_touched_since(frame, 99.5, NOW - timedelta(hours=3))
+    assert not level_touched_since(frame, 99.5, NOW)
+    assert not level_touched_since(frame, 105.0, NOW - timedelta(hours=3))
+
+
+def test_level_touched_recently_gives_no_signal(tmp_path: Path) -> None:
+    """Цена проходила уровень 2 часа назад — сигнала нет."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0)
+    frame = make_price_frame([60.0] * 864 + [50.5] * 2)
+    frame.loc[840, "low"] = 49.5
+    scanner._series["5"] = frame
+
+    assert scanner.check_clusters(50.5, now=NOW) is None
+
+
+def test_level_touched_before_lookback_gives_signal(tmp_path: Path) -> None:
+    """Касание было 72 часа назад — вне окна 48ч, сигнал есть."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0)
+    frame = make_price_frame([60.0] * 864 + [50.5] * 2)
+    frame.loc[0, "low"] = 49.5
+    scanner._series["5"] = frame
+
+    signal = scanner.check_clusters(50.5, now=NOW)
+
+    assert signal is not None
+    assert signal.entry_price == pytest.approx(50.0)
+
+
+def test_cluster_drops_touched_level(tmp_path: Path) -> None:
+    """Уровень 50 касались недавно — сигнал строится по нетронутому 53."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0, windows=("7d",))
+    add_level(scanner, 53.0, 40_000_000.0, windows=("180d",))
+    frame = make_price_frame([41.0] * 47 + [49.0] * 2, minutes=60)
+    frame.loc[10, "high"] = 50.5
+    scanner._series["60"] = frame
+
+    signal = scanner.check_clusters(49.0, now=NOW)
+
+    assert signal is not None
+    assert signal.entry_price == pytest.approx(53.0)
+
+
+def test_touch_filter_can_be_disabled(tmp_path: Path) -> None:
+    """TOUCH_LOOKBACK_HOURS=0 — уровень с недавним касанием даёт сигнал."""
+    scanner = make_scanner(tmp_path, touch_lookback_hours=0.0)
+    add_level(scanner, 50.0, 40_000_000.0)
+    frame = make_price_frame([60.0] * 864 + [50.5] * 2)
+    frame.loc[840, "low"] = 49.5
+    scanner._series["5"] = frame
+
+    assert scanner.check_clusters(50.5, now=NOW) is not None
 
 
 def test_level_without_departure_gives_no_signal(tmp_path: Path) -> None:

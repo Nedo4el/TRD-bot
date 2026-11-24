@@ -126,6 +126,25 @@ def departure_pct(
     return float(((closes - level).abs() / level).max())
 
 
+def level_touched_since(
+    frame: pd.DataFrame,
+    level: float,
+    since: datetime,
+) -> bool:
+    """Касалась ли цена уровня с момента ``since``.
+
+    Касание — диапазон свечи ``[low, high]`` накрывает уровень: цена
+    подходила к нему или пересекала его. Считаются только свечи не раньше
+    ``since``; пустой кадр — касаний нет.
+    """
+    if frame.empty or level <= 0:
+        return False
+    window = frame.loc[frame["ts"] >= since]
+    if window.empty:
+        return False
+    return bool(((window["low"] <= level) & (window["high"] >= level)).any())
+
+
 class POCScanner:
     """Считает POC по окнам, ведёт историю уровней и выдаёт сигналы."""
 
@@ -388,6 +407,7 @@ class POCScanner:
             return None
         levels: list[LevelState] = []
         skipped: list[str] = []
+        touched: list[str] = []
         for level in self.store.levels(self.symbol):
             if not self._is_tradeable(level):
                 continue
@@ -396,6 +416,11 @@ class POCScanner:
                 if departure is not None and departure < self.config.min_departure_pct:
                     skipped.append(f"{level.poc_price:.6g}({departure * 100:.0f}%)")
                     continue
+            if self.config.touch_lookback_hours > 0 and self._level_touched(
+                level, moment
+            ):
+                touched.append(f"{level.poc_price:.6g}")
+                continue
             levels.append(level)
         if skipped:
             logger.info(
@@ -403,6 +428,13 @@ class POCScanner:
                 self.symbol,
                 self.config.min_departure_pct * 100,
                 ", ".join(skipped),
+            )
+        if touched:
+            logger.info(
+                "%s: уровни, к которым цена подходила за %.0fч — пропуск: %s",
+                self.symbol,
+                self.config.touch_lookback_hours,
+                ", ".join(touched),
             )
         target = nearest_cluster(
             build_clusters(levels, self.config.cluster_merge_pct),
@@ -634,6 +666,23 @@ class POCScanner:
                 return value
             best = value
         return best
+
+    def _level_touched(self, level: LevelState, moment: datetime) -> bool | None:
+        """Касание уровня за ``touch_lookback_hours`` до ``moment``.
+
+        Берётся самый подробный кадр, покрывающий всё окно: 5m, затем 1h и
+        4h. ``None`` — истории за окно нет, фильтр не проверен.
+        """
+        since = moment - timedelta(hours=self.config.touch_lookback_hours)
+        for interval in (self.config.price_interval, "60", "240"):
+            frame = self._series.get(interval)
+            if frame is None or frame.empty:
+                continue
+            if level_touched_since(frame, level.poc_price, since):
+                return True
+            if frame["ts"].iloc[0].to_pydatetime() <= since:
+                return False
+        return None
 
     def _span_winners(self) -> dict[tuple[str, int], WindowSpec]:
         """По одному окну на каждый фактический охват истории.
