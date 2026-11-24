@@ -14,7 +14,11 @@ from bot_screener_yrovni.poc_scanner import klines
 from bot_screener_yrovni.poc_scanner.clusters import cluster_prices, round_level
 from bot_screener_yrovni.poc_scanner.config import POCConfig, get_poc_age_days
 from bot_screener_yrovni.poc_scanner.profile import compute_profile
-from bot_screener_yrovni.poc_scanner.scanner import POCScanner, zone_contact_hours
+from bot_screener_yrovni.poc_scanner.scanner import (
+    POCScanner,
+    departure_pct,
+    zone_contact_hours,
+)
 from bot_screener_yrovni.poc_scanner.store import LevelState
 from bot_screener_yrovni.poc_scanner.timeutil import to_iso
 
@@ -303,6 +307,54 @@ def test_zone_contact_hours_none_when_price_outside_zone() -> None:
     frame = make_price_frame([60.0] * 10)
 
     assert zone_contact_hours(frame, 50.0, 0.10, NOW) is None
+
+
+def test_departure_pct_is_max_excursion_since_start() -> None:
+    """Уход от уровня — максимум |цена − уровень| / уровень от начала окна."""
+    frame = make_price_frame([100.0, 130.0, 80.0, 95.0], minutes=60)
+
+    assert departure_pct(frame, 100.0, NOW - timedelta(hours=4)) == pytest.approx(0.30)
+    assert departure_pct(frame, 100.0, NOW) == pytest.approx(0.05)
+
+
+def test_level_without_departure_gives_no_signal(tmp_path: Path) -> None:
+    """Цена не уходила от уровня на 20 % — это текущая зона, а не уровень."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0, windows=("7d",))
+    scanner._series["60"] = make_price_frame(
+        [50.5] * 2 + [56.0] * 25 + [50.5] * 2,
+        minutes=60,
+    )
+
+    assert scanner.check_clusters(50.5, now=NOW) is None
+
+
+def test_level_with_departure_gives_signal(tmp_path: Path) -> None:
+    """Цена уходила от уровня на 22 % — уровень исторический, сигнал есть."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0, windows=("7d",))
+    scanner._series["60"] = make_price_frame(
+        [50.5] * 2 + [61.0] * 25 + [50.5] * 2,
+        minutes=60,
+    )
+
+    signal = scanner.check_clusters(50.5, now=NOW)
+
+    assert signal is not None
+    assert signal.entry_price == pytest.approx(50.0)
+
+
+def test_cluster_drops_level_without_departure(tmp_path: Path) -> None:
+    """Свежий уровень 50 отброшен, сигнал строится по историческому 53."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0, windows=("7d",))
+    add_level(scanner, 53.0, 40_000_000.0, windows=("180d",))
+    scanner._series["60"] = make_price_frame([41.0] * 25 + [49.0] * 2, minutes=60)
+
+    signal = scanner.check_clusters(49.0, now=NOW)
+
+    assert signal is not None
+    assert signal.entry_price == pytest.approx(53.0)
 
 
 def test_signal_skipped_when_price_sits_in_zone_for_days(tmp_path: Path) -> None:

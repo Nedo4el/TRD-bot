@@ -177,6 +177,7 @@ class POCConfig:
     zone_pct: float = 0.10
     zone_quiet_hours: float = 24.0
     zone_fresh_hours: float = 2.0
+    min_departure_pct: float = 0.20
     price_interval: str = "5"
     min_confidence: float = 0.6
     min_poc_age_days: int = 7
@@ -255,6 +256,7 @@ class POCConfig:
             zone_pct=_env_float("ZONE_PCT", 0.10),
             zone_quiet_hours=_env_float("ZONE_QUIET_HOURS", 24.0),
             zone_fresh_hours=_env_float("ZONE_FRESH_HOURS", 2.0),
+            min_departure_pct=_env_float("MIN_DEPARTURE_PCT", 0.20),
             price_interval=_env_str("PRICE_INTERVAL", "5", ("1", "5", "15")),
             min_confidence=_env_float("MIN_CONFIDENCE", 0.6),
             min_poc_age_days=_env_int("MIN_POC_AGE_DAYS", 7),

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,7 @@ from bot_screener_yrovni.poc_scanner.profile import compute_profile
 from bot_screener_yrovni.poc_scanner.signals import POCSignal
 from bot_screener_yrovni.poc_scanner.store import LevelState, POCStore, ZoneState
 from bot_screener_yrovni.poc_scanner.timeutil import (
+    parse_iso,
     to_iso,
     utc_now,
     utc_now_iso,
@@ -101,6 +102,28 @@ def zone_contact_hours(
     last_contact = frame["ts"].iloc[previous].to_pydatetime()
     quiet_hours = max(0.0, (run_start - last_contact).total_seconds() / 3600.0)
     return quiet_hours, contact_hours
+
+
+def departure_pct(
+    frame: pd.DataFrame,
+    level: float,
+    since: datetime,
+) -> float | None:
+    """Максимальный уход цены от уровня с момента ``since``.
+
+    Считается по закрытиям свечей: ``max(|close - level| / level)``.
+    Уровень, от которого цена ни разу не уходила, — это не исторический
+    объёмный уровень, а текущая зона торговли.
+
+    Returns:
+        Доля ухода (0.2 = 20 %) или None, если после ``since`` свечей нет.
+    """
+    if frame.empty or level <= 0:
+        return None
+    closes = frame.loc[frame["ts"] >= since, "close"].astype(float)
+    if closes.empty:
+        return None
+    return float((((closes - level).abs() / level).max()))
 
 
 class POCScanner:
@@ -363,11 +386,23 @@ class POCScanner:
         now_iso = to_iso(moment)
         if current_price <= 0:
             return None
-        levels = [
-            level
-            for level in self.store.levels(self.symbol)
-            if self._is_tradeable(level)
-        ]
+        levels: list[LevelState] = []
+        skipped: list[str] = []
+        for level in self.store.levels(self.symbol):
+            if not self._is_tradeable(level):
+                continue
+            departure = self._level_departure(level)
+            if departure is not None and departure < self.config.min_departure_pct:
+                skipped.append(f"{level.poc_price:.6g}({departure * 100:.0f}%)")
+                continue
+            levels.append(level)
+        if skipped:
+            logger.info(
+                "%s: уровни без ухода цены на %.0f%% — пропуск: %s",
+                self.symbol,
+                self.config.min_departure_pct * 100,
+                ", ".join(skipped),
+            )
         target = nearest_cluster(
             build_clusters(levels, self.config.cluster_merge_pct),
             current_price,
@@ -567,6 +602,37 @@ class POCScanner:
             )
             return None
         return zone_contact_hours(frame, level, self.config.zone_pct, moment)
+
+    def _level_start(self, level: LevelState) -> datetime:
+        """Начало окна уровня: дата отрезка или возраст в днях назад."""
+        stamp = level.segment_start_ts or level.first_created_ts
+        if stamp:
+            try:
+                return parse_iso(stamp)
+            except ValueError:
+                pass
+        return utc_now() - timedelta(days=self._level_age_days(level))
+
+    def _level_departure(self, level: LevelState) -> float | None:
+        """Максимальный уход цены от уровня внутри его окна.
+
+        Берётся самый подробный кадр, покрывающий начало окна: 1h, затем 4h.
+        Если ни один кадр не доходит до начала, уход считается по тому, что
+        есть (лучшая оценка). ``None`` — истории цены нет, фильтр не проверен.
+        """
+        since = self._level_start(level)
+        best: float | None = None
+        for interval in ("60", "240"):
+            frame = self._series.get(interval)
+            if frame is None or frame.empty:
+                continue
+            value = departure_pct(frame, level.poc_price, since)
+            if value is None:
+                continue
+            if frame["ts"].iloc[0].to_pydatetime() <= since:
+                return value
+            best = value
+        return best
 
     def _span_winners(self) -> dict[tuple[str, int], WindowSpec]:
         """По одному окну на каждый фактический охват истории.
