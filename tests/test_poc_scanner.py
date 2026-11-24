@@ -25,13 +25,14 @@ from bot_screener_yrovni.poc_scanner.timeutil import to_iso
 NOW = datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc)
 
 
-def make_config(tmp_path: Path) -> POCConfig:
+def make_config(tmp_path: Path, min_departure_pct: float = 0.0) -> POCConfig:
     return POCConfig(
         symbol="SOLUSDT",
         db_path=tmp_path / "poc.sqlite",
         poc_log=tmp_path / "levels.jsonl",
         signal_log=tmp_path / "signals.jsonl",
         segment_mode="off",
+        min_departure_pct=min_departure_pct,
     )
 
 
@@ -50,8 +51,8 @@ def make_segment_config(
     )
 
 
-def make_scanner(tmp_path: Path) -> POCScanner:
-    return POCScanner(make_config(tmp_path), "SOLUSDT")
+def make_scanner(tmp_path: Path, min_departure_pct: float = 0.0) -> POCScanner:
+    return POCScanner(make_config(tmp_path, min_departure_pct), "SOLUSDT")
 
 
 def make_frame(
@@ -319,7 +320,7 @@ def test_departure_pct_is_max_excursion_since_start() -> None:
 
 def test_level_without_departure_gives_no_signal(tmp_path: Path) -> None:
     """Цена не уходила от уровня на 20 % — это текущая зона, а не уровень."""
-    scanner = make_scanner(tmp_path)
+    scanner = make_scanner(tmp_path, min_departure_pct=0.20)
     add_level(scanner, 50.0, 40_000_000.0, windows=("7d",))
     scanner._series["60"] = make_price_frame(
         [50.5] * 2 + [56.0] * 25 + [50.5] * 2,
@@ -331,7 +332,7 @@ def test_level_without_departure_gives_no_signal(tmp_path: Path) -> None:
 
 def test_level_with_departure_gives_signal(tmp_path: Path) -> None:
     """Цена уходила от уровня на 22 % — уровень исторический, сигнал есть."""
-    scanner = make_scanner(tmp_path)
+    scanner = make_scanner(tmp_path, min_departure_pct=0.20)
     add_level(scanner, 50.0, 40_000_000.0, windows=("7d",))
     scanner._series["60"] = make_price_frame(
         [50.5] * 2 + [61.0] * 25 + [50.5] * 2,
@@ -346,7 +347,7 @@ def test_level_with_departure_gives_signal(tmp_path: Path) -> None:
 
 def test_cluster_drops_level_without_departure(tmp_path: Path) -> None:
     """Свежий уровень 50 отброшен, сигнал строится по историческому 53."""
-    scanner = make_scanner(tmp_path)
+    scanner = make_scanner(tmp_path, min_departure_pct=0.20)
     add_level(scanner, 50.0, 40_000_000.0, windows=("7d",))
     add_level(scanner, 53.0, 40_000_000.0, windows=("180d",))
     scanner._series["60"] = make_price_frame([41.0] * 25 + [49.0] * 2, minutes=60)

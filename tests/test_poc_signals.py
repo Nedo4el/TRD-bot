@@ -64,6 +64,18 @@ def test_auto_trade_makes_new_signal_active(
     assert store.snapshot()["auto_trade"] is True
 
 
+def test_clear_removes_all_signals(store: module.PocSignalStore) -> None:
+    """Очистка убирает все сигналы и не возвращает их после перезагрузки."""
+    store.add(payload("SOLUSDT:50:long:3"))
+    store.add(payload("SOLUSDT:60:long:1"))
+
+    cleared = store.clear()
+
+    assert cleared == 2
+    assert store.snapshot()["signals"] == []
+    assert module.PocSignalStore().snapshot()["signals"] == []
+
+
 def test_signal_state_survives_reload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

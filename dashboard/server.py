@@ -161,6 +161,13 @@ async def api_poc_confirm(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "signal": record.to_dict()}, headers=_NO_CACHE)
 
 
+async def api_poc_signals_clear(request: Request) -> JSONResponse:
+    """Очистить список POC-сигналов; вернуть, сколько удалено."""
+    store: PocSignalStore = request.app.state.poc_signals
+    cleared = store.clear()
+    return JSONResponse({"ok": True, "cleared": cleared}, headers=_NO_CACHE)
+
+
 async def api_auto_trade_get(request: Request) -> JSONResponse:
     """Текущий режим AUTO_TRADE."""
     return JSONResponse(
@@ -604,6 +611,7 @@ def create_app() -> Starlette:
         Route("/api/signal", api_signal_receive, methods=["POST"]),
         Route("/api/poc-signals", api_poc_signals),
         Route("/api/poc-signals/confirm", api_poc_confirm, methods=["POST"]),
+        Route("/api/poc-signals/clear", api_poc_signals_clear, methods=["POST"]),
         Route("/api/auto-trade", api_auto_trade_get),
         Route("/api/auto-trade", api_auto_trade_post, methods=["POST"]),
         Route("/api/scan-mode", api_scan_mode_get),

@@ -1396,20 +1396,48 @@ def test_scan_poc_universe_uses_dashboard_filter(
     class FakeFetcher:
         async def get_tickers(self) -> list[dict[str, Any]]:
             return [
-                {"symbol": "AAAUSDT", "turnover24h": "100",
-                 "priceChangePercent": "5", "lastPrice": "1"},
-                {"symbol": "BBBUSDT", "turnover24h": "300",
-                 "priceChangePercent": "2", "lastPrice": "1"},
-                {"symbol": "CCCUSDT", "turnover24h": "200",
-                 "priceChangePercent": "0", "lastPrice": "1"},
-                {"symbol": "DDDUSDT", "turnover24h": "50",
-                 "priceChangePercent": "9", "lastPrice": "1"},
-                {"symbol": "EEEUSDT", "turnover24h": "400",
-                 "priceChangePercent": "1", "lastPrice": "0"},
-                {"symbol": "BTCUSDT", "turnover24h": "900",
-                 "priceChangePercent": "1", "lastPrice": "1"},
-                {"symbol": "ZZZUSDT", "turnover24h": "1",
-                 "priceChangePercent": "1", "lastPrice": "1"},
+                {
+                    "symbol": "AAAUSDT",
+                    "turnover24h": "100",
+                    "priceChangePercent": "5",
+                    "lastPrice": "1",
+                },
+                {
+                    "symbol": "BBBUSDT",
+                    "turnover24h": "300",
+                    "priceChangePercent": "2",
+                    "lastPrice": "1",
+                },
+                {
+                    "symbol": "CCCUSDT",
+                    "turnover24h": "200",
+                    "priceChangePercent": "0",
+                    "lastPrice": "1",
+                },
+                {
+                    "symbol": "DDDUSDT",
+                    "turnover24h": "50",
+                    "priceChangePercent": "9",
+                    "lastPrice": "1",
+                },
+                {
+                    "symbol": "EEEUSDT",
+                    "turnover24h": "400",
+                    "priceChangePercent": "1",
+                    "lastPrice": "0",
+                },
+                {
+                    "symbol": "BTCUSDT",
+                    "turnover24h": "900",
+                    "priceChangePercent": "1",
+                    "lastPrice": "1",
+                },
+                {
+                    "symbol": "ZZZUSDT",
+                    "turnover24h": "1",
+                    "priceChangePercent": "1",
+                    "lastPrice": "1",
+                },
             ]
 
     class FakeScanner:
@@ -1489,3 +1517,46 @@ def test_signals_clear_endpoint(store: SignalStore) -> None:
 
     assert body == {"ok": True, "cleared": 1}
     assert store.snapshot()["total_signals"] == 0
+
+
+def test_poc_signals_clear_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /api/poc-signals/clear стирает список POC-сигналов."""
+    import dashboard.poc_signals as poc_module
+    from dashboard.server import api_poc_signals_clear
+
+    monkeypatch.setattr(poc_module, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(poc_module, "POC_SIGNALS_FILE", tmp_path / "poc.json")
+    monkeypatch.setattr(poc_module, "AUTO_TRADE_FILE", tmp_path / "auto.json")
+    poc_store = poc_module.PocSignalStore()
+    poc_store.add(
+        {
+            "signal_id": "AAAUSDT:1:long:1",
+            "symbol": "AAAUSDT",
+            "direction": "long",
+            "entry_price": 1.0,
+            "price": 1.01,
+            "ts": "2026-11-22T00:00:00Z",
+        }
+    )
+    fake_app = SimpleNamespace(state=SimpleNamespace(poc_signals=poc_store))
+
+    async def run() -> Any:
+        request: Any = SimpleNamespace(app=fake_app)
+        return await api_poc_signals_clear(request)
+
+    resp = asyncio.run(run())
+    body = json.loads(resp.body)
+
+    assert body == {"ok": True, "cleared": 1}
+    assert poc_store.snapshot()["signals"] == []
+
+
+def test_poc_signals_clear_route_registered() -> None:
+    """Кнопка «Очистить сигналы» ходит на зарегистрированный маршрут."""
+    from dashboard.server import create_app
+
+    paths = {route.path for route in create_app().routes}
+
+    assert "/api/poc-signals/clear" in paths

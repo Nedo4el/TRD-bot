@@ -741,6 +741,7 @@
         <span class="muted">В работе: <b id="pocActive">0</b></span>
         <span class="muted" id="pocUpdated">—</span>
         <button class="primary" id="pocRefresh">Обновить</button>
+        <button id="pocClear" title="Удалить все POC-сигналы из списка">Очистить сигналы</button>
       </div>
       <div class="table-wrap" style="max-height: 62vh;">
         <table>
@@ -2401,6 +2402,19 @@ async function confirmPocSignal(signalId) {
   }
 }
 
+async function clearPocSignals() {
+  if (!confirm("Удалить все POC-сигналы из списка?")) return;
+  try {
+    const res = await fetch("/api/poc-signals/clear", { method: "POST" });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || "HTTP " + res.status);
+    toast("POC-сигналы очищены: " + data.cleared);
+    loadPocSignals();
+  } catch (err) {
+    toast("Не удалось очистить POC-сигналы: " + err.message, true);
+  }
+}
+
 async function toggleAutoTrade() {
   const wanted = $("autoTrade").checked;
   try {
@@ -2454,6 +2468,7 @@ async function saveScanMode() {
 }
 
 $("pocRefresh").addEventListener("click", loadPocSignals);
+$("pocClear").addEventListener("click", clearPocSignals);
 $("autoTrade").addEventListener("change", toggleAutoTrade);
 $("pocScanNow").addEventListener("click", () => {
   post("/api/scan/yrovni");

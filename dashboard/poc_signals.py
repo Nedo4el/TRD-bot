@@ -144,6 +144,16 @@ class PocSignalStore:
             logger.info("POC-сигнал %s подтверждён", signal_id)
         return record
 
+    def clear(self) -> int:
+        """Убрать все сигналы из списка; вернуть, сколько было."""
+        cleared = len(self._records)
+        if cleared == 0:
+            return 0
+        self._records = []
+        self._persist()
+        logger.info("POC-сигналы очищены: %d", cleared)
+        return cleared
+
     def snapshot(self) -> dict[str, Any]:
         """Снимок для дашборда: флаг режима, счётчики и список сигналов."""
         if self._expire_pending():
