@@ -486,6 +486,14 @@
         <input type="number" id="spMaxSymbols" value="100" min="1" max="500" step="10" />
       </div>
       <div class="sp-field">
+        <label for="spPriceFilter">Фильтр по цене монеты</label>
+        <input type="checkbox" id="spPriceFilter" checked />
+      </div>
+      <div class="sp-field">
+        <label>Макс. цена монеты ($)</label>
+        <input type="number" id="spMaxPrice" value="10000" min="0" step="100" />
+      </div>
+      <div class="sp-field">
         <label>|Δ24ч| ≥ (%)</label>
         <input type="number" id="spMinChange" value="0" min="0" step="0.5" />
       </div>
@@ -1165,6 +1173,8 @@ async function loadSettings() {
     $("spTimeframe").value = s.timeframe || "5";
     $("spMinTurnover").value = s.min_turnover_24h ?? 10000000;
     $("spMaxSymbols").value = s.max_symbols ?? 100;
+    $("spPriceFilter").checked = s.price_filter_enabled !== false;
+    $("spMaxPrice").value = s.max_price_usd ?? 10000;
     $("spMinChange").value = s.min_abs_change_24h ?? 0;
     $("spVolTrend").value = s.volume_trend || "all";
     $("spSort").value = s.sort_mode || "atr_desc";
@@ -1179,6 +1189,8 @@ function collectSettings() {
     timeframe: $("spTimeframe").value,
     min_turnover_24h: parseFloat($("spMinTurnover").value || "0"),
     max_symbols: parseInt($("spMaxSymbols").value || "100", 10),
+    price_filter_enabled: $("spPriceFilter").checked,
+    max_price_usd: parseFloat($("spMaxPrice").value || "10000"),
     min_abs_change_24h: parseFloat($("spMinChange").value || "0"),
     volume_trend: $("spVolTrend").value,
     sort_mode: $("spSort").value,
@@ -1212,6 +1224,8 @@ function resetSettings() {
   $("spTimeframe").value = "5";
   $("spMinTurnover").value = 10000000;
   $("spMaxSymbols").value = 100;
+  $("spPriceFilter").checked = true;
+  $("spMaxPrice").value = 10000;
   $("spMinChange").value = 0;
   $("spVolTrend").value = "all";
   $("spSort").value = "atr_desc";

@@ -514,6 +514,8 @@ async def scan_all_coins(spec: ScreenerSpec) -> list[Signal]:
         last_price = float(t.get("lastPrice", "0"))
         if last_price <= 0:
             continue
+        if settings.price_filter_enabled and last_price > settings.max_price_usd:
+            continue
         candidates.append(
             {
                 "symbol": symbol,
@@ -739,6 +741,8 @@ async def _poc_universe(
         except (TypeError, ValueError):
             continue
         if turnover < settings.min_turnover_24h or price <= 0:
+            continue
+        if settings.price_filter_enabled and price > settings.max_price_usd:
             continue
         if abs(change) < settings.min_abs_change_24h:
             continue

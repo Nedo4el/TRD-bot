@@ -473,7 +473,7 @@ def test_only_nearest_cluster_is_monitored(tmp_path: Path) -> None:
     add_level(scanner, 50.0, 40_000_000.0, windows=("7d",))
     add_level(scanner, 90.0, 40_000_000.0, windows=("180d",))
 
-    assert scanner.check_clusters(80.0, now=NOW) is None
+    assert scanner.check_clusters(76.0, now=NOW) is None
     signal = scanner.check_clusters(88.0, now=NOW)
 
     assert signal is not None

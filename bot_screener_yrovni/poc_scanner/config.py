@@ -181,7 +181,7 @@ class POCConfig:
     touch_proximity_pct: float = 0.005
     merge_poc_pct: float = 0.01
     cluster_merge_pct: float = 0.05
-    zone_pct: float = 0.10
+    zone_pct: float = 0.15
     zone_quiet_hours: float = 24.0
     zone_fresh_hours: float = 2.0
     min_departure_pct: float = 0.0
@@ -263,7 +263,7 @@ class POCConfig:
             touch_proximity_pct=_env_float("TOUCH_PROXIMITY_PCT", 0.005),
             merge_poc_pct=_env_float("MERGE_POC_PCT", 0.01),
             cluster_merge_pct=_env_float("CLUSTER_MERGE_PCT", 0.05),
-            zone_pct=_env_float("ZONE_PCT", 0.10),
+            zone_pct=_env_float("ZONE_PCT", 0.15),
             zone_quiet_hours=_env_float("ZONE_QUIET_HOURS", 24.0),
             zone_fresh_hours=_env_float("ZONE_FRESH_HOURS", 2.0),
             min_departure_pct=_env_float("MIN_DEPARTURE_PCT", 0.0),

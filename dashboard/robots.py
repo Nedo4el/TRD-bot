@@ -30,9 +30,10 @@ _STILL_ACTIVE = 259
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 # --- Постепенный старт -------------------------------------------------------
-# Восемь процессов, поднятых в одну секунду, дают залп kline-запросов и ловят
+# Процессы робота, поднятые в одну секунду, дают залп kline-запросов и ловят
 # retCode 10006 (Too many visits). Поэтому первый символ стартует сразу, а
-# остальные — равномерно внутри окна DASH_ROBOT_START_WINDOW_SEC.
+# остальные — равномерно внутри окна DASH_ROBOT_START_WINDOW_SEC (по умолчанию
+# 30 с). 0 — поднимать все сразу; для длинных списков монет окно увеличить.
 _PENDING_SUFFIX = ".pending.json"
 _STAGGER_TICK_SEC = 3.0
 _STATE_LOCK = threading.Lock()
@@ -180,7 +181,7 @@ def _write_pending(robot_name: str, pending: dict[str, int]) -> None:
 
 def stagger_window_sec() -> float:
     """Окно постепенного старта, сек (0 — поднимать все процессы сразу)."""
-    raw = os.getenv("DASH_ROBOT_START_WINDOW_SEC", "1200").strip()
+    raw = os.getenv("DASH_ROBOT_START_WINDOW_SEC", "30").strip()
     try:
         return max(0.0, float(raw))
     except ValueError:

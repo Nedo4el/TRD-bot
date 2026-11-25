@@ -378,6 +378,8 @@ def test_settings_defaults_and_roundtrip(
     s.sort_mode = "turnover_desc"
     s.volume_trend = "up"
     s.exclude_symbols = ["BTCUSDT", "SOLUSDT"]
+    s.price_filter_enabled = False
+    s.max_price_usd = 5000.0
     s.save()
 
     loaded = AllCoinsSettings.load()
@@ -386,7 +388,28 @@ def test_settings_defaults_and_roundtrip(
     assert loaded.sort_mode == "turnover_desc"
     assert loaded.volume_trend == "up"
     assert loaded.exclude_symbols == ["BTCUSDT", "SOLUSDT"]
+    assert loaded.price_filter_enabled is False
+    assert loaded.max_price_usd == 5000.0
     assert loaded.enabled is True
+
+
+def test_settings_price_filter_defaults_and_clamp() -> None:
+    """Фильтр по цене: дефолт $10k, границы 0..$1M."""
+    d = AllCoinsSettings()
+    assert d.price_filter_enabled is True
+    assert d.max_price_usd == 10_000.0
+
+    off = AllCoinsSettings.from_dict({"price_filter_enabled": False})
+    assert off.price_filter_enabled is False
+    assert off.max_price_usd == 10_000.0
+
+    assert AllCoinsSettings.from_dict({"max_price_usd": -5}).max_price_usd == 0.0
+    assert (
+        AllCoinsSettings.from_dict({"max_price_usd": 5_000_000}).max_price_usd
+        == 1_000_000.0
+    )
+    # старый settings.json без новых полей остаётся валидным
+    assert AllCoinsSettings.from_dict({}).price_filter_enabled is True
 
 
 def test_settings_load_invalid_values_falls_back_to_defaults(
@@ -488,6 +511,69 @@ def test_scan_all_coins_mocked(
     assert aaa.detail["change_24h_pct"] == 5.2
     assert aaa.detail["atr_pct"] is not None
     assert aaa.detail["volume_trend_pct"] is not None
+
+
+def test_scan_all_coins_skips_expensive_coins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """«Все монеты»: при включённом фильтре монета дороже max_price_usd отсекается."""
+    import dashboard.adapters as adapters_module
+    import dashboard.settings as settings_module
+    from dashboard.adapters import scan_all_coins
+
+    monkeypatch.setattr(settings_module, "SETTINGS_FILE", tmp_path / "settings.json")
+    s = AllCoinsSettings(
+        enabled=True,
+        min_turnover_24h=1_000_000,
+        max_symbols=10,
+        price_filter_enabled=True,
+        max_price_usd=10.0,
+    )
+    s.save()
+
+    class FakeFetcher:
+        async def get_tickers(self) -> list[dict]:
+            return [
+                {
+                    "symbol": "CHEAPUSDT",
+                    "turnover24h": "5000000",
+                    "priceChangePercent": "5.2",
+                    "lastPrice": "1.5",
+                },
+                {
+                    "symbol": "RICHUSDT",
+                    "turnover24h": "9000000",
+                    "priceChangePercent": "5.2",
+                    "lastPrice": "50000",
+                },
+            ]
+
+        async def get_klines(
+            self, symbol: str, interval: str, limit: int = 100
+        ) -> list[dict]:
+            return [
+                {
+                    "open_time": i,
+                    "open": 1.5,
+                    "high": 1.53,
+                    "low": 1.47,
+                    "close": 1.5,
+                    "volume": 1000.0 + i * 10,
+                    "turnover": 1.5 * (1000.0 + i * 10),
+                }
+                for i in range(limit)
+            ]
+
+    monkeypatch.setattr(
+        adapters_module, "DashboardFetcher", lambda *a, **kw: FakeFetcher()
+    )
+    spec = ScreenerSpec(
+        name="all", title="Все монеты", dir_name="all", interval_sec=60, max_symbols=10
+    )
+
+    signals = asyncio.run(scan_all_coins(spec))
+    symbols = [x.symbol for x in signals]
+    assert symbols == ["CHEAPUSDT"]
 
 
 def test_scan_trend_uses_htf_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1471,6 +1557,76 @@ def test_scan_poc_universe_uses_dashboard_filter(
 
     assert asyncio.run(scan_poc(spec)) == []
     assert calls == ["ZZZUSDT", "BBBUSDT", "CCCUSDT"]
+
+
+def test_scan_poc_universe_filters_expensive_coins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POC не сканирует рынок дороже max_price_usd (ручные POC_SYMBOLS — всегда)."""
+    spec = ScreenerSpec("yrovni", "Уровни POC", "bot_screener_yrovni", 300, 25)
+    calls: list[str] = []
+
+    class FakeEnv:
+        def names(self, key: str, default: tuple[str, ...] = ()) -> list[str]:
+            return ["ZZZUSDT"]
+
+    class FakeFetcher:
+        async def get_tickers(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "symbol": "AAAUSDT",
+                    "turnover24h": "300",
+                    "priceChangePercent": "1",
+                    "lastPrice": "5",
+                },
+                {
+                    "symbol": "BBBUSDT",
+                    "turnover24h": "200",
+                    "priceChangePercent": "1",
+                    "lastPrice": "15000",
+                },
+                {
+                    "symbol": "ZZZUSDT",
+                    "turnover24h": "20000",
+                    "priceChangePercent": "1",
+                    "lastPrice": "50000",
+                },
+            ]
+
+    class FakeScanner:
+        def __init__(self, config: object, symbol: str) -> None:
+            calls.append(symbol)
+
+        def refresh(self) -> POCSignal | None:
+            return None
+
+        def close(self) -> None:
+            pass
+
+    settings = AllCoinsSettings(
+        min_turnover_24h=100,
+        max_symbols=10,
+        price_filter_enabled=True,
+        max_price_usd=10_000,
+    )
+
+    def fake_load(cls: type[AllCoinsSettings]) -> AllCoinsSettings:
+        return settings
+
+    monkeypatch.setattr("dashboard.adapters._env", lambda spec: FakeEnv())
+    monkeypatch.setattr("dashboard.adapters._new_fetcher", lambda env: FakeFetcher())
+    monkeypatch.setattr(AllCoinsSettings, "load", classmethod(fake_load))
+    monkeypatch.setattr(
+        "bot_screener_yrovni.poc_scanner.scanner.POCScanner", FakeScanner
+    )
+
+    assert asyncio.run(scan_poc(spec)) == []
+    assert calls == ["ZZZUSDT", "AAAUSDT"]
+
+    settings.price_filter_enabled = False
+    calls.clear()
+    assert asyncio.run(scan_poc(spec)) == []
+    assert calls == ["ZZZUSDT", "AAAUSDT", "BBBUSDT"]
 
 
 def test_poc_pending_signal_expires(

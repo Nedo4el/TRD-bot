@@ -21,6 +21,7 @@ _VALID_SORT_MODES = (
 )
 _VALID_TREND_FILTERS = ("all", "up", "down")
 _VALID_INTERVALS = (30, 60, 120, 300)
+_MAX_PRICE_USD = 1_000_000.0
 
 
 @dataclass(slots=True)
@@ -33,6 +34,8 @@ class AllCoinsSettings:
     atr_period: int = 14
     min_turnover_24h: float = 10_000_000
     max_symbols: int = 100
+    price_filter_enabled: bool = True
+    max_price_usd: float = 10_000.0
     exclude_symbols: list[str] = field(default_factory=lambda: ["BTCUSDT", "ETHUSDT"])
     min_abs_change_24h: float = 0.0
     volume_trend: str = "all"
@@ -67,6 +70,11 @@ class AllCoinsSettings:
         atr_period = int(raw.get("atr_period", defaults.atr_period))
         min_turnover = float(raw.get("min_turnover_24h", defaults.min_turnover_24h))
         max_symbols = int(raw.get("max_symbols", defaults.max_symbols))
+        price_filter_enabled = bool(
+            raw.get("price_filter_enabled", defaults.price_filter_enabled)
+        )
+        max_price = float(raw.get("max_price_usd", defaults.max_price_usd))
+        max_price = max(0.0, min(_MAX_PRICE_USD, max_price))
         exclude = [
             str(s).upper() for s in raw.get("exclude_symbols", defaults.exclude_symbols)
         ]
@@ -86,6 +94,8 @@ class AllCoinsSettings:
             atr_period=atr_period,
             min_turnover_24h=min_turnover,
             max_symbols=max(1, min(500, max_symbols)),
+            price_filter_enabled=price_filter_enabled,
+            max_price_usd=max_price,
             exclude_symbols=exclude,
             min_abs_change_24h=min_abs_change,
             volume_trend=volume_trend,

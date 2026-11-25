@@ -1,4 +1,4 @@
-"""Кластеры POC-уровней: слияние 5 %, ближайший кластер, зона 10 %.
+"""Кластеры POC-уровней: слияние 5 %, ближайший кластер, зона 15 %.
 
 Модель «ближайший кластер» (ТЗ 22.11.2026): уровни, отстоящие друг от друга
 по формуле ``|A-B| / min(A,B) < merge_pct``, объединяются в кластер
@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from bot_screener_yrovni.poc_scanner.store import LevelState
 
 DEFAULT_MERGE_PCT = 0.05
-DEFAULT_ZONE_PCT = 0.10
+DEFAULT_ZONE_PCT = 0.15
 DIRECTION_LONG = "long"
 DIRECTION_SHORT = "short"
 
