@@ -216,6 +216,8 @@ class POCScanner:
             candles,
             num_bins=self.config.bins,
             va_percent=self.config.va_percent,
+            node_min_share=self.config.node_min_share,
+            max_nodes=self.config.profile_nodes,
         )
         if result is None:
             return None
@@ -229,6 +231,10 @@ class POCScanner:
             "vah": result.vah,
             "val": result.val,
             "total_volume": result.total_volume,
+            "nodes": [
+                {"price": node.price, "volume": node.volume, "share": node.share}
+                for node in result.nodes
+            ],
             "ts_calculated": utc_now_iso(),
             "candles": len(candles),
             "interval": spec.interval,
@@ -309,6 +315,7 @@ class POCScanner:
         """Создать уровень POC или слить с уже известным в пределах 1 %."""
         window = str(poc_data["window"])
         segment_type = str(poc_data.get("segment_type", "rolling"))
+        kind = str(poc_data.get("kind", "poc"))
         age_days = int(poc_data.get("age_days") or get_poc_age_days(window))
         candidate = LevelState(
             symbol=self.symbol,
@@ -320,7 +327,7 @@ class POCScanner:
             poc_age_days=age_days,
             first_created_ts=str(poc_data.get("segment_start") or ""),
             last_calculated_ts=str(poc_data.get("ts_calculated") or utc_now_iso()),
-            va_window=window,
+            va_window=str(poc_data.get("va_window", window)),
             segment_type=segment_type,
             segment_start_ts=str(poc_data.get("segment_start") or ""),
             segment_end_ts=str(poc_data.get("segment_end") or ""),
@@ -337,6 +344,7 @@ class POCScanner:
                 "ts": level.last_calculated_ts,
                 "symbol": level.symbol,
                 "window": window,
+                "kind": kind,
                 "poc_price": round(level.poc_price, 10),
                 "vah": round(level.vah, 10),
                 "val": round(level.val, 10),
@@ -353,7 +361,16 @@ class POCScanner:
             },
         )
         wall = " WALL" if self._is_wall(level) else ""
-        if segment_type == "rolling":
+        if kind == "node":
+            logger.debug(
+                "%s: узел %s=%.10g (%.0f%% от POC) объём $%.1fM",
+                self.symbol,
+                window,
+                candidate.poc_price,
+                float(poc_data.get("share", 0.0)) * 100,
+                float(poc_data["total_volume"]) / 1_000_000,
+            )
+        elif segment_type == "rolling":
             logger.info(
                 "POC %s %s=%.10g (VA %.10g..%.10g) объём $%.1fM окна %s%s",
                 self.symbol,
@@ -387,6 +404,34 @@ class POCScanner:
                 level.poc_age_days,
             )
         return level
+
+    def _upsert_nodes(self, poc_data: dict[str, Any]) -> None:
+        """Записать второстепенные объёмные узлы окна отдельными уровнями.
+
+        Метка узла — ``<окно>#<ранг>`` (``30d#2`` — второй по объёму узел
+        30d-окна). Ранг пересчитывается каждым сканом, поэтому узлы между
+        окнами не смешиваются, а возраст уровня считается по базовому окну.
+        """
+        nodes = poc_data.get("nodes") or []
+        if not nodes or self.config.profile_nodes < 1:
+            return
+        window = str(poc_data["window"])
+        marks: list[str] = []
+        for rank, node in enumerate(nodes, start=2):
+            data = dict(poc_data)
+            data.update(
+                window=f"{window}#{rank}",
+                poc=node["price"],
+                vah=node["price"],
+                val=node["price"],
+                total_volume=node["volume"],
+                va_window="",
+                kind="node",
+                share=node["share"],
+            )
+            self.upsert_poc_level(data)
+            marks.append(f"{node['price']:.6g}({node['share'] * 100:.0f}%)")
+        logger.info("%s: узлы %s: %s", self.symbol, window, ", ".join(marks))
 
     # --- сигналы ---------------------------------------------------------
 
@@ -583,6 +628,20 @@ class POCScanner:
             span = min(len(frame), spec.candles)
             winner = winners.get((spec.interval, span))
             if winner is None or winner.name != spec.name:
+                removed = self.store.detach_window(
+                    self.symbol,
+                    spec.name,
+                    self.config.confirm_volume_threshold,
+                )
+                if removed:
+                    logger.info(
+                        "%s: метка %s снята с %d уровней — окно не считается "
+                        "(тот же охват истории, что у %s)",
+                        self.symbol,
+                        spec.name,
+                        removed,
+                        winner.name if winner is not None else "-",
+                    )
                 statuses.append(f"{spec.name}=skip(duplicate_span={span})")
                 continue
             if len(frame) < spec.candles:
@@ -592,6 +651,7 @@ class POCScanner:
                 statuses.append(f"{spec.name}=skip(no_profile)")
                 continue
             self.upsert_poc_level(poc_data)
+            self._upsert_nodes(poc_data)
             status = f"{spec.name}=ok(age={poc_data['age_days']})"
             if poc_data["partial"]:
                 status = f"{spec.name}=ok(age={poc_data['age_days']},partial)"

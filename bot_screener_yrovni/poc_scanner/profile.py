@@ -14,6 +14,18 @@ import numpy as np
 import pandas as pd
 
 MIN_CANDLES = 2
+# Узел считается значимым, только если его корзина хотя бы на 20 % плотнее
+# средней: у плоского профиля локальных узлов нет.
+MIN_NODE_CONCENTRATION = 1.2
+
+
+@dataclass(frozen=True)
+class VolumeNode:
+    """Второстепенный объёмный узел профиля (HVN)."""
+
+    price: float
+    volume: float
+    share: float  # объём корзины / объём корзины POC
 
 
 @dataclass(frozen=True)
@@ -24,6 +36,7 @@ class ProfileResult:
     val: float
     vah: float
     total_volume: float
+    nodes: tuple[VolumeNode, ...] = ()
 
 
 def candle_weights(df: pd.DataFrame) -> np.ndarray:
@@ -124,19 +137,103 @@ def find_value_area(
     return float(centers[lo]), float(centers[hi])
 
 
+def local_peaks(volumes: np.ndarray) -> list[int]:
+    """Индексы локальных максимумов; плато равных значений даёт один индекс."""
+    peaks: list[int] = []
+    index = 0
+    count = len(volumes)
+    while index < count:
+        end = index
+        while end + 1 < count and volumes[end + 1] == volumes[index]:
+            end += 1
+        left_ok = index == 0 or volumes[index - 1] < volumes[index]
+        right_ok = end == count - 1 or volumes[end + 1] < volumes[end]
+        if left_ok and right_ok:
+            peaks.append((index + end) // 2)
+        index = end + 1
+    return peaks
+
+
+def volume_nodes(
+    centers: np.ndarray,
+    volumes: np.ndarray,
+    *,
+    min_share: float = 0.35,
+    max_nodes: int = 6,
+    min_concentration: float = MIN_NODE_CONCENTRATION,
+) -> tuple[VolumeNode, ...]:
+    """Прочие объёмные узлы профиля: локальные максимумы ниже POC-корзины.
+
+    Узел значим, если его объём не ниже ``min_share`` от POC-корзины и не
+    ниже ``min_concentration`` среднего объёма корзины: второе условие
+    отсекает плоские профили, где «узлов» нет.
+    """
+    if len(centers) == 0 or len(volumes) != len(centers) or max_nodes < 1:
+        return ()
+    total = float(volumes.sum())
+    if total <= 0:
+        return ()
+    poc_index = int(np.argmax(volumes))
+    poc_volume = float(volumes[poc_index])
+    if poc_volume <= 0:
+        return ()
+    average = total / len(volumes)
+    share_limit = poc_volume * min(max(min_share, 0.0), 1.0)
+    density_limit = average * max(min_concentration, 0.0)
+    indexes = [
+        index
+        for index in local_peaks(volumes)
+        if index != poc_index
+        and float(volumes[index]) >= share_limit
+        and float(volumes[index]) >= density_limit
+    ]
+    indexes.sort(key=lambda index: float(volumes[index]), reverse=True)
+    return tuple(
+        VolumeNode(
+            price=float(centers[index]),
+            volume=float(volumes[index]),
+            share=float(volumes[index]) / poc_volume,
+        )
+        for index in indexes[:max_nodes]
+    )
+
+
 def compute_profile(
     df: pd.DataFrame,
     num_bins: int = 100,
     va_percent: float = 0.68,
+    *,
+    node_min_share: float = 0.0,
+    max_nodes: int = 0,
 ) -> ProfileResult | None:
-    """POC и Value Area по свечам окна; None — профиль не построился."""
+    """POC, Value Area и (опционально) объёмные узлы окна.
+
+    Args:
+        df: свечи окна.
+        num_bins: число корзин профиля.
+        va_percent: доля объёма в Value Area.
+        node_min_share: мин. доля узла от POC-корзины; 0 — узлы не считаются.
+        max_nodes: сколько узлов вернуть, кроме POC.
+
+    Returns:
+        Профиль или None, если он не построился.
+    """
     centers, volumes = volume_profile(df, num_bins)
     area = find_value_area(centers, volumes, va_percent)
     if len(centers) == 0 or area is None:
         return None
+    nodes: tuple[VolumeNode, ...] = ()
+    if max_nodes > 0 and node_min_share > 0:
+        nodes = volume_nodes(
+            centers,
+            volumes,
+            min_share=node_min_share,
+            max_nodes=max_nodes,
+        )
     return ProfileResult(
         poc=float(centers[int(np.argmax(volumes))]),
         val=area[0],
         vah=area[1],
         total_volume=float(volumes.sum()),
+        nodes=nodes,
     )

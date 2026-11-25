@@ -55,6 +55,11 @@ PER_SYMBOL_OVERRIDES: dict[str, dict[str, float]] = {
 }
 
 
+def base_window_name(name: str) -> str:
+    """Базовое имя окна без ранга узла: ``"30d#3"`` -> ``"30d"``."""
+    return name.split("#", 1)[0]
+
+
 def parse_window_days(name: str) -> int:
     """Перевести имя окна в дни: ``"3d"`` -> 3, ``"730d"`` -> 730.
 
@@ -76,12 +81,12 @@ def window_interval(days: int) -> str:
 
 
 def get_poc_age_days(window: str) -> int:
-    """Возраст POC по окну в днях: ``"30d"`` -> 30.
+    """Возраст POC по окну в днях: ``"30d"`` -> 30, ``"30d#3"`` -> 30.
 
     Окна вне ``WINDOW_AGE_DAYS`` оцениваются по имени (``"10d"`` -> 10),
     нераспознанное имя даёт 0 — такой уровень считается слишком молодым.
     """
-    name = window.strip().lower()
+    name = base_window_name(window.strip().lower())
     if name in WINDOW_AGE_DAYS:
         return WINDOW_AGE_DAYS[name]
     try:
@@ -168,6 +173,8 @@ class POCConfig:
     windows: tuple[str, ...] = DEFAULT_WINDOWS
     bins: int = 100
     va_percent: float = 0.68
+    profile_nodes: int = 6
+    node_min_share: float = 0.35
     confirm_volume_threshold: float = 50_000_000.0
     min_signal_volume: float = 10_000_000.0
     wall_volume_threshold: float = 200_000_000.0
@@ -246,6 +253,8 @@ class POCConfig:
             windows=_env_windows("POC_WINDOWS", DEFAULT_WINDOWS),
             bins=_env_int("POC_BINS", 100),
             va_percent=_env_float("VA_PERCENT", 0.68),
+            profile_nodes=_env_int("PROFILE_NODES", 6),
+            node_min_share=_env_float("NODE_MIN_SHARE", 0.35),
             confirm_volume_threshold=_env_float(
                 "CONFIRM_VOLUME_THRESHOLD", 50_000_000.0
             ),

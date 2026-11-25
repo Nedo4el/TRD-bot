@@ -180,10 +180,15 @@ def add_level(
     price: float,
     volume: float,
     windows: tuple[str, ...] = ("180d",),
+    age_days: int | None = None,
 ) -> LevelState:
     """Положить в хранилище уровень с заданным объёмом и окнами."""
-    age_days = max(get_poc_age_days(name) for name in windows)
-    created = to_iso(NOW - timedelta(days=age_days))
+    age = (
+        age_days
+        if age_days is not None
+        else max(get_poc_age_days(name) for name in windows)
+    )
+    created = to_iso(NOW - timedelta(days=age))
     candidate = LevelState(
         symbol=scanner.symbol,
         poc_price=price,
@@ -191,7 +196,7 @@ def add_level(
         val=price * 0.99,
         source_windows=windows,
         window_volumes={name: volume / len(windows) for name in windows},
-        poc_age_days=age_days,
+        poc_age_days=age,
         first_created_ts=created,
         last_calculated_ts=created,
         va_window=windows[-1],
@@ -465,8 +470,8 @@ def test_signal_allowed_after_long_absence(tmp_path: Path) -> None:
 def test_only_nearest_cluster_is_monitored(tmp_path: Path) -> None:
     """Дальний кластер игнорируется, даже если цена ближе к нему, чем к другому."""
     scanner = make_scanner(tmp_path)
-    add_level(scanner, 50.0, 40_000_000.0)
-    add_level(scanner, 90.0, 40_000_000.0)
+    add_level(scanner, 50.0, 40_000_000.0, windows=("7d",))
+    add_level(scanner, 90.0, 40_000_000.0, windows=("180d",))
 
     assert scanner.check_clusters(80.0, now=NOW) is None
     signal = scanner.check_clusters(88.0, now=NOW)
@@ -792,7 +797,7 @@ def test_price_for_zone_comes_from_closed_5m_candle(
 ) -> None:
     """Цена сравнения — закрытая 5m свеча, а не 1h/4h (п.6)."""
     scanner = make_scanner(tmp_path)
-    add_level(scanner, 50.0, 40_000_000.0)
+    add_level(scanner, 50.0, 40_000_000.0, windows=("2026-08",), age_days=40)
     frames = {
         "5": make_price_frame([60.0] * 286 + [50.5] * 2),
         "60": make_frame(days=30, price=60.0),
@@ -817,3 +822,156 @@ def test_prune_removes_levels_of_removed_windows(tmp_path: Path) -> None:
 
     assert removed == 1
     assert [level.poc_price for level in scanner.store.levels("SOLUSDT")] == [60.0]
+
+
+def make_price_groups(groups: list[tuple[float, int, float]]) -> pd.DataFrame:
+    """Часовые свечи: (цена, число свечей, оборот свечи) на каждую группу."""
+    rows: list[dict[str, Any]] = []
+    start = NOW - timedelta(days=7)
+    for price, count, turnover in groups:
+        for _ in range(count):
+            rows.append(
+                {
+                    "ts": start + timedelta(hours=len(rows)),
+                    "open": price,
+                    "high": price + 0.05,
+                    "low": price - 0.05,
+                    "close": price,
+                    "volume": 1.0,
+                    "turnover": turnover,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_profile_extracts_secondary_volume_nodes() -> None:
+    """POC — плотнейшая корзина, прочие локальные максимумы — объёмные узлы."""
+    frame = make_price_groups(
+        [
+            (100.0, 90, 3_000_000.0),
+            (118.0, 60, 3_000_000.0),
+            (137.0, 45, 3_000_000.0),
+            (160.0, 15, 3_000_000.0),
+        ]
+    )
+
+    result = compute_profile(frame, node_min_share=0.35, max_nodes=6)
+
+    assert result is not None
+    assert len(result.nodes) == 2
+    prices = [node.price for node in result.nodes]
+    assert min(prices) == pytest.approx(118.0, abs=1.0)
+    assert max(prices) == pytest.approx(137.0, abs=1.0)
+    assert result.nodes[0].share > result.nodes[1].share
+    assert result.poc < 105.0
+
+
+def test_profile_flat_frame_has_no_nodes() -> None:
+    """Плоский профиль из одной цены узлов не даёт: нет концентрации объёма."""
+    result = compute_profile(make_frame(30), node_min_share=0.35, max_nodes=6)
+
+    assert result is not None
+    assert result.nodes == ()
+
+
+def test_profile_nodes_disabled_by_default() -> None:
+    """Без node_min_share/max_nodes профиль работает как до появления узлов."""
+    frame = make_price_groups([(100.0, 90, 3_000_000.0), (118.0, 60, 3_000_000.0)])
+
+    result = compute_profile(frame)
+
+    assert result is not None
+    assert result.nodes == ()
+
+
+def test_refresh_stores_secondary_nodes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Второй по объёму узел окна сохраняется уровнем с меткой ``7d#2``."""
+    config = POCConfig(
+        symbol="SOLUSDT",
+        windows=("7d",),
+        db_path=tmp_path / "poc.sqlite",
+        poc_log=tmp_path / "levels.jsonl",
+        signal_log=tmp_path / "signals.jsonl",
+        segment_mode="off",
+    )
+    scanner = POCScanner(config, "SOLUSDT")
+    frame = make_price_groups(
+        [
+            (100.0, 90, 3_000_000.0),
+            (118.0, 60, 3_000_000.0),
+            (137.0, 18, 3_000_000.0),
+        ]
+    )
+    patch_history(scanner, monkeypatch, frame)
+
+    scanner.refresh(current_price=1000.0, now=NOW)
+
+    levels = scanner.store.levels("SOLUSDT")
+    labels = {name for level in levels for name in level.source_windows}
+    node_levels = [level for level in levels if "7d#2" in level.source_windows]
+
+    assert {"7d", "7d#2"} <= labels
+    assert "7d#3" not in labels
+    assert len(node_levels) == 1
+    assert node_levels[0].poc_price == pytest.approx(118.0, abs=1.0)
+    assert node_levels[0].poc_age_days == 7
+
+
+def test_window_label_lives_on_single_level(tmp_path: Path) -> None:
+    """Метка окна переезжает на новый уровень, старый без меток удаляется."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 50.0, 40_000_000.0, windows=("7d",))
+    moved = add_level(scanner, 60.0, 40_000_000.0, windows=("7d",))
+
+    levels = scanner.store.levels("SOLUSDT")
+
+    assert [level.id for level in levels] == [moved.id]
+    assert levels[0].source_windows == ("7d",)
+
+
+def test_window_label_detach_keeps_other_windows(tmp_path: Path) -> None:
+    """Уровень теряет только переехавшую метку: остальные окна и объём живут."""
+    scanner = make_scanner(tmp_path)
+    old = add_level(scanner, 50.0, 40_000_000.0, windows=("7d", "30d"))
+    add_level(scanner, 60.0, 40_000_000.0, windows=("7d",))
+
+    levels = scanner.store.levels("SOLUSDT")
+    survivor = next(level for level in levels if level.id == old.id)
+
+    assert survivor.source_windows == ("30d",)
+    assert survivor.total_volume_at_level == pytest.approx(20_000_000.0)
+    assert survivor.poc_age_days == 30
+
+
+def test_duplicate_span_drops_stale_window_labels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Окно с тем же охватом истории не считается — его старая метка снимается."""
+    config = POCConfig(
+        symbol="SOLUSDT",
+        windows=("180d", "365d", "730d"),
+        db_path=tmp_path / "poc.sqlite",
+        poc_log=tmp_path / "levels.jsonl",
+        signal_log=tmp_path / "signals.jsonl",
+        segment_mode="off",
+    )
+    scanner = POCScanner(config, "SOLUSDT")
+    add_level(scanner, 50.0, 40_000_000.0, windows=("180d", "730d"))
+    patch_history(scanner, monkeypatch, make_history(NOW - timedelta(days=128), NOW))
+
+    scanner.refresh(current_price=1000.0, now=NOW)
+
+    levels = scanner.store.levels("SOLUSDT")
+
+    assert len(levels) == 1
+    assert levels[0].source_windows == ("730d",)
+
+
+def test_get_poc_age_days_ignores_node_rank() -> None:
+    """Возраст узла — возраст его окна: ``30d#3`` -> 30."""
+    assert get_poc_age_days("30d#3") == 30
+    assert get_poc_age_days("730d#6") == 730

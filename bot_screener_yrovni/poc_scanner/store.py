@@ -9,10 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from bot_screener_yrovni.poc_scanner.config import (
-    get_poc_age_days,
-    parse_window_days,
-)
+from bot_screener_yrovni.poc_scanner.config import get_poc_age_days
 from bot_screener_yrovni.poc_scanner.timeutil import parse_iso, utc_now, utc_now_iso
 
 SCHEMA_VERSION = 4
@@ -256,8 +253,95 @@ class POCStore:
                 best = relative
                 target = level
         if target is None:
-            return self._insert(candidate, confirm_threshold)
-        return self._merge(target, candidate, confirm_threshold)
+            level = self._insert(candidate, confirm_threshold)
+        else:
+            level = self._merge(target, candidate, confirm_threshold)
+        self._detach_windows(
+            candidate.symbol,
+            level.id,
+            candidate.source_windows,
+            confirm_threshold,
+        )
+        return level
+
+    def detach_window(
+        self,
+        symbol: str,
+        label: str,
+        confirm_threshold: float,
+    ) -> int:
+        """Снять метку окна со всех уровней; вернуть число затронутых записей."""
+        return self._detach_windows(symbol, None, (label,), confirm_threshold)
+
+    def _detach_windows(
+        self,
+        symbol: str,
+        keep_id: int | None,
+        labels: tuple[str, ...],
+        confirm_threshold: float,
+    ) -> int:
+        """Снять метки окон с чужих уровней: метка живёт на одном уровне.
+
+        Слияние уровней копирует метку на новый уровень, но со старого её
+        никто не убирал — в БД оставались дубли окон (``7d`` на трёх уровнях,
+        объём считался дважды). Уровень, у которого не осталось меток,
+        удаляется: без окна он больше не существует.
+        """
+        moved = set(labels)
+        if not moved:
+            return 0
+        touched = 0
+        for level in self.levels(symbol):
+            if level.id == keep_id or not moved.intersection(level.source_windows):
+                continue
+            remaining = tuple(
+                name for name in level.source_windows if name not in moved
+            )
+            touched += 1
+            if not remaining:
+                self._conn.execute("DELETE FROM poc_levels WHERE id = ?", (level.id,))
+                continue
+            volumes = {
+                name: volume
+                for name, volume in level.window_volumes.items()
+                if name in remaining
+            }
+            total = float(sum(volumes.values()))
+            self._conn.execute(
+                """
+                UPDATE poc_levels SET
+                    source_windows = ?, window_volumes = ?,
+                    total_volume_at_level = ?, poc_age_days = ?,
+                    va_window = ?, confirmed = ?
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(list(self._sorted_windows(remaining))),
+                    json.dumps(volumes, sort_keys=True),
+                    total,
+                    self._age_after_detach(level, remaining),
+                    level.va_window if level.va_window in remaining else "",
+                    int(total >= confirm_threshold),
+                    level.id,
+                ),
+            )
+        self._conn.commit()
+        return touched
+
+    @classmethod
+    def _age_after_detach(cls, level: LevelState, remaining: tuple[str, ...]) -> int:
+        """Возраст после снятия меток: максимум по оставшимся rolling-окнам."""
+        rolling = [cls._window_days(name) for name in remaining]
+        rolling = [days for days in rolling if days > 0]
+        if rolling:
+            return max(rolling)
+        if level.segment_end_ts:
+            try:
+                ended = parse_iso(level.segment_end_ts)
+            except ValueError:
+                return int(level.poc_age_days)
+            return max(0, (utc_now() - ended).days)
+        return int(level.poc_age_days)
 
     def _insert(
         self,
@@ -606,10 +690,7 @@ class POCStore:
     def _window_days(name: str) -> int:
         if not name:
             return 0
-        try:
-            return parse_window_days(name)
-        except ValueError:
-            return 0
+        return get_poc_age_days(name)
 
     @classmethod
     def _sorted_windows(cls, windows: tuple[str, ...]) -> tuple[str, ...]:
