@@ -962,14 +962,16 @@ class LevelStrategy:
 
     @staticmethod
     def _link_id(cfg: LevelConfig, signal_id: str, suffix: str) -> str:
-        """orderLinkId = ``zk-{signal_id}-{suffix}``, допустимые символы Bybit.
+        """orderLinkId = ``zk-{signal_id}-{suffix}-{token}``, символы Bybit.
 
-        Bybit ограничивает orderLinkId 36 символами, поэтому длинный
-        ``signal_id`` подрезается, а уровень (``suffix``) сохраняется всегда:
-        иначе ордера одной сделки получили бы одинаковый link id.
+        Bybit ограничивает orderLinkId 36 символами и не даёт переиспользовать
+        link id отменённых ордеров (110072), поэтому в конце добавляется
+        метка времени: повторная постановка того же сигнала получает новые id,
+        а уровень (``suffix``) и токен сохраняются всегда.
         """
         prefix = cfg.order_link_prefix
-        tail = f"-{suffix}"
+        token = f"{int(time.time() * 1000) % 10_000_000:07d}"
+        tail = f"-{suffix}-{token}"
         budget = max(LINK_ID_MAX - len(prefix) - len(tail), 1)
         clean = _LINK_ID_BAD.sub("-", signal_id)
         return f"{prefix}{clean[:budget]}{tail}"[:LINK_ID_MAX]

@@ -64,3 +64,42 @@ def test_call_other_api_error_raises() -> None:
     client._http.set_trading_stop = bad_params  # type: ignore[method-assign]
     with pytest.raises(InvalidRequestError):
         asyncio.run(client.set_stop_loss_take_profit("BTCUSDT", 95.0))
+
+
+def test_place_stop_market_sends_trigger_direction() -> None:
+    client = bc.BybitClient(Config(api_key="k", api_secret="s", testnet=True))
+    calls: list[dict[str, Any]] = []
+
+    async def fake_call(name: str, **params: Any) -> dict[str, Any]:
+        calls.append({"name": name, **params})
+        return {"retCode": 0, "result": {"orderId": "o1"}}
+
+    async def fake_filters(symbol: str) -> Any:
+        return bc.BybitClient.InstrumentFilters(0.0001, 1.0, 1.0, 5.0)
+
+    async def fake_step(symbol: str) -> float:
+        return 1.0
+
+    client._call = fake_call  # type: ignore[method-assign]
+    client.get_instrument_filters = fake_filters  # type: ignore[method-assign]
+    client._get_qty_step = fake_step  # type: ignore[method-assign]
+
+    asyncio.run(
+        client.place_stop_market(
+            "ENAUSDT",
+            "Buy",
+            173.0,
+            0.12716,
+            trigger_direction=1,
+            order_link_id="zk-stop",
+        )
+    )
+    asyncio.run(
+        client.place_stop_market("ENAUSDT", "Sell", 173.0, 0.09, trigger_direction=2)
+    )
+
+    assert [call["triggerDirection"] for call in calls] == [1, 2]
+    assert calls[0]["stopOrderType"] == "Stop"
+    assert calls[0]["triggerPrice"] == "0.1272"
+    assert calls[0]["orderLinkId"] == "zk-stop"
+    assert calls[1]["reduceOnly"] is True

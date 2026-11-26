@@ -596,6 +596,7 @@ class BybitClient:
         qty: float,
         trigger_price: float,
         *,
+        trigger_direction: int,
         reduce_only: bool = True,
         position_idx: int | None = None,
         order_link_id: str | None = None,
@@ -607,6 +608,8 @@ class BybitClient:
             side: сторона ордера ("Buy"/"Sell") — для закрытия лонга Sell.
             qty: объём.
             trigger_price: цена срабатывания (MarkPrice).
+            trigger_direction: 1 — срабатывание при росте цены (стоп шорта),
+                2 — при падении (стоп лонга).
             reduce_only: только уменьшение позиции.
             position_idx: 1/2 — хедж-режим; None — one-way.
             order_link_id: клиентский id (orderLinkId) для идемпотентности.
@@ -625,6 +628,7 @@ class BybitClient:
             "stopOrderType": "Stop",
             "triggerPrice": trigger,
             "triggerBy": "MarkPrice",
+            "triggerDirection": trigger_direction,
         }
         if reduce_only:
             params["reduceOnly"] = True

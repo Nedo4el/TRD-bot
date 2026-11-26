@@ -451,6 +451,7 @@ class BybitBroker:
             side,
             qty,
             trigger,
+            trigger_direction=1 if side == "Buy" else 2,
             reduce_only=True,
             order_link_id=link_id,
         )
