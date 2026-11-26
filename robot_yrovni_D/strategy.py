@@ -230,6 +230,7 @@ class LevelStrategy:
         self._clock = clock
         self._positions: dict[str, PositionState] = {}
         self._last_exit_ts: dict[str, float] = {}
+        self._blocked: dict[str, str] = {}
         self._stats = DailyStats(day=self._day(self._clock()))
 
     # ------------------------------------------------------------- доступ ---
@@ -244,6 +245,10 @@ class LevelStrategy:
         if current is None or current.closed:
             return None
         return current
+
+    def block_symbol(self, symbol: str, reason: str) -> None:
+        """Запретить новые входы по символу до перезапуска процесса."""
+        self._blocked[symbol.upper()] = reason
 
     # -------------------------------------------------------------- вход ---
 
@@ -405,6 +410,9 @@ class LevelStrategy:
         now: float,
     ) -> tuple[str | None, dict[str, Any]]:
         """Проверить фильтры входа; вернуть причину отказа или (None, {})."""
+        blocked = self._blocked.get(signal.symbol.upper())
+        if blocked is not None:
+            return blocked, {}
         if signal.confidence < cfg.min_confidence:
             return "low_confidence", {
                 "confidence": signal.confidence,

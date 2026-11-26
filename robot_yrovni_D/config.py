@@ -109,7 +109,7 @@ class LevelConfig(BaseModel):
         default_factory=lambda: _env_float("LEVEL_OFFSET_PCT", 0.02),
     )
     entry_ttl_sec: float = Field(
-        default_factory=lambda: _env_float("ENTRY_TTL_SEC", 3600.0),
+        default_factory=lambda: _env_float("ENTRY_TTL_SEC", 43200.0),
     )
     cancel_if_distance_pct: float = Field(
         default_factory=lambda: _env_float("CANCEL_IF_DISTANCE_PCT", 0.05),
@@ -198,6 +198,14 @@ class LevelConfig(BaseModel):
     )
     poll_timeout_sec: float = Field(
         default_factory=lambda: _env_float("POLL_TIMEOUT_SEC", 5.0),
+    )
+
+    # --- Самодиагностика при старте ---
+    startup_check: bool = Field(
+        default_factory=lambda: _env_bool("STARTUP_CHECK", True),
+    )
+    startup_cleanup: bool = Field(
+        default_factory=lambda: _env_bool("STARTUP_CLEANUP", True),
     )
 
     # --- Инфраструктура ---

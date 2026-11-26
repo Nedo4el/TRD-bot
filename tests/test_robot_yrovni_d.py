@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from robot_yrovni_D.broker import OrderResult, PositionInfo
+from robot_yrovni_D.broker import OpenOrder, OrderResult, PositionInfo
 from robot_yrovni_D.config import LevelConfig
 from robot_yrovni_D.json_log import JsonlLogger
 from robot_yrovni_D.main import (
@@ -19,6 +19,7 @@ from robot_yrovni_D.main import (
     ProcessedSignals,
     for_this_instance,
     handle_signal,
+    startup_diagnostic,
 )
 from robot_yrovni_D.signals import PocSignal, SignalError, parse_signal
 from robot_yrovni_D.strategy import Action, LevelStrategy, PositionState
@@ -51,6 +52,7 @@ class FakeBroker:
         atr_pct: float = 0.005,
         min_notional_value: float = 1.0,
         funding_ts: float | None = None,
+        leftover: list[OpenOrder] | None = None,
     ) -> None:
         self._price = price
         self._atr_pct = atr_pct
@@ -60,6 +62,7 @@ class FakeBroker:
         self.stops: dict[str, dict[str, Any]] = {}
         self.takes: dict[str, dict[str, Any]] = {}
         self.cancelled: list[str] = []
+        self.leftover: list[OpenOrder] = list(leftover or [])
         self.closed_qty = 0.0
         self.qty = 0.0
         self.avg_price = 0.0
@@ -134,6 +137,7 @@ class FakeBroker:
 
     async def cancel(self, symbol: str, order_id: str) -> bool:
         self.cancelled.append(order_id)
+        self.leftover = [item for item in self.leftover if item.order_id != order_id]
         self.limits.pop(order_id, None)
         self.stops.pop(order_id, None)
         self.takes.pop(order_id, None)
@@ -149,7 +153,7 @@ class FakeBroker:
         self.qty = 0.0
 
     async def open_orders(self, symbol: str) -> list[Any]:
-        return []
+        return list(self.leftover)
 
     async def position(self, symbol: str) -> PositionInfo | None:
         if self.qty <= 0:
@@ -461,7 +465,7 @@ def test_ttl_cancel_closes_entry_once(tmp_path: Path) -> None:
     run(strategy.on_poc_signal(make_signal()))
     position = strategy.position(SYMBOL)
     assert position is not None
-    clock.advance(3700.0)
+    clock.advance(43300.0)
 
     actions = actions_of(strategy, position, 50.0)
 
@@ -781,3 +785,81 @@ def test_daily_summary_counts_closed_positions(tmp_path: Path) -> None:
     assert summary["positions_closed"] == 1
     summary_events = [e for e in events(tmp_path) if e["action"] == "DAILY_SUMMARY"]
     assert summary_events and summary_events[-1]["positions_closed"] == 1
+
+
+# ---------------------- самодиагностика при старте ---------------------------
+
+
+def _order(order_id: str, link_id: str, price: float) -> OpenOrder:
+    """Открытый ордер для сценариев диагностики."""
+    return OpenOrder(
+        order_id=order_id,
+        link_id=link_id,
+        status="New",
+        filled_qty=0.0,
+        avg_price=0.0,
+        price=price,
+    )
+
+
+def test_startup_diagnostic_cancels_own_stale_orders(tmp_path: Path) -> None:
+    """Плоско + свои старые ордера: снимаются свои, чужие остаются."""
+    broker = FakeBroker(
+        leftover=[
+            _order("1", "zk-old-up", 51.0),
+            _order("2", "zk-old-mid", 50.0),
+            _order("3", "tr-foreign", 49.0),
+        ],
+    )
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    config = make_config(symbol=SYMBOL)
+    strategy = LevelStrategy(config, broker, log, clock=clock)
+
+    run(startup_diagnostic(strategy, broker, log, config))
+
+    assert broker.cancelled == ["1", "2"]
+    assert [item.order_id for item in broker.leftover] == ["3"]
+    diag = [e for e in events(tmp_path) if e["action"] == "STARTUP_DIAG"]
+    assert diag and diag[-1]["own_orders"] == 2
+    assert diag[-1]["foreign_orders"] == 1
+    assert diag[-1]["cancelled"] == 2
+    assert diag[-1]["blocked"] is False
+
+
+def test_startup_diagnostic_blocks_symbol_when_position_exists(
+    tmp_path: Path,
+) -> None:
+    """Позиция + свои ордера: ничего не снимаем, входы по символу блокируются."""
+    broker = FakeBroker(leftover=[_order("1", "zk-old-up", 51.0)])
+    broker.fill(50.0, 0.12)
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    config = make_config(symbol=SYMBOL)
+    strategy = LevelStrategy(config, broker, log, clock=clock)
+
+    run(startup_diagnostic(strategy, broker, log, config))
+    orders = run(strategy.on_poc_signal(make_signal()))
+
+    assert broker.cancelled == []
+    assert orders == []
+    diag = [e for e in events(tmp_path) if e["action"] == "STARTUP_DIAG"]
+    assert diag and diag[-1]["blocked"] is True
+    skipped = [e for e in events(tmp_path) if e["action"] == "SIGNAL_SKIPPED"]
+    assert skipped and skipped[-1]["reason"] == "startup_stale_position"
+
+
+def test_startup_diagnostic_cleanup_disabled_keeps_orders(tmp_path: Path) -> None:
+    """STARTUP_CLEANUP=false: ордера не снимаются, событие диагностики пишется."""
+    broker = FakeBroker(leftover=[_order("1", "zk-old-up", 51.0)])
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    config = make_config(symbol=SYMBOL, startup_cleanup=False)
+    strategy = LevelStrategy(config, broker, log, clock=clock)
+
+    run(startup_diagnostic(strategy, broker, log, config))
+
+    assert broker.cancelled == []
+    diag = [e for e in events(tmp_path) if e["action"] == "STARTUP_DIAG"]
+    assert diag and diag[-1]["own_orders"] == 1
+    assert diag[-1]["cancelled"] == 0

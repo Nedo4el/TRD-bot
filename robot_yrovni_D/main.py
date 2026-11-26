@@ -325,6 +325,88 @@ async def run_once(config: LevelConfig, signal_file: Path) -> int:
     return 0
 
 
+async def startup_diagnostic(
+    strategy: LevelStrategy,
+    broker: Broker,
+    log: JsonlLogger,
+    config: LevelConfig,
+) -> None:
+    """Сверить старые ордера и позицию по символу с биржей до старта торговли."""
+    if not config.startup_check:
+        return
+    symbol = config.symbol
+    if not symbol:
+        logger.info("самодиагностика: пропуск — процесс без SYMBOL")
+        return
+    try:
+        orders = await broker.open_orders(symbol)
+        position = await broker.position(symbol)
+    except Exception as exc:  # noqa: BLE001 — биржа может быть недоступна на старте
+        logger.warning("самодиагностика %s: биржа недоступна: %s", symbol, exc)
+        log.log("STARTUP_DIAG", symbol=symbol, error=str(exc))
+        return
+
+    own = [item for item in orders if item.link_id.startswith(config.order_link_prefix)]
+    position_info = None
+    if position is not None:
+        position_info = {
+            "side": position.side,
+            "qty": position.qty,
+            "avg_price": position.avg_price,
+        }
+
+    cancelled: list[str] = []
+    blocked = False
+    if position is not None:
+        blocked = bool(own)
+        if own:
+            strategy.block_symbol(symbol, "startup_stale_position")
+            logger.error(
+                "%s: самодиагностика — позиция %s %.10g при %d своих ордерах без "
+                "состояния: ордера не трогаю, входы по символу заблокированы",
+                symbol,
+                position.side,
+                position.qty,
+                len(own),
+            )
+        else:
+            logger.warning(
+                "%s: самодиагностика — позиция %s %.10g без своих ордеров "
+                "(возможно, другой робот): не трогаю",
+                symbol,
+                position.side,
+                position.qty,
+            )
+    elif own and config.startup_cleanup:
+        for item in own:
+            if await broker.cancel(symbol, item.order_id):
+                cancelled.append(item.order_id)
+        logger.warning(
+            "%s: самодиагностика — снято старых ордеров %d из %d",
+            symbol,
+            len(cancelled),
+            len(own),
+        )
+    elif own:
+        logger.warning(
+            "%s: самодиагностика — висит %d своих ордеров (STARTUP_CLEANUP=false)",
+            symbol,
+            len(own),
+        )
+    else:
+        logger.info("%s: самодиагностика — чисто", symbol)
+
+    log.log(
+        "STARTUP_DIAG",
+        symbol=symbol,
+        own_orders=len(own),
+        foreign_orders=len(orders) - len(own),
+        position=position_info,
+        cancelled=len(cancelled),
+        blocked=blocked,
+    )
+
+
 async def run(config: LevelConfig) -> None:
     """Основной цикл: приёмник сигналов + тик-цикл."""
     log = make_logger(config)
@@ -332,6 +414,8 @@ async def run(config: LevelConfig) -> None:
     strategy = build_strategy(config, broker, log)
     processed = ProcessedSignals(_PROJECT_ROOT / config.processed_file)
     queue: asyncio.Queue[PocSignal] = asyncio.Queue()
+
+    await startup_diagnostic(strategy, broker, log, config)
 
     runner: web.AppRunner | None = None
     if config.symbol:
