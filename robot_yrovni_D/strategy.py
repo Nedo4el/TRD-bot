@@ -437,7 +437,7 @@ class LevelStrategy:
             }
 
         atr_pct = await self._broker.atr_pct(signal.symbol)
-        if atr_pct is not None and atr_pct > cfg.max_atr_pct:
+        if cfg.max_atr_pct > 0 and atr_pct is not None and atr_pct > cfg.max_atr_pct:
             return "atr_too_high", {
                 "atr_pct": round(atr_pct, 6),
                 "max_atr_pct": cfg.max_atr_pct,

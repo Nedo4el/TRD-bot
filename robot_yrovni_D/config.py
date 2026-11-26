@@ -238,7 +238,6 @@ class LevelConfig(BaseModel):
         "trail_pct",
         "trail_activate_pct",
         "cancel_if_distance_pct",
-        "max_atr_pct",
         "max_distance_from_poc_pct",
     )
     @classmethod
@@ -247,11 +246,11 @@ class LevelConfig(BaseModel):
             raise ValueError("доля должна быть в интервале (0, 1)")
         return value
 
-    @field_validator("be_offset_pct")
+    @field_validator("be_offset_pct", "max_atr_pct")
     @classmethod
-    def _be_offset_range(cls, value: float) -> float:
+    def _zero_allowed_fraction(cls, value: float) -> float:
         if not (0 <= value < 1):
-            raise ValueError("BE_OFFSET_PCT должен быть в [0, 1)")
+            raise ValueError("доля должна быть в [0, 1)")
         return value
 
     @field_validator("min_confidence")

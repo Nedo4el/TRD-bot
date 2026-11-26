@@ -482,6 +482,18 @@ def test_atr_above_limit_skips_signal(tmp_path: Path) -> None:
     assert skipped and skipped[-1]["reason"] == "atr_too_high"
 
 
+def test_atr_filter_off_when_zero(tmp_path: Path) -> None:
+    """MAX_ATR_PCT=0 выключает фильтр: волатильный сигнал проходит."""
+    broker = FakeBroker(atr_pct=0.03)
+    strategy = make_strategy(broker, tmp_path, Clock(), max_atr_pct=0)
+
+    orders = run(strategy.on_poc_signal(make_signal()))
+
+    assert len(orders) == 3
+    skipped = [e for e in events(tmp_path) if e["action"] == "SIGNAL_SKIPPED"]
+    assert skipped == []
+
+
 def test_low_confidence_skips_signal(tmp_path: Path) -> None:
     """confidence < 0.6 → SIGNAL_SKIPPED reason=low_confidence."""
     broker = FakeBroker()

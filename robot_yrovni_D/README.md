@@ -21,9 +21,9 @@
 | 24 часа | принудительное закрытие по рынку |
 | после выхода | пауза `COOLDOWN_SEC` по символу |
 
-Фильтры входа: `confidence >= MIN_CONFIDENCE`, `ATR(5m) <= MAX_ATR_PCT`,
-цена не дальше `MAX_DISTANCE_FROM_POC_PCT` от POC, не в окне фандинга,
-notional одной лимитки >= минимума биржи.
+Фильтры входа: `confidence >= MIN_CONFIDENCE`, `ATR(5m) <= MAX_ATR_PCT`
+(0 — фильтр выключен), цена не дальше `MAX_DISTANCE_FROM_POC_PCT` от POC,
+не в окне фандинга, notional одной лимитки >= минимума биржи.
 
 ## Запуск
 
