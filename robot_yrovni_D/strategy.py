@@ -662,10 +662,12 @@ class LevelStrategy:
             )
             if distance > cfg.cancel_if_distance_pct:
                 await self.cancel_all(position, "distance")
+                position.closed = True
                 self._snapshot(position, current_price, now, cfg)
                 return [Action.CANCEL_ALL]
             if now >= position.limits_deadline:
                 await self.cancel_all(position, "ttl")
+                position.closed = True
                 self._snapshot(position, current_price, now, cfg)
                 return [Action.CANCEL_ALL]
 

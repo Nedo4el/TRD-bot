@@ -448,8 +448,28 @@ def test_price_away_from_poc_cancels_all(tmp_path: Path) -> None:
 
     assert actions == [Action.CANCEL_ALL]
     assert position.open_limits() == []
+    assert position.closed is True
     cancelled = [e for e in events(tmp_path) if e["action"] == "LIMITS_CANCELLED"]
     assert cancelled and cancelled[-1]["reason"] == "distance"
+
+
+def test_ttl_cancel_closes_entry_once(tmp_path: Path) -> None:
+    """TTL истёк → лимитки сняты, сделка закрыта, повтора CANCEL_ALL нет."""
+    broker = FakeBroker()
+    clock = Clock()
+    strategy = make_strategy(broker, tmp_path, clock)
+    run(strategy.on_poc_signal(make_signal()))
+    position = strategy.position(SYMBOL)
+    assert position is not None
+    clock.advance(3700.0)
+
+    actions = actions_of(strategy, position, 50.0)
+
+    assert actions == [Action.CANCEL_ALL]
+    assert position.closed is True
+    assert strategy.position(SYMBOL) is None
+    cancelled = [e for e in events(tmp_path) if e["action"] == "LIMITS_CANCELLED"]
+    assert cancelled and cancelled[-1]["reason"] == "ttl"
 
 
 def test_max_hold_closes_position(tmp_path: Path) -> None:
