@@ -32,7 +32,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 from core.bybit_client import BybitClient
 from core.config import Config
 from core.logger import get_logger, setup_logging
-from robot_yrovni_D.broker import Broker, BybitBroker
+from robot_yrovni_D.broker import Broker, BybitBroker, OpenOrder
 from robot_yrovni_D.config import LevelConfig, load_config
 from robot_yrovni_D.json_log import JsonlLogger
 from robot_yrovni_D.signals import PocSignal, SignalError, parse_signal
@@ -59,6 +59,15 @@ class ProcessedSignals:
         self._ids.append(signal_id)
         self._ids = self._ids[-MAX_PROCESSED:]
         self._save()
+
+    def discard_prefix(self, prefix: str) -> int:
+        """Забыть сигналы с id по префиксу; вернуть, сколько забыто."""
+        kept = [item for item in self._ids if not item.startswith(prefix)]
+        removed = len(self._ids) - len(kept)
+        if removed:
+            self._ids = kept
+            self._save()
+        return removed
 
     def _load(self) -> list[str]:
         try:
@@ -325,11 +334,47 @@ async def run_once(config: LevelConfig, signal_file: Path) -> int:
     return 0
 
 
+def _signal_prefix(symbol: str, link_id: str, order_link_prefix: str) -> str | None:
+    """Префикс id сигнала из link id ``zk-{symbol}-{poc}-{side}-{level}-{token}``.
+
+    Bybit режет link id до 36 символов, поэтому у длинных символов сторона
+    теряется — тогда матчим только по символу и POC.
+    """
+    parts = link_id[len(order_link_prefix) :].split("-")
+    if len(parts) < 2 or not parts[1] or parts[0].upper() != symbol.upper():
+        return None
+    if len(parts) >= 3 and parts[2] in ("long", "short"):
+        return f"{symbol}:{parts[1]}:{parts[2]}:"
+    return f"{symbol}:{parts[1]}:"
+
+
+def _rearm_signals(
+    symbol: str,
+    own: list[OpenOrder],
+    cancelled: list[str],
+    config: LevelConfig,
+    processed: ProcessedSignals,
+) -> int:
+    """Разрешить сигналы снятых ордеров: поллер выставит сетку заново."""
+    seen: set[str] = set()
+    rearmed = 0
+    for item in own:
+        if item.order_id not in cancelled:
+            continue
+        prefix = _signal_prefix(symbol, item.link_id, config.order_link_prefix)
+        if prefix is None or prefix in seen:
+            continue
+        seen.add(prefix)
+        rearmed += processed.discard_prefix(prefix)
+    return rearmed
+
+
 async def startup_diagnostic(
     strategy: LevelStrategy,
     broker: Broker,
     log: JsonlLogger,
     config: LevelConfig,
+    processed: ProcessedSignals,
 ) -> None:
     """Сверить старые ордера и позицию по символу с биржей до старта торговли."""
     if not config.startup_check:
@@ -357,6 +402,7 @@ async def startup_diagnostic(
 
     cancelled: list[str] = []
     blocked = False
+    rearmed = 0
     if position is not None:
         blocked = bool(own)
         if own:
@@ -381,12 +427,18 @@ async def startup_diagnostic(
         for item in own:
             if await broker.cancel(symbol, item.order_id):
                 cancelled.append(item.order_id)
+        rearmed = _rearm_signals(symbol, own, cancelled, config, processed)
         logger.warning(
             "%s: самодиагностика — снято старых ордеров %d из %d",
             symbol,
             len(cancelled),
             len(own),
         )
+        if rearmed:
+            logger.info(
+                "%s: самодиагностика — сигнал снова разрешён, сетка встанет заново",
+                symbol,
+            )
     elif own:
         logger.warning(
             "%s: самодиагностика — висит %d своих ордеров (STARTUP_CLEANUP=false)",
@@ -404,6 +456,7 @@ async def startup_diagnostic(
         position=position_info,
         cancelled=len(cancelled),
         blocked=blocked,
+        rearmed=rearmed,
     )
 
 
@@ -415,7 +468,7 @@ async def run(config: LevelConfig) -> None:
     processed = ProcessedSignals(_PROJECT_ROOT / config.processed_file)
     queue: asyncio.Queue[PocSignal] = asyncio.Queue()
 
-    await startup_diagnostic(strategy, broker, log, config)
+    await startup_diagnostic(strategy, broker, log, config, processed)
 
     runner: web.AppRunner | None = None
     if config.symbol:

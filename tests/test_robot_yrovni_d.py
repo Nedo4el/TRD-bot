@@ -290,6 +290,36 @@ def test_short_signal_places_three_sell_limits(tmp_path: Path) -> None:
     assert next(iter(broker.stops.values()))["trigger"] == pytest.approx(55.0)
 
 
+def test_entry_distance_measured_from_price_like_screener(tmp_path: Path) -> None:
+    """Расстояние до POC — от цены: 16.7% от POC = 14.3% от цены, вход идёт."""
+    broker = FakeBroker(price=0.2371)
+    strategy = make_strategy(broker, tmp_path, Clock(), max_distance_from_poc_pct=0.15)
+
+    orders = run(
+        strategy.on_poc_signal(make_signal(side="long", poc=0.2032, price=0.2371))
+    )
+
+    assert len(orders) == 3
+    skipped = [
+        event for event in events(tmp_path) if event["action"] == "SIGNAL_SKIPPED"
+    ]
+    assert skipped == []
+
+
+def test_limits_kept_while_price_within_distance_by_price(tmp_path: Path) -> None:
+    """POC=50, цена 58: 16% от POC, но 13.8% от цены — лимитки не снимаем."""
+    broker = FakeBroker()
+    strategy = make_strategy(broker, tmp_path, Clock(), cancel_if_distance_pct=0.15)
+    run(strategy.on_poc_signal(make_signal(poc=50.0, price=50.0)))
+    position = strategy.position(SYMBOL)
+    assert position is not None
+
+    actions = run(strategy.update_on_tick(58.0, position))
+
+    assert actions == [Action.HOLD]
+    assert position.closed is False
+
+
 # --------------------------- тесты 3-5: BE и лимитки ------------------------
 
 
@@ -441,14 +471,14 @@ def test_two_fills_average_entry_drives_stop(tmp_path: Path) -> None:
 
 
 def test_price_away_from_poc_cancels_all(tmp_path: Path) -> None:
-    """Цена ушла +5% от POC без исполнения → CANCEL_ALL."""
+    """Цена ушла от POC дальше 5% (считая от цены) → CANCEL_ALL."""
     broker = FakeBroker()
     strategy = make_strategy(broker, tmp_path, Clock())
     run(strategy.on_poc_signal(make_signal()))
     position = strategy.position(SYMBOL)
     assert position is not None
 
-    actions = actions_of(strategy, position, 52.6)
+    actions = actions_of(strategy, position, 53.0)
 
     assert actions == [Action.CANCEL_ALL]
     assert position.open_limits() == []
@@ -815,8 +845,9 @@ def test_startup_diagnostic_cancels_own_stale_orders(tmp_path: Path) -> None:
     log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
     config = make_config(symbol=SYMBOL)
     strategy = LevelStrategy(config, broker, log, clock=clock)
+    processed = ProcessedSignals(tmp_path / "processed.json")
 
-    run(startup_diagnostic(strategy, broker, log, config))
+    run(startup_diagnostic(strategy, broker, log, config, processed))
 
     assert broker.cancelled == ["1", "2"]
     assert [item.order_id for item in broker.leftover] == ["3"]
@@ -838,7 +869,8 @@ def test_startup_diagnostic_blocks_symbol_when_position_exists(
     config = make_config(symbol=SYMBOL)
     strategy = LevelStrategy(config, broker, log, clock=clock)
 
-    run(startup_diagnostic(strategy, broker, log, config))
+    processed = ProcessedSignals(tmp_path / "processed.json")
+    run(startup_diagnostic(strategy, broker, log, config, processed))
     orders = run(strategy.on_poc_signal(make_signal()))
 
     assert broker.cancelled == []
@@ -857,9 +889,73 @@ def test_startup_diagnostic_cleanup_disabled_keeps_orders(tmp_path: Path) -> Non
     config = make_config(symbol=SYMBOL, startup_cleanup=False)
     strategy = LevelStrategy(config, broker, log, clock=clock)
 
-    run(startup_diagnostic(strategy, broker, log, config))
+    processed = ProcessedSignals(tmp_path / "processed.json")
+    run(startup_diagnostic(strategy, broker, log, config, processed))
 
     assert broker.cancelled == []
     diag = [e for e in events(tmp_path) if e["action"] == "STARTUP_DIAG"]
     assert diag and diag[-1]["own_orders"] == 1
     assert diag[-1]["cancelled"] == 0
+    assert diag[-1]["rearmed"] == 0
+
+
+def test_startup_diagnostic_rearms_signal_of_cancelled_orders(
+    tmp_path: Path,
+) -> None:
+    """Свои ордера сняты — их сигнал снова разрешён, сетку выставят заново."""
+    broker = FakeBroker(leftover=[_order("1", "zk-BTCUSDT-50.0-long-1-up-1", 51.0)])
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    config = make_config(symbol=SYMBOL)
+    strategy = LevelStrategy(config, broker, log, clock=clock)
+    processed = ProcessedSignals(tmp_path / "processed.json")
+    processed.add("BTCUSDT:50.0:long:1")
+    processed.add("BTCUSDT:50.0:long:2")
+    processed.add("ETHUSDT:50.0:long:1")
+
+    run(startup_diagnostic(strategy, broker, log, config, processed))
+
+    assert "BTCUSDT:50.0:long:1" not in processed
+    assert "BTCUSDT:50.0:long:2" not in processed
+    assert "ETHUSDT:50.0:long:1" in processed
+    diag = [e for e in events(tmp_path) if e["action"] == "STARTUP_DIAG"]
+    assert diag and diag[-1]["rearmed"] == 2
+
+
+def test_startup_diagnostic_rearms_truncated_link_id(tmp_path: Path) -> None:
+    """У длинного символа Bybit режет link id: матчим по символу и POC."""
+    broker = FakeBroker(
+        leftover=[_order("1", "zk-1000PEPEUSDT-0.004052--up-1", 0.004133)]
+    )
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    config = make_config(symbol="1000PEPEUSDT")
+    strategy = LevelStrategy(config, broker, log, clock=clock)
+    processed = ProcessedSignals(tmp_path / "processed.json")
+    processed.add("1000PEPEUSDT:0.004052:short:2")
+    processed.add("BTCUSDT:50.0:long:1")
+
+    run(startup_diagnostic(strategy, broker, log, config, processed))
+
+    assert "1000PEPEUSDT:0.004052:short:2" not in processed
+    assert "BTCUSDT:50.0:long:1" in processed
+    diag = [e for e in events(tmp_path) if e["action"] == "STARTUP_DIAG"]
+    assert diag and diag[-1]["rearmed"] == 1
+
+
+def test_startup_diagnostic_cleanup_disabled_keeps_signal_processed(
+    tmp_path: Path,
+) -> None:
+    """STARTUP_CLEANUP=false: ордер не снят, сигнал остаётся обработанным."""
+    broker = FakeBroker(leftover=[_order("1", "zk-BTCUSDT-50.0-long-1-up-1", 51.0)])
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    config = make_config(symbol=SYMBOL, startup_cleanup=False)
+    strategy = LevelStrategy(config, broker, log, clock=clock)
+    processed = ProcessedSignals(tmp_path / "processed.json")
+    processed.add("BTCUSDT:50.0:long:1")
+
+    run(startup_diagnostic(strategy, broker, log, config, processed))
+
+    assert broker.cancelled == []
+    assert "BTCUSDT:50.0:long:1" in processed

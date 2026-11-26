@@ -34,6 +34,13 @@ LINK_ID_MAX = 36
 _LINK_ID_BAD = re.compile(r"[^A-Za-z0-9._-]")
 
 
+def _poc_distance(price: float, poc: float) -> float:
+    """Расстояние до POC по формуле скринера: ``|цена - POC| / цена``."""
+    if price <= 0:
+        return 0.0
+    return abs(price - poc) / price
+
+
 class Action(str, Enum):
     """Действия тика, которые стратегия выполнила (для отчёта/логов)."""
 
@@ -454,7 +461,7 @@ class LevelStrategy:
         price = signal.current_price
         if price <= 0:
             price = await self._broker.price(signal.symbol)
-        distance = abs(price - signal.poc_price) / signal.poc_price
+        distance = _poc_distance(price, signal.poc_price)
         if distance > cfg.max_distance_from_poc_pct:
             return "price_far_from_poc", {
                 "distance_pct": round(distance, 6),
@@ -665,9 +672,7 @@ class LevelStrategy:
                 self._snapshot(position, current_price, now, cfg)
                 return [*actions, Action.CLOSE_MAX_HOLD, Action.CANCEL_ALL]
         else:
-            distance = abs(current_price - position.signal.poc_price) / (
-                position.signal.poc_price
-            )
+            distance = _poc_distance(current_price, position.signal.poc_price)
             if distance > cfg.cancel_if_distance_pct:
                 await self.cancel_all(position, "distance")
                 position.closed = True
