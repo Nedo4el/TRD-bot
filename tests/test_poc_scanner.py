@@ -39,6 +39,7 @@ def make_config(
         segment_mode="off",
         min_departure_pct=min_departure_pct,
         touch_lookback_hours=touch_lookback_hours,
+        confirm_volume_threshold=10_000_000.0,
     )
 
 
