@@ -301,7 +301,7 @@ async def api_settings_impulse_post(request: Request) -> JSONResponse:
 
 
 async def api_robots_list(request: Request) -> JSONResponse:
-    """Список всех роботов и их статусы."""
+    """Список всех роботов, их статусы и последний POC-сигнал по монете."""
     statuses = get_all_robots_status()
     data = [
         {
@@ -314,7 +314,12 @@ async def api_robots_list(request: Request) -> JSONResponse:
         }
         for s in statuses
     ]
-    return JSONResponse({"ok": True, "robots": data}, headers=_NO_CACHE)
+    poc_store = getattr(request.app.state, "poc_signals", None)
+    symbol_signals = poc_store.latest_by_symbol() if poc_store is not None else {}
+    return JSONResponse(
+        {"ok": True, "robots": data, "symbol_signals": symbol_signals},
+        headers=_NO_CACHE,
+    )
 
 
 async def api_bybit_symbols(request: Request) -> JSONResponse:

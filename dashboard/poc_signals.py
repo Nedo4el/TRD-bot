@@ -28,6 +28,8 @@ STATE_PENDING = "pending"
 STATE_ACTIVE = "active"
 STATE_EXPIRED = "expired"
 DEFAULT_TTL_MIN = 120
+# Порог «сигнал устарел» для active: 12 ч — как ENTRY_TTL_SEC робота POC.
+DEFAULT_ACTIVE_STALE_MIN = 720
 
 
 def _ttl_minutes() -> int:
@@ -37,6 +39,34 @@ def _ttl_minutes() -> int:
         return max(1, int(raw)) if raw else DEFAULT_TTL_MIN
     except ValueError:
         return DEFAULT_TTL_MIN
+
+
+def _active_stale_minutes() -> int:
+    """Порог «active устарел» в минутах (POC_ACTIVE_STALE_MIN)."""
+    raw = os.getenv("POC_ACTIVE_STALE_MIN", "").strip()
+    try:
+        return max(1, int(raw)) if raw else DEFAULT_ACTIVE_STALE_MIN
+    except ValueError:
+        return DEFAULT_ACTIVE_STALE_MIN
+
+
+def _received_at(record: PocSignalRecord) -> datetime | None:
+    """Время приёма сигнала (UTC); None — метка битая."""
+    try:
+        stamp = datetime.fromisoformat(record.received_at)
+    except (TypeError, ValueError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp
+
+
+def _is_stale(record: PocSignalRecord, limit: datetime) -> bool:
+    """Active-сигнал старше порога: сетка по нему уже не гарантирована."""
+    if record.state != STATE_ACTIVE:
+        return False
+    received = _received_at(record)
+    return received is None or received < limit
 
 
 @dataclass(slots=True)
@@ -158,15 +188,54 @@ class PocSignalStore:
         """Снимок для дашборда: флаг режима, счётчики и список сигналов."""
         if self._expire_pending():
             self._persist()
-        pending = sum(1 for item in self._records if item.state == STATE_PENDING)
-        active = sum(1 for item in self._records if item.state == STATE_ACTIVE)
+        stale_min = _active_stale_minutes()
+        limit = datetime.now(timezone.utc) - timedelta(minutes=stale_min)
+        pending = 0
+        active = 0
+        active_stale = 0
+        signals: list[dict[str, Any]] = []
+        for item in self._records:
+            stale = _is_stale(item, limit)
+            if item.state == STATE_PENDING:
+                pending += 1
+            elif item.state == STATE_ACTIVE:
+                active += 1
+                if stale:
+                    active_stale += 1
+            data = item.to_dict()
+            data["stale"] = stale
+            signals.append(data)
         return {
             "generated_at": now_iso(),
             "auto_trade": AutoTradeFlag.load().auto_trade,
             "pending": pending,
             "active": active,
-            "signals": [item.to_dict() for item in self._records],
+            "active_stale": active_stale,
+            "active_stale_min": stale_min,
+            "signals": signals,
         }
+
+    def latest_by_symbol(self) -> dict[str, dict[str, Any]]:
+        """Последний сигнал по каждой монете (для вкладки «Роботы»).
+
+        Записи хранятся новыми первыми, поэтому первая встреченная — свежайшая.
+        """
+        if self._expire_pending():
+            self._persist()
+        stale_min = _active_stale_minutes()
+        limit = datetime.now(timezone.utc) - timedelta(minutes=stale_min)
+        latest: dict[str, dict[str, Any]] = {}
+        for item in self._records:
+            if item.symbol in latest:
+                continue
+            latest[item.symbol] = {
+                "state": item.state,
+                "stale": _is_stale(item, limit),
+                "ts": item.ts,
+                "received_at": item.received_at,
+                "direction": item.direction,
+            }
+        return latest
 
     def _expire_pending(self) -> bool:
         """Пометить устаревшие pending как expired; вернуть, были ли изменения."""
@@ -176,12 +245,7 @@ class PocSignalStore:
         for record in self._records:
             if record.state != STATE_PENDING:
                 continue
-            try:
-                received = datetime.fromisoformat(record.received_at)
-            except (TypeError, ValueError):
-                received = None
-            if received is not None and received.tzinfo is None:
-                received = received.replace(tzinfo=timezone.utc)
+            received = _received_at(record)
             if received is None or received < limit:
                 record.state = STATE_EXPIRED
                 changed = True

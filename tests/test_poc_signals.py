@@ -91,3 +91,52 @@ def test_signal_state_survives_reload(
 
     assert created is False
     assert again.signal_id == payload()["signal_id"]
+
+
+def test_active_signal_becomes_stale_after_threshold(
+    store: module.PocSignalStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Старый active помечается stale, но состояние остаётся active."""
+    monkeypatch.setenv("POC_ACTIVE_STALE_MIN", "60")
+    module.AutoTradeFlag(auto_trade=True).save()
+    record, _ = store.add(payload("SOLUSDT:50:long:4"))
+    record.received_at = "2020-01-01T00:00:00+00:00"
+
+    snapshot = store.snapshot()
+
+    assert snapshot["signals"][0]["state"] == module.STATE_ACTIVE
+    assert snapshot["signals"][0]["stale"] is True
+    assert snapshot["active"] == 1
+    assert snapshot["active_stale"] == 1
+    assert snapshot["active_stale_min"] == 60
+
+
+def test_fresh_active_signal_is_not_stale(
+    store: module.PocSignalStore,
+) -> None:
+    module.AutoTradeFlag(auto_trade=True).save()
+    store.add(payload("SOLUSDT:50:long:5"))
+
+    snapshot = store.snapshot()
+
+    assert snapshot["signals"][0]["stale"] is False
+    assert snapshot["active_stale"] == 0
+
+
+def test_latest_by_symbol_returns_newest_signal(
+    store: module.PocSignalStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """В карту по монете попадает самый свежий сигнал, stale считается по нему."""
+    monkeypatch.setenv("POC_ACTIVE_STALE_MIN", "60")
+    module.AutoTradeFlag(auto_trade=True).save()
+    old, _ = store.add(payload("SOLUSDT:50:long:6"))
+    old.received_at = "2020-01-01T00:00:00+00:00"
+    store.add(payload("SOLUSDT:51:long:7"))
+
+    latest = store.latest_by_symbol()["SOLUSDT"]
+
+    assert latest["state"] == module.STATE_ACTIVE
+    assert latest["stale"] is False
+    assert latest["direction"] == "long"

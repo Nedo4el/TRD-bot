@@ -285,6 +285,14 @@
       white-space: nowrap;
     }
     .coin-badge.live { border-color: rgba(46, 204, 113, .45); color: var(--green); }
+    .coin-badge .sig-dot {
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+      margin-right: 4px; background: var(--muted); vertical-align: middle;
+    }
+    .coin-badge .sig-dot.active { background: var(--green); }
+    .coin-badge .sig-dot.pending,
+    .coin-badge .sig-dot.stale { background: var(--yellow); }
+    .robot-sig-legend { margin-top: 8px; font-size: 12px; color: var(--muted); }
     .robots-table tbody tr.robot-detail td { background: var(--panel-2); }
     .robot-detail-inner {
       display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
@@ -298,6 +306,10 @@
       font-size: 12px; font-weight: 600; white-space: nowrap;
     }
     .coin-chip.live { border-color: rgba(46, 204, 113, .45); }
+    .coin-chip .chip-sig { font-size: 10px; font-weight: 500; color: var(--muted); }
+    .coin-chip .chip-sig.sig-active { color: var(--green); }
+    .coin-chip .chip-sig.sig-pending,
+    .coin-chip .chip-sig.sig-stale { color: var(--yellow); }
     .coin-chip button {
       background: transparent; border: none; color: var(--muted);
       cursor: pointer; font-size: 13px; line-height: 1;
@@ -620,6 +632,11 @@
           </tbody>
         </table>
       </div>
+      <div class="robot-sig-legend">
+        Подсветка монеты = процесс запущен, а не наличие ордеров.
+        Точка «сигнал»: зелёная — POC-сигнал в работе, жёлтая — ждёт или устарел,
+        серая — сигнала нет. Важно для robot_yrovni_D: сетку ставит только он.
+      </div>
     </div>
 
     <div class="tab-content" id="contentStats">
@@ -747,6 +764,7 @@
         </div>
         <span class="muted">Ожидают подтверждения: <b id="pocPending">0</b></span>
         <span class="muted">В работе: <b id="pocActive">0</b></span>
+        <span class="muted" id="pocStaleNote"></span>
         <span class="muted" id="pocUpdated">—</span>
         <button class="primary" id="pocRefresh">Обновить</button>
         <button id="pocClear" title="Удалить все POC-сигналы из списка">Очистить сигналы</button>
@@ -769,6 +787,8 @@
         Сигнал приходит, когда цена входит в 10 % зону ближайшего кластера
         POC-уровней (уровни ближе 5 % объединены, вход — среднее цен).
         TP и SL считает робот. При AUTO_TRADE=false сигнал ждёт подтверждения.
+        «В работе» — сигнал принят в автоторг, а не гарантия, что ордера стоят
+        на бирже: сетка могла быть снята по TTL или по уходу цены от уровня.
       </div>
     </div>
    </div>
@@ -1686,6 +1706,7 @@ $("robotStopBtn").addEventListener("click", stopCurrentRobot);
 let robots = [];
 let robotSymbolsMap = {};
 let robotPidsMap = {};
+let symbolSignals = {};
 let expandedRobots = new Set();
 let bybitSymbols = [];
 let coinsModalRobot = "";
@@ -1697,6 +1718,7 @@ async function loadRobots() {
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
     robots = data.robots || [];
+    symbolSignals = data.symbol_signals || {};
     for (const r of robots) {
       robotSymbolsMap[r.name] = r.symbols || [];
       robotPidsMap[r.name] = r.symbol_pids || {};
@@ -1708,16 +1730,29 @@ async function loadRobots() {
   }
 }
 
+function signalState(symbol) {
+  const info = symbolSignals[symbol];
+  if (!info) return { cls: "none", text: "сигнала нет" };
+  if (info.state === "active" && info.stale) return { cls: "stale", text: "сигнал устарел" };
+  if (info.state === "active") return { cls: "active", text: "сигнал в работе" };
+  if (info.state === "pending") return { cls: "pending", text: "сигнал ждёт" };
+  return { cls: "none", text: "сигнал истёк" };
+}
+
 function coinChipsHtml(name, symbols, pids) {
   if (!symbols.length) {
     return `<span class="muted">Монеты не выбраны — нажмите «Выбрать монеты»</span>`;
   }
   return symbols
-    .map(
-      (s) => `<span class="coin-chip ${pids[s] ? "live" : ""}">${esc(s)}
+    .map((s) => {
+      const live = Boolean(pids[s]);
+      const sig = signalState(s);
+      const title = `${s}: процесс ${live ? "запущен" : "не запущен"}; ${sig.text}`;
+      return `<span class="coin-chip ${live ? "live" : ""}" title="${esc(title)}">${esc(s)}
+        <span class="chip-sig sig-${sig.cls}">${sig.text}</span>
         <button data-remove-coin="${esc(s)}" data-robot="${esc(name)}"
-          title="Убрать монету">✕</button></span>`
-    )
+          title="Убрать монету">✕</button></span>`;
+    })
     .join("");
 }
 
@@ -1736,10 +1771,10 @@ function renderRobots() {
     const preview = symbols.length
       ? symbols
           .slice(0, 3)
-          .map(
-            (s) =>
-              `<span class="coin-badge ${pids[s] ? "live" : ""}">${esc(s)}</span>`
-          )
+          .map((s) => {
+            const sig = signalState(s);
+            return `<span class="coin-badge ${pids[s] ? "live" : ""}" title="${esc(s + ": " + sig.text)}"><span class="sig-dot ${sig.cls}"></span>${esc(s)}</span>`;
+          })
           .join("") +
         (symbols.length > 3
           ? `<span class="coin-badge">+${symbols.length - 3}</span>`
@@ -2363,19 +2398,31 @@ async function loadPocSignals() {
   }
 }
 
+function fmtDuration(minutes) {
+  if (!minutes) return "—";
+  return minutes >= 60 ? Math.round(minutes / 60) + " ч" : minutes + " мин";
+}
+
 function renderPocSignals(data) {
   $("autoTrade").checked = !!data.auto_trade;
   $("pocPending").textContent = data.pending || 0;
   $("pocActive").textContent = data.active || 0;
+  const staleCount = data.active_stale || 0;
+  $("pocStaleNote").textContent = staleCount
+    ? `· устарело: ${staleCount} (старше ${fmtDuration(data.active_stale_min)})`
+    : "";
   $("pocUpdated").textContent = "Обновлено: " + fmtClock(data.generated_at);
   const rows = (data.signals || []).map((s) => {
     const pending = s.state === "pending";
     const expired = s.state === "expired";
+    const stale = s.state === "active" && s.stale;
     const stateCell = pending
       ? '<span class="muted">ожидает</span>'
       : expired
         ? '<span class="muted">истёк</span>'
-        : '<span style="color:var(--green)">в работе</span>';
+        : stale
+          ? '<span class="muted" title="сигнал старше порога: сетка могла быть снята">устарел</span>'
+          : '<span style="color:var(--green)">в работе</span>';
     const dirCls = s.direction === "long" ? "LONG" : "SHORT";
     const dirText = s.direction === "long" ? "LONG" : "SHORT";
     const action = pending

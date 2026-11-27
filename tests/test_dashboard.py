@@ -1333,6 +1333,7 @@ def test_symbols_api_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         data = json.loads(bytes(resp.body))
         assert data["robots"][0]["symbols"] == ["BTCUSDT"]
         assert data["robots"][0]["symbol_pids"] == {"ETHUSDT": 11}
+        assert data["symbol_signals"] == {}
 
     asyncio.run(run())
 
@@ -1710,6 +1711,37 @@ def test_poc_signals_clear_endpoint(
 
     assert body == {"ok": True, "cleared": 1}
     assert poc_store.snapshot()["signals"] == []
+
+
+def test_robots_list_includes_latest_poc_signal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /api/robots отдаёт последний POC-сигнал по монете для чипов."""
+    import dashboard.poc_signals as poc_module
+    from dashboard import server as server_module
+
+    monkeypatch.setattr(server_module, "get_all_robots_status", _fake_statuses)
+    monkeypatch.setattr(poc_module, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(poc_module, "POC_SIGNALS_FILE", tmp_path / "poc.json")
+    monkeypatch.setattr(poc_module, "AUTO_TRADE_FILE", tmp_path / "auto.json")
+    poc_store = poc_module.PocSignalStore()
+    poc_store.add(
+        {
+            "signal_id": "AAAUSDT:1:long:1",
+            "symbol": "AAAUSDT",
+            "direction": "long",
+            "entry_price": 1.0,
+            "price": 1.01,
+            "ts": "2026-11-22T00:00:00Z",
+        }
+    )
+    request = _path_request("x")
+    request.app.state.poc_signals = poc_store
+
+    resp = asyncio.run(server_module.api_robots_list(request))
+    data = json.loads(bytes(resp.body))
+
+    assert data["symbol_signals"]["AAAUSDT"]["state"] == "pending"
 
 
 def test_poc_signals_clear_route_registered() -> None:
