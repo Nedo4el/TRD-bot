@@ -789,7 +789,8 @@ async def scan_poc(spec: ScreenerSpec) -> list[Signal]:
                 side=side,
                 price=found.entry_price,
                 score=None,
-                label=f"кластер {found.entry_price:g} ({found.distance_pct * 100:.2f} %)",
+                label=f"кластер {found.entry_price:g} "
+                f"({found.distance_pct * 100:.2f} % от уровня)",
                 turnover_24h=0.0,
                 found_at=found.ts,
                 detail={

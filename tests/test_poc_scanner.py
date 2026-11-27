@@ -254,14 +254,25 @@ def test_close_pocs_merge_into_one_level(tmp_path: Path) -> None:
     assert merged.confirmed is True
 
 
-def test_small_volume_level_still_gives_signal(tmp_path: Path) -> None:
-    """В модели «ближайший кластер» объём уровня не гейт: сигнал по зоне."""
+def test_small_volume_level_does_not_give_signal(tmp_path: Path) -> None:
+    """Уровень без подтверждения объёмом в сигналах не участвует."""
     scanner = make_scanner(tmp_path)
 
     level = add_level(scanner, 50.0, 5_000_000.0)
 
     assert level.confirmed is False
-    assert scanner.check_clusters(50.1, now=NOW) is not None
+    assert scanner.check_clusters(50.1, now=NOW) is None
+
+
+def test_zone_distance_is_measured_from_level(tmp_path: Path) -> None:
+    """15 % зона считается от уровня, а не от цены."""
+    scanner = make_scanner(tmp_path)
+    add_level(scanner, 100.0, 80_000_000.0, windows=("7d",))
+
+    signal = scanner.check_clusters(85.5, now=NOW)
+    assert signal is not None
+    assert signal.distance_pct == pytest.approx(0.145, rel=0.01)
+    assert scanner.check_clusters(115.5, now=NOW) is None
 
 
 def test_recalculation_does_not_inflate_volume(tmp_path: Path) -> None:

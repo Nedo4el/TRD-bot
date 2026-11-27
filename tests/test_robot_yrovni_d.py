@@ -20,6 +20,7 @@ from robot_yrovni_D.main import (
     for_this_instance,
     handle_signal,
     startup_diagnostic,
+    still_approaching,
 )
 from robot_yrovni_D.signals import PocSignal, SignalError, parse_signal
 from robot_yrovni_D.strategy import Action, LevelStrategy, PositionState
@@ -290,13 +291,13 @@ def test_short_signal_places_three_sell_limits(tmp_path: Path) -> None:
     assert next(iter(broker.stops.values()))["trigger"] == pytest.approx(55.0)
 
 
-def test_entry_distance_measured_from_price_like_screener(tmp_path: Path) -> None:
-    """Расстояние до POC — от цены: 16.7% от POC = 14.3% от цены, вход идёт."""
+def test_entry_distance_measured_from_level_like_screener(tmp_path: Path) -> None:
+    """Расстояние до POC — от уровня: 12.9 % от POC, вход идёт."""
     broker = FakeBroker(price=0.2371)
     strategy = make_strategy(broker, tmp_path, Clock(), max_distance_from_poc_pct=0.15)
 
     orders = run(
-        strategy.on_poc_signal(make_signal(side="long", poc=0.2032, price=0.2371))
+        strategy.on_poc_signal(make_signal(side="long", poc=0.2100, price=0.2371))
     )
 
     assert len(orders) == 3
@@ -306,15 +307,15 @@ def test_entry_distance_measured_from_price_like_screener(tmp_path: Path) -> Non
     assert skipped == []
 
 
-def test_limits_kept_while_price_within_distance_by_price(tmp_path: Path) -> None:
-    """POC=50, цена 58: 16% от POC, но 13.8% от цены — лимитки не снимаем."""
+def test_limits_kept_while_price_within_distance_by_level(tmp_path: Path) -> None:
+    """POC=50, цена 57: 14 % от POC — лимитки не снимаем."""
     broker = FakeBroker()
     strategy = make_strategy(broker, tmp_path, Clock(), cancel_if_distance_pct=0.15)
     run(strategy.on_poc_signal(make_signal(poc=50.0, price=50.0)))
     position = strategy.position(SYMBOL)
     assert position is not None
 
-    actions = run(strategy.update_on_tick(58.0, position))
+    actions = run(strategy.update_on_tick(57.0, position))
 
     assert actions == [Action.HOLD]
     assert position.closed is False
@@ -471,7 +472,7 @@ def test_two_fills_average_entry_drives_stop(tmp_path: Path) -> None:
 
 
 def test_price_away_from_poc_cancels_all(tmp_path: Path) -> None:
-    """Цена ушла от POC дальше 5% (считая от цены) → CANCEL_ALL."""
+    """Цена ушла от POC дальше 5% (считая от уровня) → CANCEL_ALL."""
     broker = FakeBroker()
     strategy = make_strategy(broker, tmp_path, Clock())
     run(strategy.on_poc_signal(make_signal()))
@@ -753,6 +754,31 @@ def test_processed_signals_keeps_last_thousand(tmp_path: Path) -> None:
     assert len(stored) == MAX_PROCESSED
     assert "sig-0" not in stored
     assert f"sig-{MAX_PROCESSED + 4}" in stored
+
+
+def test_processed_signals_discard_allows_rearm(tmp_path: Path) -> None:
+    """discard возвращает сигнал в работу и сохраняется на диск."""
+    path = tmp_path / "processed.json"
+    processed = ProcessedSignals(path)
+    processed.add("BTCUSDT:50.0:short:2")
+
+    assert processed.discard("BTCUSDT:50.0:short:2") is True
+    assert "BTCUSDT:50.0:short:2" not in processed
+    assert processed.discard("BTCUSDT:50.0:short:2") is False
+    assert ProcessedSignals(path)._ids == []
+
+
+def test_still_approaching_checks_side_and_distance() -> None:
+    """Реарм только пока цена не дошла до уровня и он в пределах допуска."""
+    short = {"state": "active", "entry_price": 50.0, "direction": "short"}
+    assert still_approaching(short, 45.0, 0.15) is True
+    assert still_approaching(short, 50.5, 0.15) is False
+    assert still_approaching(short, 40.0, 0.15) is False
+    assert still_approaching({**short, "state": "pending"}, 45.0, 0.15) is False
+
+    long = {"state": "active", "entry_price": 50.0, "direction": "long"}
+    assert still_approaching(long, 55.0, 0.15) is True
+    assert still_approaching(long, 49.5, 0.15) is False
 
 
 def test_per_symbol_process_takes_only_its_coin() -> None:
