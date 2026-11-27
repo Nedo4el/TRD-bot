@@ -985,3 +985,97 @@ def test_startup_diagnostic_cleanup_disabled_keeps_signal_processed(
 
     assert broker.cancelled == []
     assert "BTCUSDT:50.0:long:1" in processed
+
+
+def test_startup_diagnostic_rearms_active_signal_until_level(
+    tmp_path: Path,
+) -> None:
+    """Цена не дошла до уровня: активный сигнал снова разрешён, сетку вернут."""
+    broker = FakeBroker(price=45.0)
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    config = make_config(symbol=SYMBOL)
+    strategy = LevelStrategy(config, broker, log, clock=clock)
+    processed = ProcessedSignals(tmp_path / "processed.json")
+    processed.add("BTCUSDT:50.0:short:2")
+    records = [
+        {
+            "state": "active",
+            "symbol": SYMBOL,
+            "signal_id": "BTCUSDT:50.0:short:2",
+            "entry_price": 50.0,
+            "direction": "short",
+        }
+    ]
+
+    async def fetch() -> list[dict[str, Any]]:
+        return records
+
+    run(startup_diagnostic(strategy, broker, log, config, processed, fetch_active=fetch))
+
+    assert "BTCUSDT:50.0:short:2" not in processed
+    diag = [e for e in events(tmp_path) if e["action"] == "STARTUP_DIAG"]
+    assert diag and diag[-1]["rearmed"] == 1
+
+
+def test_startup_diagnostic_keeps_signal_when_price_passed_level(
+    tmp_path: Path,
+) -> None:
+    """Цена уже перескочила уровень: сигнал не реармим — он отработан."""
+    broker = FakeBroker(price=52.0)
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    config = make_config(symbol=SYMBOL)
+    strategy = LevelStrategy(config, broker, log, clock=clock)
+    processed = ProcessedSignals(tmp_path / "processed.json")
+    processed.add("BTCUSDT:50.0:short:2")
+    records = [
+        {
+            "state": "active",
+            "symbol": SYMBOL,
+            "signal_id": "BTCUSDT:50.0:short:2",
+            "entry_price": 50.0,
+            "direction": "short",
+        }
+    ]
+
+    async def fetch() -> list[dict[str, Any]]:
+        return records
+
+    run(startup_diagnostic(strategy, broker, log, config, processed, fetch_active=fetch))
+
+    assert "BTCUSDT:50.0:short:2" in processed
+    diag = [e for e in events(tmp_path) if e["action"] == "STARTUP_DIAG"]
+    assert diag and diag[-1]["rearmed"] == 0
+
+
+def test_startup_diagnostic_does_not_rearm_with_open_position(
+    tmp_path: Path,
+) -> None:
+    """Есть позиция — сигнал не трогаем, иначе сетка встанет поверх сделки."""
+    broker = FakeBroker(price=45.0)
+    broker.fill(50.0, 0.12)
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    config = make_config(symbol=SYMBOL)
+    strategy = LevelStrategy(config, broker, log, clock=clock)
+    processed = ProcessedSignals(tmp_path / "processed.json")
+    processed.add("BTCUSDT:50.0:short:2")
+    records = [
+        {
+            "state": "active",
+            "symbol": SYMBOL,
+            "signal_id": "BTCUSDT:50.0:short:2",
+            "entry_price": 50.0,
+            "direction": "short",
+        }
+    ]
+
+    async def fetch() -> list[dict[str, Any]]:
+        return records
+
+    run(startup_diagnostic(strategy, broker, log, config, processed, fetch_active=fetch))
+
+    assert "BTCUSDT:50.0:short:2" in processed
+    diag = [e for e in events(tmp_path) if e["action"] == "STARTUP_DIAG"]
+    assert diag and diag[-1]["rearmed"] == 0
