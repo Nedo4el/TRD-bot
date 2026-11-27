@@ -35,10 +35,10 @@ _LINK_ID_BAD = re.compile(r"[^A-Za-z0-9._-]")
 
 
 def _poc_distance(price: float, poc: float) -> float:
-    """Расстояние до POC по формуле скринера: ``|цена - POC| / цена``."""
-    if price <= 0:
+    """Расстояние до POC по формуле скринера: ``|цена - POC| / POC``."""
+    if poc <= 0:
         return 0.0
-    return abs(price - poc) / price
+    return abs(price - poc) / poc
 
 
 class Action(str, Enum):

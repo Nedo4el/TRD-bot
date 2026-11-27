@@ -78,6 +78,7 @@ def zone_contact_hours(
 ) -> tuple[float, float] | None:
     """Пауза до подхода и время в зоне по закрытым свечам.
 
+    Зона считается от уровня: ``|close - level| / level <= zone_pct``.
     Возвращает ``(quiet_hours, contact_hours)``: сколько часов цена была
     вне зоны до текущего подхода и сколько часов уже находится в зоне.
     ``quiet_hours`` — ``inf``, если в загруженной истории подходов не было.
@@ -86,7 +87,7 @@ def zone_contact_hours(
     if frame.empty or level <= 0:
         return None
     closes = frame["close"].astype(float)
-    flags = (((closes - level).abs() / closes) <= zone_pct).to_numpy()
+    flags = (((closes - level).abs() / level) <= zone_pct).to_numpy()
     if not bool(flags[-1]):
         return None
     start = len(flags) - 1
@@ -442,6 +443,8 @@ class POCScanner:
     ) -> POCSignal | None:
         """Сигнал, когда цена вошла в зону ближайшего кластера.
 
+        В кластеры идут только подтверждённые объёмом уровни
+        (``CONFIRM_VOLUME_THRESHOLD``): тонкие уровни сигналов не дают.
         Мониторится только ближайший к цене кластер. Сигнал выдаётся один
         раз за вход в зону: пока цена не вышла из зоны и не вернулась,
         повторного сигнала нет (состояние переживает рестарт).
@@ -453,8 +456,12 @@ class POCScanner:
         levels: list[LevelState] = []
         skipped: list[str] = []
         touched: list[str] = []
+        thin: list[str] = []
         for level in self.store.levels(self.symbol):
             if not self._is_tradeable(level):
+                continue
+            if not level.confirmed:
+                thin.append(f"{level.poc_price:.6g}")
                 continue
             if self.config.min_departure_pct > 0:
                 departure = self._level_departure(level)
@@ -480,6 +487,13 @@ class POCScanner:
                 self.symbol,
                 self.config.touch_lookback_hours,
                 ", ".join(touched),
+            )
+        if thin:
+            logger.info(
+                "%s: уровни без объёма $%.0fM (не подтверждены) — пропуск: %s",
+                self.symbol,
+                self.config.confirm_volume_threshold / 1_000_000,
+                ", ".join(thin),
             )
         target = nearest_cluster(
             build_clusters(levels, self.config.cluster_merge_pct),

@@ -207,6 +207,11 @@ class LevelConfig(BaseModel):
     startup_cleanup: bool = Field(
         default_factory=lambda: _env_bool("STARTUP_CLEANUP", True),
     )
+    # Разрешить заново активные сигналы дашборда, до уровня которых цена
+    # ещё не дошла: сетку могли снять по TTL, а вход не отработан.
+    startup_rearm: bool = Field(
+        default_factory=lambda: _env_bool("STARTUP_REARM", True),
+    )
 
     # --- Инфраструктура ---
     tick_sec: float = Field(default_factory=lambda: _env_float("TICK_SEC", 5.0))

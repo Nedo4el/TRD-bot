@@ -19,7 +19,7 @@ import argparse
 import asyncio
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +41,7 @@ from robot_yrovni_D.strategy import Action, LevelStrategy
 logger = get_logger(__name__)
 
 MAX_PROCESSED = 1000
+ACTIVE_STATE = "active"
 
 
 class ProcessedSignals:
@@ -68,6 +69,14 @@ class ProcessedSignals:
             self._ids = kept
             self._save()
         return removed
+
+    def discard(self, signal_id: str) -> bool:
+        """Забыть один сигнал: поллер сможет выставить по нему сетку заново."""
+        if signal_id not in self._ids:
+            return False
+        self._ids.remove(signal_id)
+        self._save()
+        return True
 
     def _load(self) -> list[str]:
         try:
@@ -241,7 +250,7 @@ async def poll_dashboard(
             for record in payload.get("signals", []):
                 if not isinstance(record, dict):
                     continue
-                if str(record.get("state") or "") != "active":
+                if str(record.get("state") or "") != ACTIVE_STATE:
                     continue
                 if not for_this_instance(record, config.symbol):
                     continue
@@ -369,12 +378,105 @@ def _rearm_signals(
     return rearmed
 
 
+async def fetch_active_signals(config: LevelConfig) -> list[dict[str, Any]]:
+    """Активные POC-сигналы из дашборда; пустой список — дашборд недоступен."""
+    url = config.dashboard_url.rstrip("/") + "/api/poc-signals"
+    timeout = ClientTimeout(total=config.poll_timeout_sec)
+    try:
+        async with (
+            ClientSession(timeout=timeout) as session,
+            session.get(url) as response,
+        ):
+            if response.status != 200:
+                raise RuntimeError(f"HTTP {response.status}")
+            payload = await response.json()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — дашборд может быть недоступен
+        logger.warning("реарм: дашборд недоступен: %s", exc)
+        return []
+    records = payload.get("signals") if isinstance(payload, dict) else None
+    if not isinstance(records, list):
+        return []
+    return [item for item in records if isinstance(item, dict)]
+
+
+def still_approaching(
+    record: Mapping[str, Any],
+    price: float,
+    max_distance_pct: float,
+) -> bool:
+    """Цена ещё не дошла до уровня и не ушла от него дальше допуска."""
+    if str(record.get("state") or "") != ACTIVE_STATE:
+        return False
+    try:
+        entry = float(record.get("entry_price") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    direction = str(record.get("direction") or "").lower()
+    if entry <= 0 or price <= 0:
+        return False
+    if abs(price - entry) / entry > max_distance_pct:
+        return False
+    if direction == "short":
+        return price < entry
+    if direction == "long":
+        return price > entry
+    return False
+
+
+async def rearm_active_signals(
+    symbol: str,
+    broker: Broker,
+    config: LevelConfig,
+    processed: ProcessedSignals,
+    log: JsonlLogger,
+    fetch_active: Callable[[], Awaitable[list[dict[str, Any]]]],
+) -> int:
+    """Разрешить активные сигналы, до уровня которых цена ещё не дошла.
+
+    Сетка по такому сигналу могла быть снята по TTL, а сам сигнал не
+    отработан: цена так и не коснулась уровня. Повторная постановка
+    безопасна — позиции и своих ордеров на бирже нет (проверено
+    самодиагностикой), а фильтры входа применятся заново.
+    """
+    if config.kill_switch_file and Path(config.kill_switch_file).exists():
+        return 0
+    records = await fetch_active()
+    if not records:
+        return 0
+    try:
+        price = await broker.price(symbol)
+    except Exception as exc:  # noqa: BLE001 — цена не должна ронять старт
+        logger.warning("реарм %s: цена недоступна: %s", symbol, exc)
+        return 0
+    limit = config.max_distance_from_poc_pct
+    rearmed = 0
+    for record in records:
+        if str(record.get("symbol") or "").upper() != symbol:
+            continue
+        signal_id = str(record.get("signal_id") or "")
+        if not signal_id or not still_approaching(record, price, limit):
+            continue
+        if processed.discard(signal_id):
+            rearmed += 1
+            logger.info(
+                "%s: сигнал %s снова разрешён — цена %.10g не дошла до %.10g",
+                symbol,
+                signal_id,
+                price,
+                float(record.get("entry_price") or 0.0),
+            )
+    return rearmed
+
+
 async def startup_diagnostic(
     strategy: LevelStrategy,
     broker: Broker,
     log: JsonlLogger,
     config: LevelConfig,
     processed: ProcessedSignals,
+    fetch_active: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
 ) -> None:
     """Сверить старые ордера и позицию по символу с биржей до старта торговли."""
     if not config.startup_check:
@@ -448,6 +550,16 @@ async def startup_diagnostic(
     else:
         logger.info("%s: самодиагностика — чисто", symbol)
 
+    if fetch_active is not None and position is None and config.startup_rearm:
+        rearmed += await rearm_active_signals(
+            symbol,
+            broker,
+            config,
+            processed,
+            log,
+            fetch_active,
+        )
+
     log.log(
         "STARTUP_DIAG",
         symbol=symbol,
@@ -468,7 +580,14 @@ async def run(config: LevelConfig) -> None:
     processed = ProcessedSignals(_PROJECT_ROOT / config.processed_file)
     queue: asyncio.Queue[PocSignal] = asyncio.Queue()
 
-    await startup_diagnostic(strategy, broker, log, config, processed)
+    await startup_diagnostic(
+        strategy,
+        broker,
+        log,
+        config,
+        processed,
+        fetch_active=lambda: fetch_active_signals(config),
+    )
 
     runner: web.AppRunner | None = None
     if config.symbol:
