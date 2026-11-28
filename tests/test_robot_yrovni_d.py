@@ -91,6 +91,12 @@ class FakeBroker:
     async def min_notional(self, symbol: str) -> float:
         return self._min_notional
 
+    async def qty_step(self, symbol: str) -> float:
+        return 0.001
+
+    async def min_qty(self, symbol: str) -> float:
+        return 0.0
+
     async def place_limit(
         self,
         symbol: str,

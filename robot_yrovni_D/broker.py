@@ -76,6 +76,12 @@ class Broker(Protocol):
     async def min_notional(self, symbol: str) -> float:
         """Минимальный notional ордера по инструменту, USDT."""
 
+    async def qty_step(self, symbol: str) -> float:
+        """Шаг объёма ордера по инструменту (lotSizeFilter.qtyStep)."""
+
+    async def min_qty(self, symbol: str) -> float:
+        """Минимальный объём ордера по инструменту (lotSizeFilter.minOrderQty)."""
+
     async def place_limit(
         self,
         symbol: str,
@@ -401,6 +407,22 @@ class BybitBroker:
             logger.warning("Фильтры %s: %s", symbol, exc)
             return DEFAULT_MIN_NOTIONAL
         return filters.min_notional or DEFAULT_MIN_NOTIONAL
+
+    async def qty_step(self, symbol: str) -> float:
+        try:
+            filters = await self._client.get_instrument_filters(symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Фильтры %s: %s", symbol, exc)
+            return 0.001
+        return filters.qty_step or 0.001
+
+    async def min_qty(self, symbol: str) -> float:
+        try:
+            filters = await self._client.get_instrument_filters(symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Фильтры %s: %s", symbol, exc)
+            return 0.0
+        return filters.min_qty or 0.0
 
     async def place_limit(
         self,

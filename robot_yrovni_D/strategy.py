@@ -42,6 +42,32 @@ def _poc_distance(price: float, poc: float) -> float:
     return abs(price - poc) / poc
 
 
+def _adjust_qty(
+    qty: float,
+    price: float,
+    min_notional: float,
+    min_qty: float,
+    qty_step: float,
+) -> float:
+    """Округлить qty вверх до qty_step и обеспечить min_notional / min_qty.
+
+    Bybit округляет qty вниз до qty_step (_round_qty в клиенте), поэтому мы
+    заранее округляем вверх: иначе при большом шаге лота (например, 10 на
+    BTWUSDT) расчётный 3.74 контракта превращается в 0 и биржа отвергает
+    ордер с ErrCode 10001.
+    """
+    required_qty = qty
+    if min_qty > 0:
+        required_qty = max(required_qty, min_qty)
+    if price > 0 and min_notional > 0:
+        required_qty = max(required_qty, min_notional / price)
+    if qty_step > 0:
+        qty = math.ceil(required_qty / qty_step) * qty_step
+    else:
+        qty = required_qty
+    return qty
+
+
 class Action(str, Enum):
     """Действия тика, которые стратегия выполнила (для отчёта/логов)."""
 
@@ -458,6 +484,8 @@ class LevelStrategy:
         total_notional = cfg.deposit_usd * (cfg.position_pct / 100.0)
         total_qty = total_notional / poc
         min_notional = await self._broker.min_notional(signal.symbol)
+        qty_step = await self._broker.qty_step(signal.symbol)
+        min_qty = await self._broker.min_qty(signal.symbol)
 
         levels = (
             ("up", poc * (1.0 + cfg.level_offset_pct)),
@@ -465,15 +493,18 @@ class LevelStrategy:
             ("down", poc * (1.0 - cfg.level_offset_pct)),
         )
         orders: list[LimitOrder] = []
+        adjusted: list[str] = []
         for (level, price), share in zip(levels, cfg.order_split):
-            qty = total_qty * share
+            raw_qty = total_qty * share
+            qty = _adjust_qty(raw_qty, price, min_notional, min_qty, qty_step)
+            if qty != raw_qty:
+                adjusted.append(f"{level}({qty:g})")
             notional = price * qty
-            if notional < min_notional:
+            if qty <= EPS or notional < min_notional:
                 logger.warning(
-                    "%s: лимитка %s на %.6f USDT меньше MIN_NOTIONAL %.2f — пропуск",
+                    "%s: лимитка %s не может достичь MIN_NOTIONAL %.2f — пропуск",
                     signal.symbol,
                     level,
-                    notional,
                     min_notional,
                 )
                 continue
@@ -505,6 +536,13 @@ class LevelStrategy:
                 extra={"min_notional": min_notional, "total_qty": total_qty},
             )
             return []
+
+        if adjusted:
+            logger.info(
+                "%s: объём лимиток поднят до MIN_NOTIONAL: %s",
+                signal.symbol,
+                ", ".join(adjusted),
+            )
 
         stop = await self.place_initial_stop(
             poc,
