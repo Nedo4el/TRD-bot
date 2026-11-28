@@ -44,6 +44,9 @@ class OpenOrder:
     filled_qty: float
     avg_price: float
     price: float
+    trigger: float = 0.0
+    qty: float = 0.0
+    order_type: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +223,9 @@ class PaperBook:
                 filled_qty=order.filled,
                 avg_price=order.price or 0.0,
                 price=order.price or order.trigger or 0.0,
+                trigger=order.trigger or 0.0,
+                qty=order.qty,
+                order_type=order.kind,
             )
             for order in self._orders.values()
             if order.symbol == symbol and order.status == "New"
@@ -544,6 +550,9 @@ class BybitBroker:
                 filled_qty=float(row.get("cumExecQty") or 0.0),
                 avg_price=float(row.get("avgPrice") or 0.0),
                 price=float(row.get("price") or 0.0),
+                trigger=float(row.get("triggerPrice") or 0.0),
+                qty=float(row.get("qty") or 0.0),
+                order_type=str(row.get("orderType") or ""),
             )
             for row in rows
         ]

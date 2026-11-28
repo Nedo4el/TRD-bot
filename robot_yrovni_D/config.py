@@ -212,6 +212,11 @@ class LevelConfig(BaseModel):
     startup_rearm: bool = Field(
         default_factory=lambda: _env_bool("STARTUP_REARM", True),
     )
+    # Взять существующую позицию под управление при старте (из state-файла
+    # или с биржи по своим ордерам). false — блокировать входы до разбора.
+    startup_adopt: bool = Field(
+        default_factory=lambda: _env_bool("STARTUP_ADOPT", True),
+    )
 
     # --- Инфраструктура ---
     tick_sec: float = Field(default_factory=lambda: _env_float("TICK_SEC", 5.0))
@@ -228,6 +233,13 @@ class LevelConfig(BaseModel):
         default_factory=lambda: os.getenv(
             "PROCESSED_FILE",
             "data/robot_yrovni_D_processed.json",
+        ),
+    )
+    # Файл состояния открытой позиции (переживает рестарт; дашборд читает его).
+    state_file: str = Field(
+        default_factory=lambda: os.getenv(
+            "STATE_FILE",
+            "data/robot_yrovni_D_state.json",
         ),
     )
     order_link_prefix: str = Field(

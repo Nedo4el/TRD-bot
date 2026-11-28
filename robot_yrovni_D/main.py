@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -36,7 +37,13 @@ from robot_yrovni_D.broker import Broker, BybitBroker, OpenOrder
 from robot_yrovni_D.config import LevelConfig, load_config
 from robot_yrovni_D.json_log import JsonlLogger
 from robot_yrovni_D.signals import PocSignal, SignalError, parse_signal
-from robot_yrovni_D.strategy import Action, LevelStrategy
+from robot_yrovni_D.state import StateStore
+from robot_yrovni_D.strategy import (
+    Action,
+    LevelStrategy,
+    adopted_position,
+    position_from_state,
+)
 
 logger = get_logger(__name__)
 
@@ -122,9 +129,10 @@ def build_strategy(
     config: LevelConfig,
     broker: Broker,
     log: JsonlLogger,
+    state: StateStore | None = None,
 ) -> LevelStrategy:
     """Собрать стратегию с журналом и брокером."""
-    return LevelStrategy(config, broker, log)
+    return LevelStrategy(config, broker, log, state=state)
 
 
 def make_logger(config: LevelConfig) -> JsonlLogger:
@@ -477,6 +485,7 @@ async def startup_diagnostic(
     config: LevelConfig,
     processed: ProcessedSignals,
     fetch_active: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
+    state: StateStore | None = None,
 ) -> None:
     """Сверить старые ордера и позицию по символу с биржей до старта торговли."""
     if not config.startup_check:

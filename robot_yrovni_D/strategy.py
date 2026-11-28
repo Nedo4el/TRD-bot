@@ -22,10 +22,11 @@ from pathlib import Path
 from typing import Any
 
 from core.logger import get_logger
-from robot_yrovni_D.broker import Broker
+from robot_yrovni_D.broker import Broker, OpenOrder
 from robot_yrovni_D.config import LevelConfig
 from robot_yrovni_D.json_log import JsonlLogger
 from robot_yrovni_D.signals import PocSignal
+from robot_yrovni_D.state import StateStore
 
 logger = get_logger(__name__)
 
@@ -216,8 +217,165 @@ class DailyStats:
             "total_pnl_usd": round(self.total_pnl_usd, 6),
             "total_pnl_pct": round(avg_pct, 4),
             "avg_hold_sec": round(avg_hold, 1),
-            "max_drawdown_pct": round(self.max_drawdown_pct, 4),
+            "max_drawdown_pct": round(self._stats.max_drawdown_pct, 4),
         }
+
+
+def _opt_float(value: Any) -> float | None:
+    """Число из JSON или None (0 и мусор — «уровня нет»)."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def state_payload(position: PositionState) -> dict[str, Any]:
+    """Снимок сделки для state-файла (``position`` читает дашборд)."""
+    return {
+        "symbol": position.symbol,
+        "updated_at": time.time(),
+        "position": {
+            "side": position.side,
+            "entry_price": position.avg_entry,
+            "qty": position.qty,
+            "stop_loss": position.stop.trigger if position.stop else None,
+            "take_profit": position.take.price if position.take else None,
+            "opened_at": position.opened_at,
+        },
+        "signal": {
+            "signal_id": position.signal.signal_id,
+            "poc_price": position.signal.poc_price,
+            "side_hint": position.signal.side_hint,
+            "confidence": position.signal.confidence,
+            "current_price": position.signal.current_price,
+            "ts": position.signal.ts,
+        },
+        "trade": {
+            "be_done": position.be_done,
+            "take_active": position.take_active,
+            "max_price": position.max_price,
+            "min_price": (
+                position.min_price if math.isfinite(position.min_price) else None
+            ),
+            "trail_stop": position.trail_stop,
+            "limits_deadline": position.limits_deadline,
+            "last_snapshot_ts": position.last_snapshot_ts,
+            "limits": [
+                {
+                    "level": limit.level,
+                    "order_id": limit.order_id,
+                    "link_id": limit.link_id,
+                    "price": limit.price,
+                    "qty": limit.qty,
+                    "side": limit.side,
+                    "filled_qty": limit.filled_qty,
+                    "cancelled": limit.cancelled,
+                }
+                for limit in position.limits
+            ],
+        },
+    }
+
+
+def position_from_state(payload: dict[str, Any] | None) -> PositionState | None:
+    """Восстановить сделку из state-файла; None — позиции нет или битые данные."""
+    if not isinstance(payload, dict):
+        return None
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    raw_position = payload.get("position")
+    if not symbol or not isinstance(raw_position, dict):
+        return None
+    try:
+        qty = float(raw_position.get("qty") or 0.0)
+        avg_entry = float(raw_position.get("entry_price") or 0.0)
+        opened_at = float(raw_position.get("opened_at") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if qty <= EPS or avg_entry <= 0:
+        return None
+    side = (
+        "short"
+        if str(raw_position.get("side") or "long").strip().lower() == "short"
+        else "long"
+    )
+    raw_signal = payload.get("signal")
+    signal_data = raw_signal if isinstance(raw_signal, dict) else {}
+    signal = PocSignal(
+        signal_id=str(signal_data.get("signal_id") or f"{symbol}:adopt"),
+        symbol=symbol,
+        poc_price=float(signal_data.get("poc_price") or avg_entry),
+        side_hint=str(signal_data.get("side_hint") or side),
+        confidence=float(signal_data.get("confidence") or 1.0),
+        current_price=float(signal_data.get("current_price") or 0.0),
+        ts=str(signal_data.get("ts") or ""),
+    )
+    raw_trade = payload.get("trade")
+    trade = raw_trade if isinstance(raw_trade, dict) else {}
+    limits: list[LimitOrder] = []
+    for item in trade.get("limits") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            limits.append(
+                LimitOrder(
+                    level=str(item.get("level") or ""),
+                    order_id=str(item.get("order_id") or ""),
+                    link_id=str(item.get("link_id") or ""),
+                    price=float(item.get("price") or 0.0),
+                    qty=float(item.get("qty") or 0.0),
+                    side=str(item.get("side") or ""),
+                    filled_qty=float(item.get("filled_qty") or 0.0),
+                    cancelled=bool(item.get("cancelled")),
+                ),
+            )
+        except (TypeError, ValueError):
+            continue
+    return PositionState(
+        signal=signal,
+        side=side,
+        limits=limits,
+        qty=qty,
+        avg_entry=avg_entry,
+        be_done=bool(trade.get("be_done")),
+        take_active=bool(trade.get("take_active")),
+        max_price=float(trade.get("max_price") or 0.0),
+        min_price=float(trade.get("min_price") or math.inf),
+        trail_stop=_opt_float(trade.get("trail_stop")),
+        opened_at=opened_at,
+        limits_deadline=float(trade.get("limits_deadline") or 0.0),
+        last_snapshot_ts=float(trade.get("last_snapshot_ts") or 0.0),
+        counted_open=True,
+    )
+
+
+def adopted_position(
+    symbol: str,
+    side: str,
+    qty: float,
+    avg_entry: float,
+    opened_at: float,
+) -> PositionState:
+    """Сделка для позиции, найденной на бирже без state-файла."""
+    signal = PocSignal(
+        signal_id=f"{symbol}:adopt",
+        symbol=symbol,
+        poc_price=avg_entry,
+        side_hint=side,
+        confidence=1.0,
+        current_price=avg_entry,
+    )
+    return PositionState(
+        signal=signal,
+        side=side,
+        limits=[],
+        qty=qty,
+        avg_entry=avg_entry,
+        opened_at=opened_at,
+        max_price=avg_entry,
+        min_price=avg_entry,
+        counted_open=True,
+    )
 
 
 class LevelStrategy:
@@ -230,11 +388,13 @@ class LevelStrategy:
         log: JsonlLogger,
         *,
         clock: Callable[[], float] = time.time,
+        state: StateStore | None = None,
     ) -> None:
         self._config = config
         self._broker = broker
         self._log = log
         self._clock = clock
+        self._state = state
         self._positions: dict[str, PositionState] = {}
         self._last_exit_ts: dict[str, float] = {}
         self._blocked: dict[str, str] = {}
@@ -365,6 +525,7 @@ class LevelStrategy:
             last_snapshot_ts=now,
         )
         self._positions[signal.symbol] = position
+        self._persist(position)
         self._log.log(
             "LIMITS_PLACED",
             symbol=signal.symbol,
@@ -495,6 +656,7 @@ class LevelStrategy:
                 return []
             position.qty = new_qty
             await self._resize_stop(position)
+            self._persist(position)
             return []
         if new_qty <= position.qty + EPS:
             return []
@@ -510,6 +672,7 @@ class LevelStrategy:
             position.counted_open = True
             self._stats.positions_opened += 1
         await self._resize_stop(position)
+        self._persist(position)
         return filled
 
     async def _external_close(
@@ -676,14 +839,17 @@ class LevelStrategy:
             if distance > cfg.cancel_if_distance_pct:
                 await self.cancel_all(position, "distance")
                 position.closed = True
+                self._persist(position)
                 self._snapshot(position, current_price, now, cfg)
                 return [Action.CANCEL_ALL]
             if now >= position.limits_deadline:
                 await self.cancel_all(position, "ttl")
                 position.closed = True
+                self._persist(position)
                 self._snapshot(position, current_price, now, cfg)
                 return [Action.CANCEL_ALL]
 
+        self._persist(position)
         self._snapshot(position, current_price, now, cfg)
         return actions or [Action.HOLD]
 
@@ -757,6 +923,7 @@ class LevelStrategy:
             unrealized_pct=round(unrealized * 100.0, 6),
             entry_price=position.avg_entry,
         )
+        self._persist(position)
         return position.stop
 
     async def cancel_pending_limits(
@@ -785,6 +952,7 @@ class LevelStrategy:
                 reason=reason,
                 cancelled_orders=cancelled,
             )
+        self._persist(position)
         return [item["order_id"] for item in cancelled]
 
     async def activate_take_and_trail(
@@ -823,6 +991,7 @@ class LevelStrategy:
             trail_pct=cfg.trail_pct,
             max_price_seen=position.max_price,
         )
+        self._persist(position)
         return position.take
 
     async def close_position(
@@ -851,6 +1020,7 @@ class LevelStrategy:
         hold_sec = max(now - position.opened_at, 0.0)
 
         position.closed = True
+        self._persist(position)
         self._last_exit_ts[position.symbol] = now
         self._stats.positions_closed += 1
         self._stats.total_pnl_usd += pnl_usd
@@ -927,6 +1097,107 @@ class LevelStrategy:
                 cancelled_orders=cancelled,
             )
         return [item["order_id"] for item in cancelled]
+
+    # ---------------------------------------------------------- состояние ---
+
+    def _persist(self, position: PositionState) -> None:
+        """Сохранить сделку в state-файл; закрытую или без объёма — стереть."""
+        if self._state is None:
+            return
+        if position.closed or position.qty <= EPS:
+            self._state.clear(position.symbol)
+            return
+        self._state.save(state_payload(position))
+
+    async def adopt_existing(
+        self,
+        position: PositionState,
+        orders: list[OpenOrder],
+    ) -> None:
+        """Взять существующую позицию под управление после рестарта."""
+        cfg = self._config.for_symbol(position.symbol)
+        open_ids = {order.order_id for order in orders}
+        for limit in position.limits:
+            if limit.order_id and limit.order_id not in open_ids:
+                limit.cancelled = True
+
+        stop_order = next(
+            (
+                item
+                for item in orders
+                if "-stop-" in item.link_id or "-be-" in item.link_id
+            ),
+            None,
+        )
+        if stop_order is not None and stop_order.trigger > 0:
+            position.be_done = position.be_done or "-be-" in stop_order.link_id
+            position.stop = StopOrder(
+                order_id=stop_order.order_id,
+                trigger=stop_order.trigger,
+                qty=stop_order.qty or position.qty,
+                side=position.close_side,
+                at_be=position.be_done,
+            )
+        elif position.qty > EPS:
+            offset = cfg.be_offset_pct if position.be_done else cfg.stop_initial_pct
+            trigger = (
+                position.avg_entry * (1.0 - offset)
+                if position.side == "long"
+                else position.avg_entry * (1.0 + offset)
+            )
+            result = await self._broker.place_stop(
+                position.symbol,
+                position.close_side,
+                trigger,
+                position.qty,
+                self._link_id(
+                    cfg,
+                    position.signal_id,
+                    "be" if position.be_done else "stop",
+                ),
+            )
+            position.stop = StopOrder(
+                order_id=result.order_id,
+                trigger=trigger,
+                qty=position.qty,
+                side=position.close_side,
+                at_be=position.be_done,
+            )
+
+        take_order = next(
+            (item for item in orders if "-take-" in item.link_id),
+            None,
+        )
+        if take_order is not None and take_order.price > 0:
+            position.take = TakeOrder(
+                order_id=take_order.order_id,
+                price=take_order.price,
+                qty=take_order.qty or position.qty,
+                side=position.close_side,
+            )
+            position.take_active = True
+
+        if position.max_price <= 0:
+            position.max_price = position.avg_entry
+        if position.min_price == math.inf:
+            position.min_price = position.avg_entry
+        if position.take_active and position.trail_stop is None:
+            position.trail_stop = self._trail_stop(position, cfg)
+
+        position.counted_open = True
+        self._positions[position.symbol] = position
+        self._persist(position)
+        self._log.log(
+            "POSITION_ADOPTED",
+            symbol=position.symbol,
+            signal_id=position.signal_id,
+            side=position.side,
+            qty=position.qty,
+            entry_price=position.avg_entry,
+            stop=position.stop.trigger if position.stop else None,
+            take=position.take.price if position.take else None,
+            be_done=position.be_done,
+        )
 
     # ---------------------------------------------------------- служебное ---
 
