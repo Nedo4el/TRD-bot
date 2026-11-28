@@ -218,44 +218,139 @@ def _add_unconfirmed(
     )
 
 
+def _order_prefix(robot: str) -> str:
+    """Префикс orderLinkId робота (пусто — префикса нет)."""
+    return _env(robot).string("ORDER_LINK_ID_PREFIX", "").strip()
+
+
+def _is_true(value: Any) -> bool:
+    """Булево из JSON Bybit (true / "true" / 1)."""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1")
+
+
+def _stop_take_from_orders(
+    orders: list[dict[str, Any]],
+) -> tuple[float | None, float | None]:
+    """SL/TP из reduce-only ордеров: триггер стопа и цена тейка."""
+    stop: float | None = None
+    take: float | None = None
+    for row in orders:
+        if not _is_true(row.get("reduceOnly")):
+            continue
+        trigger = _opt_float(row.get("triggerPrice"))
+        if trigger is not None:
+            stop = stop or trigger
+            continue
+        price = _opt_float(row.get("price"))
+        if price is not None:
+            take = take or price
+    return stop, take
+
+
 async def list_open_positions() -> tuple[
     list[dict[str, Any]], list[dict[str, str]], list[str]
 ]:
     """Открытые позиции всех роботов: (строки, ошибки, пояснения).
 
-    Позицию, которой нет на бирже, не показываем (её уже закрыли). Если
-    биржа недоступна, показываем state-позиции только работающих роботов:
-    state остановленного робота — устаревший снимок (фантомная строка).
+    Позиция приписывается роботу по state-файлу, затем по префиксу его
+    ордеров (``ORDER_LINK_ID_PREFIX``), затем по списку монет. Остановленный
+    робот без state тоже участвует: позиция видна и без его процесса.
     """
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     notes: list[str] = []
+    robots = get_available_robots()
     running = {status.name for status in get_all_robots_status() if status.running}
-    for robot in get_available_robots():
-        states = state_positions(robot)
-        if not states and robot not in running:
-            continue
+    states = {robot: state_positions(robot) for robot in robots}
+    symbols = {robot: set(get_robot_symbols(robot)) for robot in robots}
+
+    clients: dict[str, BybitClient] = {}
+    positions_by_robot: dict[str, list[Position]] = {}
+    for robot in robots:
         client = _client(robot)
         if client is None:
-            message = "нет API-ключей в .env робота"
-            errors.append({"robot": robot, "error": message})
-            _add_unconfirmed(rows, notes, robot, states, running)
+            if states[robot] or robot in running:
+                message = "нет API-ключей в .env робота"
+                errors.append({"robot": robot, "error": message})
+                _add_unconfirmed(rows, notes, robot, states[robot], running)
             continue
+        clients[robot] = client
         try:
-            positions = await client.get_all_positions()
+            positions_by_robot[robot] = await client.get_all_positions()
         except Exception as exc:  # noqa: BLE001
             message = f"биржа недоступна: {exc}"
             logger.warning("позиции %s: %s", robot, message)
             errors.append({"robot": robot, "error": message})
-            _add_unconfirmed(rows, notes, robot, states, running)
-            continue
-        allowed = set(get_robot_symbols(robot)) | set(states)
-        for position in positions:
-            if position.symbol not in allowed:
+            _add_unconfirmed(rows, notes, robot, states[robot], running)
+
+    candidates: dict[str, list[str]] = {}
+    for robot in robots:
+        for symbol in symbols[robot] | set(states[robot]):
+            candidates.setdefault(symbol, []).append(robot)
+
+    order_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+    async def orders_for(robot: str, symbol: str) -> list[dict[str, Any]]:
+        key = (robot, symbol)
+        if key in order_cache:
+            return order_cache[key]
+        client = clients.get(robot)
+        found: list[dict[str, Any]] = []
+        if client is not None:
+            try:
+                found = await client.get_open_orders(symbol)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ордера %s %s: %s", robot, symbol, exc)
+        order_cache[key] = found
+        return found
+
+    def has_position(robot: str, symbol: str) -> bool:
+        return any(
+            item.symbol == symbol and item.size > 0
+            for item in positions_by_robot.get(robot, [])
+        )
+
+    async def owner(symbol: str, robots_here: list[str]) -> str | None:
+        for robot in robots_here:
+            state = states[robot].get(symbol)
+            if state is not None and state.qty > 0 and has_position(robot, symbol):
+                return robot
+        for robot in robots_here:
+            prefix = _order_prefix(robot)
+            if not prefix:
                 continue
-            rows.append(
-                _row(robot, position, states.get(position.symbol), robot in running)
-            )
+            for row in await orders_for(robot, symbol):
+                link = str(row.get("orderLinkId") or "")
+                if link.startswith(prefix):
+                    return robot
+        for robot in robots_here:
+            if has_position(robot, symbol):
+                return robot
+        return None
+
+    for symbol in sorted(candidates):
+        chosen = await owner(symbol, candidates[symbol])
+        if chosen is None:
+            continue
+        position = next(
+            (
+                item
+                for item in positions_by_robot.get(chosen, [])
+                if item.symbol == symbol and item.size > 0
+            ),
+            None,
+        )
+        if position is None:
+            continue
+        state = states[chosen].get(symbol)
+        row = _row(chosen, position, state, chosen in running)
+        stop, take = _stop_take_from_orders(await orders_for(chosen, symbol))
+        row["stop_loss"] = row["stop_loss"] or stop
+        row["take_profit"] = row["take_profit"] or take
+        rows.append(row)
+
     rows.sort(key=lambda row: (row["robot"], row["symbol"]))
     return rows, errors, notes
 

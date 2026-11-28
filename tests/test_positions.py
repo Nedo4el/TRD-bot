@@ -14,6 +14,7 @@ from core.bybit_client import BybitClient, Position
 from dashboard import positions as positions_module
 from dashboard import server as server_module
 from dashboard.positions import (
+    StatePosition,
     close_robot_position,
     list_open_positions,
     state_positions,
@@ -91,17 +92,22 @@ class FakeClient:
         *,
         error: Exception | None = None,
         flat: bool = True,
+        open_orders: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         self.rows = rows or []
         self.error = error
         self.flat = flat
         self.orders: list[dict[str, Any]] = []
         self.cancelled: list[str] = []
+        self.open_orders = open_orders or {}
 
     async def get_all_positions(self) -> list[Position]:
         if self.error is not None:
             raise self.error
         return list(self.rows)
+
+    async def get_open_orders(self, symbol: str) -> list[dict[str, Any]]:
+        return list(self.open_orders.get(symbol, []))
 
     async def get_positions(self, symbol: str) -> list[Position]:
         if self.error is not None:
@@ -304,6 +310,156 @@ def test_list_hides_stopped_robot_state_when_exchange_down(
     assert errors and errors[0]["robot"] == ROBOT
     assert len(notes) == 1
     assert ROBOT in notes[0] and "AAAUSDT" in notes[0]
+
+
+def test_list_attributes_position_by_order_prefix_and_order_levels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Позицию приписывает префикс ордера, SL/TP — из условных ордеров."""
+    monkeypatch.setattr(positions_module, "PROJECT_ROOT", tmp_path)
+    for robot, prefix in (("robot_trend", "tr-"), ("robot_yrovni_D", "zk-")):
+        robot_dir = tmp_path / robot
+        robot_dir.mkdir()
+        (robot_dir / ".env").write_text(
+            "BYBIT_API_KEY=k\nBYBIT_API_SECRET=s\n"
+            f"ORDER_LINK_ID_PREFIX={prefix}\n",
+            encoding="utf-8",
+        )
+    position = Position(
+        symbol="MMTUSDT",
+        side="Buy",
+        size=136.0,
+        avg_price=0.1449,
+        unrealised_pnl=-0.68,
+        mark_price=0.1399,
+    )
+    orders = {
+        "MMTUSDT": [
+            {
+                "orderLinkId": "zk-MMTUSDT-0.1449-long--stop-1",
+                "reduceOnly": True,
+                "triggerPrice": "0.1304",
+                "price": "0",
+                "orderType": "Market",
+            },
+            {
+                "orderLinkId": "zk-MMTUSDT-0.1449-long--take-1",
+                "reduceOnly": True,
+                "triggerPrice": "",
+                "price": "0.155",
+                "orderType": "Limit",
+            },
+        ],
+    }
+    clients = {
+        "robot_trend": FakeClient([position], open_orders=orders),
+        "robot_yrovni_D": FakeClient([position], open_orders=orders),
+    }
+    monkeypatch.setattr(
+        positions_module,
+        "get_available_robots",
+        lambda: ["robot_trend", "robot_yrovni_D"],
+    )
+    monkeypatch.setattr(
+        positions_module,
+        "get_all_robots_status",
+        lambda: [RobotStatus(name="robot_trend", running=False, pid=0)],
+    )
+    monkeypatch.setattr(
+        positions_module,
+        "get_robot_symbols",
+        lambda name: ["MMTUSDT"],
+    )
+    monkeypatch.setattr(positions_module, "state_positions", lambda name: {})
+    monkeypatch.setattr(positions_module, "_client", lambda name: clients[name])
+
+    rows, errors, notes = asyncio.run(list_open_positions())
+
+    assert errors == [] and notes == []
+    assert len(rows) == 1
+    assert rows[0]["robot"] == "robot_yrovni_D"
+    assert rows[0]["stop_loss"] == 0.1304
+    assert rows[0]["take_profit"] == 0.155
+    assert rows[0]["robot_running"] is False
+
+
+def test_list_state_file_wins_over_order_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """State-файл робота приоритетнее префикса ордера."""
+    monkeypatch.setattr(positions_module, "PROJECT_ROOT", tmp_path)
+    for robot, prefix in (("robot_trend", "tr-"), ("robot_yrovni_D", "zk-")):
+        robot_dir = tmp_path / robot
+        robot_dir.mkdir()
+        (robot_dir / ".env").write_text(
+            "BYBIT_API_KEY=k\nBYBIT_API_SECRET=s\n"
+            f"ORDER_LINK_ID_PREFIX={prefix}\n",
+            encoding="utf-8",
+        )
+    position = Position(
+        symbol="ENAUSDT",
+        side="Buy",
+        size=10.0,
+        avg_price=1.0,
+        unrealised_pnl=0.0,
+    )
+    orders = {
+        "ENAUSDT": [
+            {
+                "orderLinkId": "zk-ENAUSDT-1.0-long--stop-1",
+                "reduceOnly": True,
+                "triggerPrice": "0.9",
+            },
+            {
+                "orderLinkId": "tr-ENAUSDT-1.0-long--stop-2",
+                "reduceOnly": True,
+                "triggerPrice": "0.8",
+            },
+        ],
+    }
+    trend_state = StatePosition(
+        symbol="ENAUSDT",
+        side="long",
+        entry_price=1.0,
+        qty=10.0,
+        stop_loss=0.85,
+        take_profit=None,
+        opened_at=1_700_000_000.0,
+    )
+    clients = {
+        "robot_trend": FakeClient([position], open_orders=orders),
+        "robot_yrovni_D": FakeClient([position], open_orders=orders),
+    }
+    monkeypatch.setattr(
+        positions_module,
+        "get_available_robots",
+        lambda: ["robot_trend", "robot_yrovni_D"],
+    )
+    monkeypatch.setattr(
+        positions_module,
+        "get_all_robots_status",
+        lambda: [RobotStatus(name="robot_trend", running=True, pid=1)],
+    )
+    monkeypatch.setattr(
+        positions_module,
+        "get_robot_symbols",
+        lambda name: ["ENAUSDT"],
+    )
+    monkeypatch.setattr(
+        positions_module,
+        "state_positions",
+        lambda name: {"ENAUSDT": trend_state} if name == "robot_trend" else {},
+    )
+    monkeypatch.setattr(positions_module, "_client", lambda name: clients[name])
+
+    rows, errors, notes = asyncio.run(list_open_positions())
+
+    assert errors == [] and notes == []
+    assert len(rows) == 1
+    assert rows[0]["robot"] == "robot_trend"
+    assert rows[0]["stop_loss"] == 0.85
 
 
 def test_close_full_position_market_reduce_only(

@@ -47,6 +47,7 @@ class OpenOrder:
     trigger: float = 0.0
     qty: float = 0.0
     order_type: str = ""
+    reduce_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +227,7 @@ class PaperBook:
                 trigger=order.trigger or 0.0,
                 qty=order.qty,
                 order_type=order.kind,
+                reduce_only=order.kind in ("stop", "take"),
             )
             for order in self._orders.values()
             if order.symbol == symbol and order.status == "New"
@@ -553,6 +555,7 @@ class BybitBroker:
                 trigger=float(row.get("triggerPrice") or 0.0),
                 qty=float(row.get("qty") or 0.0),
                 order_type=str(row.get("orderType") or ""),
+                reduce_only=str(row.get("reduceOnly") or "").lower() == "true",
             )
             for row in rows
         ]

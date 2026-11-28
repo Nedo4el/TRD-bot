@@ -511,16 +511,43 @@ async def startup_diagnostic(
             "avg_price": position.avg_price,
         }
 
+    saved = position_from_state(state.load() if state is not None else None)
     cancelled: list[str] = []
     blocked = False
+    adopted = False
     rearmed = 0
     if position is not None:
-        blocked = bool(own)
-        if own:
+        side = "long" if position.side in ("Buy", "long") else "short"
+        candidate = saved if saved is not None and saved.side == side else None
+        from_state = candidate is not None
+        if config.startup_adopt:
+            if candidate is None:
+                candidate = adopted_position(
+                    symbol,
+                    side,
+                    position.qty,
+                    position.avg_price,
+                    time.time(),
+                )
+            else:
+                candidate.qty = position.qty
+                if position.avg_price > 0:
+                    candidate.avg_entry = position.avg_price
+            await strategy.adopt_existing(candidate, orders)
+            adopted = True
+            logger.warning(
+                "%s: самодиагностика — позиция %s %.10g взята под управление (%s)",
+                symbol,
+                side,
+                position.qty,
+                "state" if from_state else "биржа",
+            )
+        elif own:
+            blocked = True
             strategy.block_symbol(symbol, "startup_stale_position")
             logger.error(
-                "%s: самодиагностика — позиция %s %.10g при %d своих ордерах без "
-                "состояния: ордера не трогаю, входы по символу заблокированы",
+                "%s: самодиагностика — позиция %s %.10g при %d своих ордерах, "
+                "входы по символу заблокированы",
                 symbol,
                 position.side,
                 position.qty,
@@ -534,30 +561,33 @@ async def startup_diagnostic(
                 position.side,
                 position.qty,
             )
-    elif own and config.startup_cleanup:
-        for item in own:
-            if await broker.cancel(symbol, item.order_id):
-                cancelled.append(item.order_id)
-        rearmed = _rearm_signals(symbol, own, cancelled, config, processed)
-        logger.warning(
-            "%s: самодиагностика — снято старых ордеров %d из %d",
-            symbol,
-            len(cancelled),
-            len(own),
-        )
-        if rearmed:
-            logger.info(
-                "%s: самодиагностика — сигнал снова разрешён, сетка встанет заново",
-                symbol,
-            )
-    elif own:
-        logger.warning(
-            "%s: самодиагностика — висит %d своих ордеров (STARTUP_CLEANUP=false)",
-            symbol,
-            len(own),
-        )
     else:
-        logger.info("%s: самодиагностика — чисто", symbol)
+        if state is not None:
+            state.clear(symbol)
+        if own and config.startup_cleanup:
+            for item in own:
+                if await broker.cancel(symbol, item.order_id):
+                    cancelled.append(item.order_id)
+            rearmed = _rearm_signals(symbol, own, cancelled, config, processed)
+            logger.warning(
+                "%s: самодиагностика — снято старых ордеров %d из %d",
+                symbol,
+                len(cancelled),
+                len(own),
+            )
+            if rearmed:
+                logger.info(
+                    "%s: самодиагностика — сигнал снова разрешён, сетка встанет заново",
+                    symbol,
+                )
+        elif own:
+            logger.warning(
+                "%s: самодиагностика — висит %d своих ордеров (STARTUP_CLEANUP=false)",
+                symbol,
+                len(own),
+            )
+        else:
+            logger.info("%s: самодиагностика — чисто", symbol)
 
     if fetch_active is not None and position is None and config.startup_rearm:
         rearmed += await rearm_active_signals(
@@ -577,6 +607,7 @@ async def startup_diagnostic(
         position=position_info,
         cancelled=len(cancelled),
         blocked=blocked,
+        adopted=adopted,
         rearmed=rearmed,
     )
 
@@ -585,7 +616,8 @@ async def run(config: LevelConfig) -> None:
     """Основной цикл: приёмник сигналов + тик-цикл."""
     log = make_logger(config)
     broker, client = build_broker(config)
-    strategy = build_strategy(config, broker, log)
+    state = StateStore.for_config(config)
+    strategy = build_strategy(config, broker, log, state)
     processed = ProcessedSignals(_PROJECT_ROOT / config.processed_file)
     queue: asyncio.Queue[PocSignal] = asyncio.Queue()
 
@@ -596,6 +628,7 @@ async def run(config: LevelConfig) -> None:
         config,
         processed,
         fetch_active=lambda: fetch_active_signals(config),
+        state=state,
     )
 
     runner: web.AppRunner | None = None

@@ -23,7 +23,13 @@ from robot_yrovni_D.main import (
     still_approaching,
 )
 from robot_yrovni_D.signals import PocSignal, SignalError, parse_signal
-from robot_yrovni_D.strategy import Action, LevelStrategy, PositionState
+from robot_yrovni_D.state import StateStore
+from robot_yrovni_D.strategy import (
+    Action,
+    LevelStrategy,
+    PositionState,
+    position_from_state,
+)
 
 SYMBOL = "BTCUSDT"
 
@@ -846,7 +852,15 @@ def test_daily_summary_counts_closed_positions(tmp_path: Path) -> None:
 # ---------------------- самодиагностика при старте ---------------------------
 
 
-def _order(order_id: str, link_id: str, price: float) -> OpenOrder:
+def _order(
+    order_id: str,
+    link_id: str,
+    price: float,
+    *,
+    trigger: float = 0.0,
+    qty: float = 0.0,
+    reduce_only: bool = False,
+) -> OpenOrder:
     """Открытый ордер для сценариев диагностики."""
     return OpenOrder(
         order_id=order_id,
@@ -855,6 +869,10 @@ def _order(order_id: str, link_id: str, price: float) -> OpenOrder:
         filled_qty=0.0,
         avg_price=0.0,
         price=price,
+        trigger=trigger,
+        qty=qty,
+        order_type="Market" if trigger else "Limit",
+        reduce_only=reduce_only,
     )
 
 
@@ -884,10 +902,10 @@ def test_startup_diagnostic_cancels_own_stale_orders(tmp_path: Path) -> None:
     assert diag[-1]["blocked"] is False
 
 
-def test_startup_diagnostic_blocks_symbol_when_position_exists(
+def test_startup_diagnostic_adopts_position_with_own_orders(
     tmp_path: Path,
 ) -> None:
-    """Позиция + свои ордера: ничего не снимаем, входы по символу блокируются."""
+    """Позиция + свои ордера: берём под управление, стоп досставляем."""
     broker = FakeBroker(leftover=[_order("1", "zk-old-up", 51.0)])
     broker.fill(50.0, 0.12)
     clock = Clock()
@@ -897,14 +915,180 @@ def test_startup_diagnostic_blocks_symbol_when_position_exists(
 
     processed = ProcessedSignals(tmp_path / "processed.json")
     run(startup_diagnostic(strategy, broker, log, config, processed))
+
+    position = strategy.position(SYMBOL)
+    assert position is not None
+    assert position.qty == 0.12
+    assert position.side == "long"
+    assert position.stop is not None
+    assert position.stop.trigger == pytest.approx(45.0)
+    assert broker.cancelled == []
+    diag = [e for e in events(tmp_path) if e["action"] == "STARTUP_DIAG"]
+    assert diag and diag[-1]["adopted"] is True
+    assert diag[-1]["blocked"] is False
+    adopted = [e for e in events(tmp_path) if e["action"] == "POSITION_ADOPTED"]
+    assert adopted and adopted[-1]["qty"] == 0.12
+
+
+def test_startup_diagnostic_adopts_position_with_foreign_stop(
+    tmp_path: Path,
+) -> None:
+    """Позиция без своих ордеров: берём под управление, стоп не дублируем."""
+    broker = FakeBroker(
+        leftover=[
+            _order(
+                "d286dc6f",
+                "d286dc6fe42646d7b00ae25b75499a47",
+                0.0,
+                trigger=0.135,
+                qty=138.0,
+                reduce_only=False,
+            )
+        ]
+    )
+    broker.fill(0.1449, 136.0)
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    config = make_config(symbol=SYMBOL)
+    strategy = LevelStrategy(config, broker, log, clock=clock)
+
+    run(
+        startup_diagnostic(
+            strategy,
+            broker,
+            log,
+            config,
+            ProcessedSignals(tmp_path / "processed.json"),
+        )
+    )
+
+    position = strategy.position(SYMBOL)
+    assert position is not None
+    assert position.qty == 136.0
+    assert position.stop is not None
+    assert position.stop.trigger == pytest.approx(0.135)
+    assert position.stop.qty == pytest.approx(136.0)
+    assert broker.stops == {}
+    diag = [e for e in events(tmp_path) if e["action"] == "STARTUP_DIAG"]
+    assert diag and diag[-1]["adopted"] is True
+
+
+def test_startup_diagnostic_blocks_when_adopt_disabled(
+    tmp_path: Path,
+) -> None:
+    """STARTUP_ADOPT=false: старое поведение — входы по символу блокируются."""
+    broker = FakeBroker(leftover=[_order("1", "zk-old-up", 51.0)])
+    broker.fill(50.0, 0.12)
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    config = make_config(symbol=SYMBOL, startup_adopt=False)
+    strategy = LevelStrategy(config, broker, log, clock=clock)
+
+    processed = ProcessedSignals(tmp_path / "processed.json")
+    run(startup_diagnostic(strategy, broker, log, config, processed))
     orders = run(strategy.on_poc_signal(make_signal()))
 
     assert broker.cancelled == []
     assert orders == []
+    assert strategy.position(SYMBOL) is None
     diag = [e for e in events(tmp_path) if e["action"] == "STARTUP_DIAG"]
     assert diag and diag[-1]["blocked"] is True
+    assert diag[-1]["adopted"] is False
     skipped = [e for e in events(tmp_path) if e["action"] == "SIGNAL_SKIPPED"]
     assert skipped and skipped[-1]["reason"] == "startup_stale_position"
+
+
+def test_strategy_persists_position_and_clears_on_close(
+    tmp_path: Path,
+) -> None:
+    """State-файл: позиция сохраняется на филле и стирается при закрытии."""
+    broker = FakeBroker()
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    state = StateStore(tmp_path / "state.json")
+    strategy = LevelStrategy(
+        make_config(symbol=SYMBOL), broker, log, clock=clock, state=state
+    )
+
+    position = open_position(strategy, broker, make_signal(), fill_price=50.0)
+    payload = json.loads(state.path.read_text(encoding="utf-8"))
+    assert payload["symbol"] == SYMBOL
+    assert payload["position"]["qty"] == pytest.approx(position.qty)
+    assert payload["position"]["entry_price"] == pytest.approx(50.0)
+    assert payload["position"]["stop_loss"] == pytest.approx(45.0)
+
+    broker.qty = 0.0
+    run(strategy.sync_fills(position, 50.6))
+    assert not state.path.exists()
+
+
+def test_state_position_restored_and_adopted(tmp_path: Path) -> None:
+    """После рестарта сделка восстанавливается из state, стоп ставится заново."""
+    broker = FakeBroker()
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    state = StateStore(tmp_path / "state.json")
+    strategy = LevelStrategy(
+        make_config(symbol=SYMBOL), broker, log, clock=clock, state=state
+    )
+    open_position(strategy, broker, make_signal(), fill_price=50.0)
+
+    restored = position_from_state(state.load())
+    assert restored is not None
+    assert restored.side == "long"
+
+    restarted_broker = FakeBroker()
+    restarted_broker.qty = restored.qty
+    restarted_broker.avg_price = restored.avg_entry
+    restarted = LevelStrategy(
+        make_config(symbol=SYMBOL),
+        restarted_broker,
+        JsonlLogger(tmp_path / "restart.jsonl", dry_run=True, clock=clock),
+        clock=clock,
+        state=state,
+    )
+    run(restarted.adopt_existing(restored, []))
+
+    position = restarted.position(SYMBOL)
+    assert position is not None
+    assert position.qty == pytest.approx(restored.qty)
+    assert position.stop is not None
+    assert position.stop.trigger == pytest.approx(45.0)
+
+
+def test_startup_diagnostic_adopts_from_state_file(tmp_path: Path) -> None:
+    """Позиция + state-файл: восстанавливаем сделку, а не синтетическую."""
+    broker = FakeBroker()
+    clock = Clock()
+    log = JsonlLogger(tmp_path / "strategy.jsonl", dry_run=True, clock=clock)
+    state = StateStore(tmp_path / "state.json")
+    first = LevelStrategy(
+        make_config(symbol=SYMBOL), broker, log, clock=clock, state=state
+    )
+    open_position(first, broker, make_signal(signal_id="sig-1"), fill_price=50.0)
+    run(first.update_on_tick(50.6, first.position(SYMBOL)))
+    assert first.position(SYMBOL).be_done is True
+
+    restarted_broker = FakeBroker()
+    restarted_broker.qty = broker.qty
+    restarted_broker.avg_price = broker.avg_price
+    config = make_config(symbol=SYMBOL)
+    restarted = LevelStrategy(config, restarted_broker, log, clock=clock)
+    run(
+        startup_diagnostic(
+            restarted,
+            restarted_broker,
+            log,
+            config,
+            ProcessedSignals(tmp_path / "processed.json"),
+            state=state,
+        )
+    )
+
+    position = restarted.position(SYMBOL)
+    assert position is not None
+    assert position.signal_id == "sig-1"
+    assert position.be_done is True
 
 
 def test_startup_diagnostic_cleanup_disabled_keeps_orders(tmp_path: Path) -> None:

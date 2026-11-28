@@ -217,7 +217,7 @@ class DailyStats:
             "total_pnl_usd": round(self.total_pnl_usd, 6),
             "total_pnl_pct": round(avg_pct, 4),
             "avg_hold_sec": round(avg_hold, 1),
-            "max_drawdown_pct": round(self._stats.max_drawdown_pct, 4),
+            "max_drawdown_pct": round(self.max_drawdown_pct, 4),
         }
 
 
@@ -1129,12 +1129,20 @@ class LevelStrategy:
             ),
             None,
         )
+        if stop_order is None:
+            stop_order = next(
+                (item for item in orders if item.trigger > 0),
+                None,
+            )
         if stop_order is not None and stop_order.trigger > 0:
             position.be_done = position.be_done or "-be-" in stop_order.link_id
+            stop_qty = position.qty
+            if 0 < stop_order.qty < position.qty:
+                stop_qty = stop_order.qty
             position.stop = StopOrder(
                 order_id=stop_order.order_id,
                 trigger=stop_order.trigger,
-                qty=stop_order.qty or position.qty,
+                qty=stop_qty,
                 side=position.close_side,
                 at_be=position.be_done,
             )
@@ -1168,6 +1176,17 @@ class LevelStrategy:
             (item for item in orders if "-take-" in item.link_id),
             None,
         )
+        if take_order is None:
+            take_order = next(
+                (
+                    item
+                    for item in orders
+                    if item.reduce_only
+                    and item.trigger <= 0
+                    and item.price > 0
+                ),
+                None,
+            )
         if take_order is not None and take_order.price > 0:
             position.take = TakeOrder(
                 order_id=take_order.order_id,
