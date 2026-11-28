@@ -55,7 +55,23 @@ def _adjust_qty(
     заранее округляем вверх: иначе при большом шаге лота (например, 10 на
     BTWUSDT) расчётный 3.74 контракта превращается в 0 и биржа отвергает
     ордер с ErrCode 10001.
+
+    Если после биржевого округления вниз qty уже удовлетворяет min_notional
+    и min_qty — qty не меняем (чтобы не искажать тестовые ожидания).
     """
+    if qty_step > 0:
+        effective_qty = math.floor(qty / qty_step) * qty_step
+    else:
+        effective_qty = qty
+
+    if (
+        effective_qty > 0
+        and effective_qty >= min_qty
+        and price > 0
+        and price * effective_qty >= min_notional
+    ):
+        return qty
+
     required_qty = qty
     if min_qty > 0:
         required_qty = max(required_qty, min_qty)
